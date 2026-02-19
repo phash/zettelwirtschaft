@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "003_add_fts5_saved"
-down_revision = "002_add_documents"
+down_revision = "002_add_document_models"
 branch_labels = None
 depends_on = None
 
