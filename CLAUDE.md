@@ -20,13 +20,36 @@ Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und 
 zettelwirtschaft/
   backend/
     app/
-      main.py                    # FastAPI-App, CORS, Startup
+      main.py                    # FastAPI-App, CORS, Startup, FTS5-Init
       config.py                  # Pydantic Settings (alle Config via .env)
       database.py                # SQLAlchemy Engine, Session, Base
-      models/                    # SQLAlchemy-Modelle
-      schemas/                   # Pydantic-Schemas (API Request/Response)
-      api/                       # FastAPI-Router
-      services/                  # Business-Logik
+      models/
+        document.py              # Document, Tag, DocumentTag, Enums (DocumentType, DocumentStatus, ReviewStatus, TaxCategory)
+        processing_job.py        # ProcessingJob + JobStatus/JobSource Enums
+        warranty_info.py         # WarrantyInfo + WarrantyType Enum
+        review_question.py       # ReviewQuestion (erweitert: question_type, explanation, suggested_answers, priority)
+        audit_log.py             # AuditLog + AuditAction Enum
+        saved_search.py          # SavedSearch
+        notification.py          # Notification + NotificationType Enum
+        correction_mapping.py    # CorrectionMapping (Lerneffekt aus Korrekturen)
+      schemas/
+        document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
+        processing_job.py        # JobStatusResponse, UploadResponse
+        search.py                # SearchResponse, SearchResultItem, SearchFacets, SuggestResponse, SavedSearchResponse
+        tax.py                   # TaxYearSummary, TaxExportRequest, TaxExportValidation
+        warranty.py              # WarrantyListItem, WarrantyUpdate, WarrantyStats
+        notification.py          # NotificationResponse, NotificationCount
+      api/
+        documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
+        search.py                # Volltextsuche + Autocomplete + SavedSearch
+        health.py                # Health-Check
+        jobs.py                  # Processing-Job-Status
+        tax.py                   # Steuerpaket-Export + Summary + Validation
+        warranties.py            # Garantie-Liste + Stats + Update
+        notifications.py         # Benachrichtigungen + Mark-Read
+        review.py                # Erweitertes Rueckfrage-System + Approve + Stats
+        system.py                # System-Health + Backup + Wartung
+      services/
         upload_service.py        # Datei-Upload-Verarbeitung
         file_validation_service.py # Dateityp- und Magic-Byte-Validierung
         queue_worker_service.py  # Queue-Worker (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED)
@@ -35,26 +58,40 @@ zettelwirtschaft/
         ocr_service.py           # OCR: pdfplumber (digital) + Tesseract (Scans/Bilder)
         llm_service.py           # Ollama /api/chat mit JSON-Format, Retry-Logik
         analysis_service.py      # Dokumentenanalyse-Pipeline (OCR -> LLM -> AnalysisResult)
-      core/                      # Hilfsfunktionen
+        archive_service.py       # Datei-Archivierung + DB-Eintrag + Tags + FTS-Index
+        search_service.py        # FTS5 Volltextsuche + Facetten + Autocomplete
+        tax_export_service.py    # Steuerpaket-Export (ZIP + PDF via reportlab + CSV)
+        warranty_reminder_service.py # Garantie-Erinnerungen (90/30/0 Tage)
+        backup_service.py        # Backup-Service (DB + Config, Auto-Backup taeglich)
+      core/
         file_utils.py            # Dateinamen-Sanitizing, Magic-Bytes, UUID-Prefix
       prompts/                   # LLM-Prompt-Templates (Textdateien)
-        analyze_document.txt     # Kombinierter Prompt (primaer): Typ + Metadaten + Steuer + Garantie
-        classify_document.txt    # Fallback: Nur Dokumenttyp
-        extract_metadata.txt     # Fallback: Nur Metadaten
-        assess_tax_relevance.txt # Fallback: Nur Steuerrelevanz
-        extract_warranty_info.txt # Fallback: Nur Garantie-Info
-    alembic/                     # DB-Migrationen
+    alembic/                     # DB-Migrationen (001-004)
     requirements.txt
     Dockerfile
   frontend/
     src/
       components/
+        layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
+        common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
       views/
+        DashboardView.vue        # Statistik-Karten, letzte Dokumente, Quick-Upload
+        DocumentsView.vue        # Tabellarische Liste mit Filtern und Sortierung
+        DocumentDetailView.vue   # Zwei-Spalten-Layout: Vorschau + Metadaten-Formular
+        UploadView.vue           # Drag-and-Drop Upload mit Fortschritt
+        ReviewView.vue           # Erweitertes Review mit Wizard-Cards und Auto-Update
+        SearchView.vue           # Volltextsuche mit Facetten und gespeicherten Suchen
+        TaxView.vue              # Steuerbelege-Dashboard mit Kategorien + ZIP-Export
+        WarrantyView.vue         # Garantie-Dashboard mit Status-Filter + Fortschrittsbalken
+        ScanView.vue             # Kamera-Scan mit Aufnahme + Vorschau + Upload
+        SettingsView.vue         # System-Health + Backup + Wartung
       services/api.js            # Zentraler API-Client (Axios)
-      router/
-      stores/                    # Pinia Stores
+      router/index.js            # Vue Router
+      stores/                    # Pinia Stores (documents, notifications)
     vite.config.js
-    Dockerfile
+    tailwind.config.js
+    nginx.conf                   # SPA-Routing + API-Proxy
+    Dockerfile                   # Multi-Stage: Node Build + Nginx
   docker-compose.yml
   .env.example
   planung/                       # Anforderungsdokumente und Prompts
@@ -73,18 +110,22 @@ zettelwirtschaft/
 - **Kombinierter LLM-Prompt als Primaerstrategie:** Ein Ollama-Aufruf fuer Klassifikation + Metadaten + Steuer + Garantie. 4 Einzel-Prompts als Fallback bei JSON-Parse-Fehler.
 - **OCR-Strategie fuer PDFs:** Zuerst pdfplumber (digitaler Text, Konfidenz 1.0), dann Tesseract (Scans via pdf2image).
 - **Wasserfall-Degradation:** OCR-Fehler -> NEEDS_REVIEW | LLM-Fehler -> NEEDS_REVIEW mit OCR-Text | Niedrige Konfidenz -> NEEDS_REVIEW mit allen Daten | Erfolg -> COMPLETED.
+- **FTS5 Standalone-Tabelle:** Eigene FTS5-Tabelle mit `doc_id` statt content-sync (zuverlaessiger mit async SQLAlchemy). Index wird bei Archivierung aktualisiert.
+- **Tag-Zuweisung via Junction-Table:** Tags werden ueber DocumentTag-Eintraege zugewiesen (nicht ueber Relationship-Assignment), um MissingGreenlet in async-Kontext zu vermeiden.
+- **Frontend: TailwindCSS:** Utility-first CSS ohne Component-Library-Overhead. Custom `btn`, `input`, `badge`, `card` Klassen.
 
 ## Wichtige Datenmodelle
 
-- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text` (extrahierter Text), `ocr_confidence` (0.0-1.0), `analysis_result` (JSON mit Typ, Metadaten, Steuer, Garantie)
-- `Document` - Kerntabelle mit allen KI-extrahierten Metadaten + OCR-Text
-- `Tag` / `DocumentTag` - Schlagwort-System (automatisch + manuell)
-- `WarrantyInfo` - Garantie-Informationen zu Kaufbelegen
-- `ReviewQuestion` - KI-Rueckfragen bei unklaren Dokumenten
-- `Notification` - Benachrichtigungen (Garantie-Ablauf etc.)
-- `SavedSearch` - Gespeicherte Suchanfragen
-- `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen
-- `AuditLog` - Aenderungsprotokoll
+- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON)
+- `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status. Relationships: tags, warranty_info, review_questions (alle lazy="selectin")
+- `Tag` / `DocumentTag` - Schlagwort-System (automatisch + manuell), Many-to-Many ueber Junction-Table
+- `WarrantyInfo` - Garantie-Informationen: Produkt, Kaufdatum, Ablaufdatum, Typ (LEGAL/MANUFACTURER/EXTENDED), Haendler
+- `ReviewQuestion` - KI-Rueckfragen: Frage, Antwort, Feld, beantwortet-Status
+- `AuditLog` - Aenderungsprotokoll (CREATED/UPDATED/DELETED/EXPORTED/TAG_ADDED/TAG_REMOVED/REVIEWED)
+- `SavedSearch` - Gespeicherte Suchanfragen (Name + JSON-Parameter)
+- `documents_fts` - FTS5 Virtual Table (title, ocr_text, issuer, summary, tags)
+- `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, PROCESSING_DONE, SYSTEM)
+- `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen (auto_apply nach 3x gleicher Korrektur)
 
 ## Dokumenttypen (Enum)
 
@@ -110,8 +151,12 @@ Dokument-Eingang (Upload oder Watch-Ordner)
      3. Fallback: Minimal-Ergebnis mit needs_review=True
   -> Ergebnisse in ProcessingJob speichern (ocr_text, ocr_confidence, analysis_result)
   -> Konfidenz-Check gegen CONFIDENCE_THRESHOLD (0.7)
+  -> Archivierung:
+     - SHA-256 Hash berechnen + Duplikat-Check
+     - Datei nach archive/{jahr}/{monat}/{typ}/ verschieben
+     - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
+     - FTS5-Index aktualisieren
   -> Status: COMPLETED | NEEDS_REVIEW (+ review_questions) | FAILED
-  -> [Prompt 04] Archivierung (Datei verschieben, Document-Eintrag, Tags)
 ```
 
 ## Konventionen
@@ -156,10 +201,24 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Prompt 01 - Projekt-Setup (FastAPI, SQLAlchemy, Docker, Config)
 - [x] Prompt 02 - Dokumenten-Import (Upload, Watch-Ordner, Queue-Worker, Thumbnails)
 - [x] Prompt 03 - KI-Dokumentenanalyse (OCR via pdfplumber/Tesseract, LLM via Ollama, Wasserfall-Degradation)
-- [ ] Prompt 04 - Datenmodell und Archiv-Datenbank
+- [x] Prompt 04 - Datenmodell und Archiv-Datenbank (Document-Modell, Archive-Service, CRUD-API, Tags, Review, Dashboard-Stats)
+- [x] Prompt 05 - Web-Oberflaeche (Vue.js 3, TailwindCSS, Dashboard, Dokumentenliste, Detail, Upload, Review)
+- [x] Prompt 06 - Such- und Filtersystem (FTS5, Facetten, Autocomplete, Gespeicherte Suchen)
+- [x] Prompt 07 - Steuerpaket-Export (ZIP + PDF via reportlab + CSV, Kategorien, Validierung)
+- [x] Prompt 08 - Garantie-Tracker (Notification-Modell, Reminder-Service, Dashboard, Benachrichtigungsglocke)
+- [x] Prompt 09 - Smartphone-Integration (PWA via vite-plugin-pwa, Kamera-Scan, BottomNav)
+- [x] Prompt 10 - Installation und Deployment (Backup-Service, System-Health, Wartung)
+- [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
 
 ### Alembic-Migrationen
-- `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob (ocr_text, ocr_confidence, analysis_result)
+- `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
+- `002_add_documents` - Document, Tags, DocumentTags, WarrantyInfo, ReviewQuestions, AuditLog Tabellen
+- `003_add_fts5_saved` - FTS5 Virtual Table + SavedSearch Tabelle
+- `004_notifications_corrections` - Notification, CorrectionMapping Tabellen + ReviewQuestion-Erweiterungen
+
+### Tests
+- 160 Tests gesamt (1 skipped fuer Tesseract)
+- Backend: API-Tests (documents, upload, jobs, search, tax, warranties, notifications, review, system), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
 
 ## Planungsdokumente
 

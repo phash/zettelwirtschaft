@@ -7,8 +7,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.documents import router as documents_router
+from app.api.filing_scopes import router as filing_scopes_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
+from app.api.notifications import router as notifications_router
+from app.api.review import router as review_router
+from app.api.search import router as search_router
+from app.api.system import router as system_router
+from app.api.tax import router as tax_router
+from app.api.warranties import router as warranties_router
 from app.config import get_settings
 from app.database import async_session_factory, init_db
 
@@ -38,6 +45,13 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Datenbank initialisiert")
 
+    # FTS5-Index sicherstellen
+    from app.services.search_service import ensure_fts_table
+
+    async with async_session_factory() as session:
+        await ensure_fts_table(session)
+    logger.info("FTS5-Index bereit")
+
     # Background-Tasks starten
     background_tasks: list[asyncio.Task] = []
 
@@ -56,6 +70,22 @@ async def lifespan(app: FastAPI):
         run_watch_folder(async_session_factory, settings)
     )
     background_tasks.append(watch_task)
+
+    # Garantie-Reminder
+    from app.services.warranty_reminder_service import run_warranty_reminder
+
+    reminder_task = asyncio.create_task(
+        run_warranty_reminder(async_session_factory, settings)
+    )
+    background_tasks.append(reminder_task)
+
+    # Auto-Backup
+    from app.services.backup_service import run_auto_backup
+
+    backup_task = asyncio.create_task(
+        run_auto_backup(async_session_factory, settings)
+    )
+    background_tasks.append(backup_task)
 
     yield
 
@@ -82,5 +112,12 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix="/api")
+app.include_router(filing_scopes_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
+app.include_router(tax_router, prefix="/api")
+app.include_router(warranties_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(review_router, prefix="/api")
+app.include_router(system_router, prefix="/api")

@@ -11,6 +11,12 @@ services:
       ollama:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   ollama:
     image: ollama/ollama:latest
@@ -25,11 +31,12 @@ services:
       start_period: 10s
 
   frontend:
-    image: nginx:alpine
+    build: ./frontend
     ports:
       - "80:80"
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

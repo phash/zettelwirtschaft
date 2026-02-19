@@ -12,3 +12,4 @@ Pillow==11.*
 pdf2image==1.17.*
 pytesseract==0.3.*
 pdfplumber==0.11.*
+reportlab==4.2.*

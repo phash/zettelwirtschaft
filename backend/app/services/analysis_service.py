@@ -47,6 +47,8 @@ class AnalysisResult:
     warranty_info: dict | None = None
     needs_review: bool = False
     review_questions: list[str] = field(default_factory=list)
+    filing_scope: str | None = None
+    filing_scope_confidence: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +69,8 @@ class AnalysisResult:
             "warranty_info": self.warranty_info,
             "needs_review": self.needs_review,
             "review_questions": self.review_questions,
+            "filing_scope": self.filing_scope,
+            "filing_scope_confidence": self.filing_scope_confidence,
         }
 
 
@@ -141,12 +145,27 @@ def _build_result_from_combined(data: dict, confidence_threshold: float) -> Anal
         warranty_info=data.get("warranty_info"),
         needs_review=needs_review,
         review_questions=review_questions,
+        filing_scope=data.get("filing_scope"),
+        filing_scope_confidence=float(data.get("filing_scope_confidence", 0.0)),
     )
+
+
+def _format_filing_scopes(filing_scopes: list[dict] | None) -> str:
+    """Formatiert die Ablagebereiche fuer den LLM-Prompt."""
+    if not filing_scopes:
+        return "Keine Ablagebereiche konfiguriert."
+    lines = ["Verfuegbare Ablagebereiche:"]
+    for scope in filing_scopes:
+        keywords = scope.get("keywords", [])
+        kw_str = f" (Schluesselwoerter: {', '.join(keywords)})" if keywords else ""
+        lines.append(f"  - \"{scope['name']}\"{kw_str}")
+    return "\n".join(lines)
 
 
 async def _try_combined_analysis(
     ocr_text: str,
     settings: Settings,
+    filing_scopes: list[dict] | None = None,
 ) -> AnalysisResult | None:
     """Versucht die kombinierte Analyse mit einem einzigen LLM-Aufruf."""
     try:
@@ -156,6 +175,7 @@ async def _try_combined_analysis(
         return None
 
     prompt = template.replace("{ocr_text}", ocr_text)
+    prompt = prompt.replace("{filing_scopes}", _format_filing_scopes(filing_scopes))
     raw_response = await call_llm(prompt, settings)
     if not raw_response:
         return None
@@ -247,6 +267,7 @@ async def analyze_document(
     file_path: Path,
     file_type: str,
     settings: Settings,
+    filing_scopes: list[dict] | None = None,
 ) -> tuple[OcrResult | None, AnalysisResult | None]:
     """Fuehrt die vollstaendige Dokumentenanalyse durch.
 
@@ -279,7 +300,7 @@ async def analyze_document(
     )
 
     # 3. Kombinierte Analyse (Primaerstrategie)
-    analysis = await _try_combined_analysis(truncated_text, settings)
+    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes)
     if analysis:
         logger.info(
             "Kombinierte Analyse erfolgreich: Typ=%s, Konfidenz=%.1f%%",

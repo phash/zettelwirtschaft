@@ -27,6 +27,8 @@ Antworte ausschliesslich mit einem JSON-Objekt im folgenden Format:
     "warranty_end_date": "YYYY-MM-DD (berechnetes Garantieende)",
     "store_name": "Name des Geschaefts"
   },
+  "filing_scope": "Name des Ablagebereichs (siehe Regeln unten, sonst null)",
+  "filing_scope_confidence": 0.0 bis 1.0,
   "needs_review": true/false,
   "review_questions": ["Frage 1 an den Benutzer", "Frage 2"]
 }
@@ -38,6 +40,8 @@ Wichtige Regeln:
 - Steuerrelevanz: Handwerker-Rechnungen, Arzt-Rechnungen, Versicherungen und Lohnabrechnungen sind typischerweise steuerrelevant.
 - Tags sollen allgemeine Kategorien sein (z.B. "elektronik", "haushalt", "gesundheit", "auto", "versicherung").
 - Wenn der Text sehr schlecht lesbar ist, setze confidence entsprechend niedrig und needs_review auf true.
+- Ablagebereich (filing_scope): Ordne das Dokument einem der folgenden Ablagebereiche zu. Nutze die Schluesselwoerter zur Zuordnung. Wenn kein Bereich passt oder du unsicher bist, setze filing_scope auf null und filing_scope_confidence auf 0.0.
+{filing_scopes}
 
 OCR-Text des Dokuments:
 ---
