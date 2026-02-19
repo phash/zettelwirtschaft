@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, ReviewStatus, Tag
+from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, ReviewStatus, Tag, TaxCategory
 from app.models.review_question import ReviewQuestion
 from app.models.warranty_info import WarrantyInfo, WarrantyType
 from app.services.analysis_service import AnalysisResult
@@ -73,6 +73,20 @@ def _parse_document_type(type_str: str | None) -> DocumentType:
         return DocumentType.SONSTIGES
 
 
+def _parse_tax_category(category_str: str | None) -> str | None:
+    """Parst die Steuerkategorie. Bei Compound-Werten (z.B. 'A | B') wird der erste genommen."""
+    if not category_str:
+        return None
+    # LLM liefert manchmal compound-Werte wie "Werbungskosten | Aussergewoehnliche_Belastungen"
+    parts = [p.strip() for p in category_str.split("|")]
+    for part in parts:
+        try:
+            return TaxCategory(part).value
+        except ValueError:
+            continue
+    return None
+
+
 async def _get_or_create_tags(
     tag_names: list[str],
     session: AsyncSession,
@@ -98,20 +112,47 @@ async def _get_or_create_tags(
 def _match_filing_scope(
     analysis: AnalysisResult,
     filing_scopes: list[dict],
+    ocr_text: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Bestimmt den Filing Scope aus der LLM-Analyse. Returns (scope_id, scope_slug)."""
-    # 1. Direkt vom LLM zugewiesen
+    """Bestimmt den Filing Scope. Returns (scope_id, scope_slug).
+
+    Prioritaet:
+    1. Keyword-Match im OCR-Text (zuverlaessiger als LLM)
+    2. LLM-Zuweisung (wenn Konfidenz >= 0.7)
+    3. Default-Scope als Fallback
+    """
+    # 1. Keyword-Match im OCR-Text - hat Vorrang
+    if ocr_text:
+        text_lower = ocr_text.lower()
+        best_scope = None
+        best_hits = 0
+        for scope in filing_scopes:
+            keywords = scope.get("keywords", [])
+            if not keywords:
+                continue
+            hits = sum(1 for kw in keywords if kw.lower() in text_lower)
+            if hits > best_hits:
+                best_hits = hits
+                best_scope = scope
+        if best_scope and best_hits > 0:
+            logger.info(
+                "Filing Scope '%s' via Keyword-Match (%d Treffer)",
+                best_scope["name"], best_hits,
+            )
+            return best_scope["id"], best_scope["slug"]
+
+    # 2. LLM-Zuweisung
     if analysis.filing_scope and analysis.filing_scope_confidence >= 0.7:
         for scope in filing_scopes:
             if scope["name"].lower() == analysis.filing_scope.lower():
                 return scope["id"], scope["slug"]
 
-    # 2. Fallback auf Default-Scope
+    # 3. Fallback auf Default-Scope
     for scope in filing_scopes:
         if scope.get("is_default"):
             return scope["id"], scope["slug"]
 
-    # 3. Erster Scope als Fallback
+    # 4. Erster Scope als Fallback
     if filing_scopes:
         return filing_scopes[0]["id"], filing_scopes[0]["slug"]
 
@@ -160,12 +201,14 @@ async def archive_document(
     analysis = analysis_result or AnalysisResult()
     doc_type = _parse_document_type(analysis.document_type)
     doc_date = _parse_document_date(analysis.document_date)
+    tax_category = _parse_tax_category(analysis.tax_category)
 
     # Filing Scope bestimmen
     scope_id = None
     scope_slug = None
+    ocr_text = ocr_result.full_text if ocr_result else None
     if filing_scopes:
-        scope_id, scope_slug = _match_filing_scope(analysis, filing_scopes)
+        scope_id, scope_slug = _match_filing_scope(analysis, filing_scopes, ocr_text=ocr_text)
 
     # Archiv-Pfad bestimmen und Datei verschieben
     archive_path = _build_archive_path(
@@ -202,7 +245,7 @@ async def archive_document(
         ocr_confidence=ocr_result.average_confidence if ocr_result else 0.0,
         tax_relevant=analysis.tax_relevant,
         tax_year=analysis.tax_year,
-        tax_category=analysis.tax_category,
+        tax_category=tax_category,
         filing_scope_id=scope_id,
         status=DocumentStatus.ACTIVE,
         review_status=review_status,

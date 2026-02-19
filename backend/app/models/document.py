@@ -97,7 +97,8 @@ class Document(Base):
     tax_relevant: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     tax_year: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     tax_category: Mapped[str | None] = mapped_column(
-        Enum(TaxCategory, native_enum=False), nullable=True
+        Enum(TaxCategory, native_enum=False, values_callable=lambda e: [m.value for m in e]),
+        nullable=True,
     )
 
     # Ablagebereich
