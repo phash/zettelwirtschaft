@@ -17,16 +17,22 @@ router = APIRouter()
 async def list_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    status: JobStatus | None = None,
+    status: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedJobsResponse:
-    """Liste aller Verarbeitungsjobs mit Paginierung und optionalem Status-Filter."""
+    """Liste aller Verarbeitungsjobs mit Paginierung und optionalem Status-Filter.
+
+    Status kann ein einzelner Wert oder kommagetrennte Liste sein (z.B. 'PROCESSING,PENDING').
+    """
     query = select(ProcessingJob)
     count_query = select(func.count(ProcessingJob.id))
 
     if status is not None:
-        query = query.where(ProcessingJob.status == status)
-        count_query = count_query.where(ProcessingJob.status == status)
+        status_values = [s.strip() for s in status.split(",")]
+        valid_statuses = [JobStatus(s) for s in status_values if s in JobStatus.__members__]
+        if valid_statuses:
+            query = query.where(ProcessingJob.status.in_(valid_statuses))
+            count_query = count_query.where(ProcessingJob.status.in_(valid_statuses))
 
     # Total zaehlen
     total_result = await db.execute(count_query)
