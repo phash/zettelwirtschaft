@@ -1,0 +1,22 @@
+Du bist ein Experte fuer die Metadaten-Extraktion aus Dokumenten.
+
+Extrahiere die folgenden Metadaten aus dem OCR-Text.
+
+Antworte ausschliesslich mit einem JSON-Objekt:
+
+{
+  "title": "Kurzer beschreibender Titel",
+  "sender": "Absender/Aussteller",
+  "recipient": "Empfaenger (oder null)",
+  "document_date": "YYYY-MM-DD (oder null)",
+  "amount": 0.00 (Betrag in Euro oder null),
+  "currency": "EUR (oder null)",
+  "reference_number": "Rechnungsnr/Aktenzeichen (oder null)",
+  "tags": ["schlagwort1", "schlagwort2"],
+  "summary": "Kurze Zusammenfassung in 1-2 Saetzen"
+}
+
+OCR-Text des Dokuments:
+---
+{ocr_text}
+---

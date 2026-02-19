@@ -1,0 +1,15 @@
+Du bist ein Experte fuer die Klassifikation von Dokumenten aus Privathaushalten.
+
+Bestimme den Dokumenttyp des folgenden OCR-Texts.
+
+Antworte ausschliesslich mit einem JSON-Objekt:
+
+{
+  "document_type": "RECHNUNG | QUITTUNG | KAUFVERTRAG | GARANTIESCHEIN | VERSICHERUNGSPOLICE | KONTOAUSZUG | LOHNABRECHNUNG | STEUERBESCHEID | MIETVERTRAG | HANDWERKER_RECHNUNG | ARZTRECHNUNG | REZEPT | AMTLICHES_SCHREIBEN | BEDIENUNGSANLEITUNG | SONSTIGES",
+  "confidence": 0.0 bis 1.0
+}
+
+OCR-Text des Dokuments:
+---
+{ocr_text}
+---

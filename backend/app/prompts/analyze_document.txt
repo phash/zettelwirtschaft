@@ -1,0 +1,45 @@
+Du bist ein Experte fuer die Analyse von Dokumenten aus Privathaushalten (Rechnungen, Belege, Vertraege, amtliche Schreiben etc.).
+
+Analysiere den folgenden OCR-Text eines gescannten Dokuments und extrahiere alle relevanten Informationen.
+
+Antworte ausschliesslich mit einem JSON-Objekt im folgenden Format:
+
+{
+  "document_type": "RECHNUNG | QUITTUNG | KAUFVERTRAG | GARANTIESCHEIN | VERSICHERUNGSPOLICE | KONTOAUSZUG | LOHNABRECHNUNG | STEUERBESCHEID | MIETVERTRAG | HANDWERKER_RECHNUNG | ARZTRECHNUNG | REZEPT | AMTLICHES_SCHREIBEN | BEDIENUNGSANLEITUNG | SONSTIGES",
+  "confidence": 0.0 bis 1.0,
+  "title": "Kurzer beschreibender Titel des Dokuments",
+  "sender": "Name des Absenders/Ausstellers",
+  "recipient": "Name des Empfaengers (falls erkennbar)",
+  "document_date": "YYYY-MM-DD (Datum des Dokuments, falls erkennbar, sonst null)",
+  "amount": 0.00 (Gesamtbetrag in Euro, falls vorhanden, sonst null),
+  "currency": "EUR (Waehrung, falls erkennbar, sonst null)",
+  "reference_number": "Rechnungsnummer/Aktenzeichen/Referenz (falls vorhanden, sonst null)",
+  "tags": ["schlagwort1", "schlagwort2"],
+  "summary": "Kurze Zusammenfassung des Dokumentinhalts in 1-2 Saetzen",
+  "tax_relevant": true/false,
+  "tax_category": "Werbungskosten | Sonderausgaben | Aussergewoehnliche_Belastungen | Handwerkerleistungen | Haushaltsnahe_Dienstleistungen | Vorsorgeaufwendungen | Keine (nur wenn tax_relevant=true, sonst null)",
+  "tax_year": 2024 (Steuerjahr, nur wenn tax_relevant=true, sonst null),
+  "warranty_info": {
+    "has_warranty": true/false,
+    "product_name": "Produktname (falls Kaufbeleg)",
+    "purchase_date": "YYYY-MM-DD (Kaufdatum)",
+    "warranty_duration_months": 24 (Garantiedauer in Monaten),
+    "warranty_end_date": "YYYY-MM-DD (berechnetes Garantieende)",
+    "store_name": "Name des Geschaefts"
+  },
+  "needs_review": true/false,
+  "review_questions": ["Frage 1 an den Benutzer", "Frage 2"]
+}
+
+Wichtige Regeln:
+- Setze "needs_review" auf true, wenn du dir bei wichtigen Feldern unsicher bist (confidence < 0.7).
+- Formuliere "review_questions" als konkrete Fragen an den Benutzer, z.B. "Ist der Absender 'Firma XYZ GmbH' korrekt?"
+- Bei Kaufbelegen (RECHNUNG, QUITTUNG, KAUFVERTRAG): Pruefe immer auf Garantie-Informationen.
+- Steuerrelevanz: Handwerker-Rechnungen, Arzt-Rechnungen, Versicherungen und Lohnabrechnungen sind typischerweise steuerrelevant.
+- Tags sollen allgemeine Kategorien sein (z.B. "elektronik", "haushalt", "gesundheit", "auto", "versicherung").
+- Wenn der Text sehr schlecht lesbar ist, setze confidence entsprechend niedrig und needs_review auf true.
+
+OCR-Text des Dokuments:
+---
+{ocr_text}
+---

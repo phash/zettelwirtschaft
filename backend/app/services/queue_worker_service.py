@@ -1,0 +1,119 @@
+import asyncio
+import json
+import logging
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.config import Settings
+from app.models.processing_job import JobStatus, ProcessingJob
+from app.services.analysis_service import analyze_document
+from app.services.thumbnail_service import generate_thumbnail
+
+logger = logging.getLogger("zettelwirtschaft.queue_worker")
+
+
+async def _process_job(
+    job: ProcessingJob,
+    settings: Settings,
+    session: AsyncSession,
+) -> None:
+    """Verarbeitet einen einzelnen Job: Thumbnail + OCR + KI-Analyse."""
+    file_path = Path(job.file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"Datei nicht gefunden: {file_path}")
+
+    # Thumbnail generieren
+    await generate_thumbnail(file_path, job.file_type, job.id, settings)
+
+    # OCR + KI-Analyse
+    ocr_result, analysis_result = await analyze_document(file_path, job.file_type, settings)
+
+    # OCR-Ergebnisse speichern
+    if ocr_result:
+        job.ocr_text = ocr_result.full_text
+        job.ocr_confidence = ocr_result.average_confidence
+
+    # Analyse-Ergebnisse speichern
+    if analysis_result:
+        job.analysis_result = json.dumps(analysis_result.to_dict(), ensure_ascii=False)
+
+        if analysis_result.needs_review:
+            job.status = JobStatus.NEEDS_REVIEW
+            logger.info(
+                "Job %s benoetigt Review (Konfidenz: %.1f%%)",
+                job.id,
+                analysis_result.confidence * 100,
+            )
+
+    await session.commit()
+    logger.info("Job %s verarbeitet (OCR + Analyse abgeschlossen)", job.id)
+
+
+async def run_queue_worker(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> None:
+    """Endlos-Loop: Pollt nach PENDING-Jobs und verarbeitet sie."""
+    logger.info("Queue-Worker gestartet (Poll-Intervall: %ds)", settings.QUEUE_POLL_INTERVAL)
+
+    while True:
+        try:
+            async with session_factory() as session:
+                # Naechsten PENDING-Job holen
+                result = await session.execute(
+                    select(ProcessingJob)
+                    .where(ProcessingJob.status == JobStatus.PENDING)
+                    .order_by(ProcessingJob.created_at.asc())
+                    .limit(1)
+                )
+                job = result.scalar_one_or_none()
+
+                if job is None:
+                    await asyncio.sleep(settings.QUEUE_POLL_INTERVAL)
+                    continue
+
+                # Status auf PROCESSING setzen
+                job.status = JobStatus.PROCESSING
+                await session.commit()
+                logger.info("Verarbeite Job %s: %s", job.id, job.original_filename)
+
+                try:
+                    await _process_job(job, settings, session)
+                    # Nur auf COMPLETED setzen wenn noch PROCESSING
+                    # (_process_job kann NEEDS_REVIEW gesetzt haben)
+                    if job.status == JobStatus.PROCESSING:
+                        job.status = JobStatus.COMPLETED
+                    await session.commit()
+                    logger.info("Job %s abgeschlossen (Status: %s)", job.id, job.status)
+
+                except Exception as e:
+                    job.retry_count += 1
+                    if job.retry_count >= settings.MAX_RETRIES:
+                        job.status = JobStatus.FAILED
+                        job.error_message = str(e)
+                        logger.error(
+                            "Job %s endgueltig fehlgeschlagen nach %d Versuchen: %s",
+                            job.id,
+                            job.retry_count,
+                            e,
+                        )
+                    else:
+                        job.status = JobStatus.PENDING
+                        job.error_message = str(e)
+                        logger.warning(
+                            "Job %s fehlgeschlagen (Versuch %d/%d): %s",
+                            job.id,
+                            job.retry_count,
+                            settings.MAX_RETRIES,
+                            e,
+                        )
+                    await session.commit()
+
+        except asyncio.CancelledError:
+            logger.info("Queue-Worker wird beendet")
+            return
+        except Exception:
+            logger.exception("Unerwarteter Fehler im Queue-Worker")
+            await asyncio.sleep(settings.QUEUE_POLL_INTERVAL)

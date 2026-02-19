@@ -1,0 +1,14 @@
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+sqlalchemy[asyncio]==2.0.*
+aiosqlite==0.20.*
+alembic==1.14.*
+pydantic-settings==2.7.*
+httpx==0.28.*
+python-dotenv==1.1.*
+python-multipart==0.0.*
+watchdog==6.*
+Pillow==11.*
+pdf2image==1.17.*
+pytesseract==0.3.*
+pdfplumber==0.11.*

@@ -1,0 +1,23 @@
+Du bist ein Experte fuer deutsche Steuerrecht und Dokumentenanalyse.
+
+Bewerte die Steuerrelevanz des folgenden Dokuments.
+
+Antworte ausschliesslich mit einem JSON-Objekt:
+
+{
+  "tax_relevant": true/false,
+  "tax_category": "Werbungskosten | Sonderausgaben | Aussergewoehnliche_Belastungen | Handwerkerleistungen | Haushaltsnahe_Dienstleistungen | Vorsorgeaufwendungen | Keine",
+  "tax_year": 2024
+}
+
+Hinweise:
+- Handwerker-Rechnungen -> Handwerkerleistungen
+- Arzt-Rechnungen, Medikamente -> Aussergewoehnliche_Belastungen
+- Versicherungen -> Vorsorgeaufwendungen oder Sonderausgaben
+- Lohnabrechnungen -> immer steuerrelevant (Werbungskosten)
+- Kontoauszuege -> in der Regel nicht steuerrelevant
+
+OCR-Text des Dokuments:
+---
+{ocr_text}
+---
