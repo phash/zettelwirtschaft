@@ -24,6 +24,7 @@ env/
 
 # Data directories
 data/
+testdaten/
 
 # Testing
 .pytest_cache/
