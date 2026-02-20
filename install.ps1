@@ -309,18 +309,22 @@ if (-not (Test-Path $dataDir)) {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 }
 
-# docker-compose.override.yml fuer GPU-Konfiguration (falls keine NVIDIA GPU)
-if (-not $hasNvidiaGPU) {
+# docker-compose.override.yml fuer GPU-Konfiguration (nur bei NVIDIA GPU)
+if ($hasNvidiaGPU) {
     $overrideContent = @"
-# Automatisch generiert: GPU-Reservierung deaktiviert (keine NVIDIA GPU erkannt)
+# Automatisch generiert: GPU-Beschleunigung fuer Ollama aktiviert
 services:
   ollama:
     deploy:
       resources:
-        reservations: {}
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 "@
     Set-Content -Path (Join-Path $ProjectDir "docker-compose.override.yml") -Value $overrideContent -Encoding UTF8
-    Write-OK "docker-compose.override.yml erstellt (GPU deaktiviert)."
+    Write-OK "docker-compose.override.yml erstellt (GPU aktiviert)."
 }
 
 Write-Host ""
