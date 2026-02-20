@@ -8,7 +8,18 @@ const api = axios.create({
 // Response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    if (error.response?.status === 401) {
+      const { useAuthStore } = await import('../stores/auth')
+      const auth = useAuthStore()
+      auth.reset()
+      const { default: router } = await import('../router/index')
+      const currentPath = router.currentRoute.value.fullPath
+      if (currentPath !== '/pin') {
+        router.replace({ name: 'pin-login', query: { redirect: currentPath } })
+      }
+      return Promise.reject(error)
+    }
     const message = error.response?.data?.detail || error.message || 'Ein Fehler ist aufgetreten'
     console.error('API-Fehler:', message)
     return Promise.reject(error)

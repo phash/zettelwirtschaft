@@ -5,7 +5,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
+from app.api.auth import router as auth_router, is_session_valid, SESSION_COOKIE
 from app.api.documents import router as documents_router
 from app.api.filing_scopes import router as filing_scopes_router
 from app.api.health import router as health_router
@@ -103,6 +106,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+class PinAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        settings_provider = request.app.dependency_overrides.get(get_settings, get_settings)
+        settings = settings_provider()
+        if not settings.PIN_ENABLED:
+            return await call_next(request)
+
+        path = request.url.path
+        if (
+            path.startswith("/api/health")
+            or path.startswith("/api/auth")
+        ):
+            return await call_next(request)
+
+        token = request.cookies.get(SESSION_COOKIE)
+        if not is_session_valid(token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Nicht authentifiziert"},
+            )
+
+        return await call_next(request)
+
+
+app.add_middleware(PinAuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -111,6 +140,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(filing_scopes_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")

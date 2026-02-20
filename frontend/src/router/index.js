@@ -1,6 +1,13 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
 
 const routes = [
+  {
+    path: '/pin',
+    name: 'pin-login',
+    component: () => import('../views/PinLoginView.vue'),
+    meta: { public: true },
+  },
   {
     path: '/',
     name: 'dashboard',
@@ -57,6 +64,25 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+let authChecked = false
+
+router.beforeEach(async (to) => {
+  const auth = useAuthStore()
+
+  if (!authChecked) {
+    await auth.checkStatus()
+    authChecked = true
+  }
+
+  if (to.meta.public) return true
+
+  if (auth.pinEnabled && !auth.isAuthenticated) {
+    return { name: 'pin-login', query: { redirect: to.fullPath } }
+  }
+
+  return true
 })
 
 export default router

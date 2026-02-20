@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     LOG_LEVEL: str = "INFO"
 
+    PIN_ENABLED: bool = False
+    PIN_CODE: str = ""
+    PIN_SESSION_TIMEOUT_MINUTES: int = 1440
+
     @property
     def allowed_file_types_list(self) -> list[str]:
         return [ft.strip() for ft in self.ALLOWED_FILE_TYPES.split(",")]

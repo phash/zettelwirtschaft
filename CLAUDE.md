@@ -42,6 +42,7 @@ zettelwirtschaft/
         warranty.py              # WarrantyListItem, WarrantyUpdate, WarrantyStats
         notification.py          # NotificationResponse, NotificationCount
       api/
+        auth.py                  # PIN-Login, Session-Status, Logout (in-memory Sessions)
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
         filing_scopes.py         # Ablagebereich-CRUD (Privat, Praxis etc.)
         search.py                # Volltextsuche + Autocomplete + SavedSearch
@@ -78,6 +79,7 @@ zettelwirtschaft/
         layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
         common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
       views/
+        PinLoginView.vue         # PIN-Eingabe bei aktiviertem PIN-Schutz
         DashboardView.vue        # Statistik-Karten, letzte Dokumente, Quick-Upload
         DocumentsView.vue        # Tabellarische Liste mit Filtern und Sortierung
         DocumentDetailView.vue   # Zwei-Spalten-Layout: Vorschau + Metadaten-Formular
@@ -90,7 +92,7 @@ zettelwirtschaft/
         SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
-      stores/                    # Pinia Stores (documents, notifications)
+      stores/                    # Pinia Stores (documents, notifications, auth)
     vite.config.js
     tailwind.config.js
     nginx.conf                   # SPA-Routing + API-Proxy
@@ -113,7 +115,7 @@ zettelwirtschaft/
 ## Architektur-Entscheidungen
 
 - **Kein externer Message-Broker:** Verarbeitungs-Queue ist datenbankbasiert (SQLite). Kein Redis/RabbitMQ noetig.
-- **Kein Authentifizierungssystem:** Privates LAN, optional PIN-Schutz.
+- **Optionaler PIN-Schutz:** `PIN_ENABLED=true` + `PIN_CODE=xxxx` in `.env`. Sessions in-memory (dict), kein DB-Schema. Middleware in `main.py` prueft Cookie, Whitelist: `/api/health`, `/api/auth/*`. Frontend: Router-Guard + 401-Interceptor redirecten zu `/pin`.
 - **SQLite FTS5** fuer Volltextsuche statt Elasticsearch.
 - **LLM-Prompts als Textdateien** unter `backend/app/prompts/`, nicht hardcoded.
 - **Synchrone Verarbeitung:** Ein Dokument gleichzeitig (Heim-Hardware).
@@ -232,6 +234,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
 - [x] Windows-Installer - install.bat/ps1 (interaktiver Assistent), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
 - [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
+- [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
 
 ### Alembic-Migrationen
 - `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
@@ -241,8 +244,8 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `005_add_filing_scopes` - FilingScope-Tabelle + filing_scope_id auf Documents + Default-Scopes
 
 ### Tests
-- 175 Tests gesamt (1 skipped fuer Tesseract)
-- Backend: API-Tests (documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
+- 185 Tests gesamt (1 skipped fuer Tesseract)
+- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
 
 ## Planungsdokumente
 

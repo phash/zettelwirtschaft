@@ -224,6 +224,31 @@ $modelInput = Read-Host "  LLM-Modell (Standard: $defaultModel)"
 if ([string]::IsNullOrWhiteSpace($modelInput)) { $model = $defaultModel } else { $model = $modelInput }
 Write-OK "LLM-Modell: $model"
 
+# PIN-Schutz
+$pinEnabled = $false
+$pinCode = ""
+$enablePin = Read-Host "  PIN-Schutz aktivieren? Schuetzt die Weboberflaeche mit einer PIN (j/n, Standard: n)"
+if ($enablePin -eq "j") {
+    do {
+        $pin1 = Read-Host "  PIN eingeben (mind. 4 Zeichen)" -AsSecureString
+        $pin1Plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pin1))
+        if ($pin1Plain.Length -lt 4) {
+            Write-Warn "PIN muss mindestens 4 Zeichen lang sein."
+            continue
+        }
+        $pin2 = Read-Host "  PIN bestaetigen" -AsSecureString
+        $pin2Plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pin2))
+        if ($pin1Plain -ne $pin2Plain) {
+            Write-Warn "PINs stimmen nicht ueberein. Bitte erneut eingeben."
+            continue
+        }
+        $pinEnabled = $true
+        $pinCode = $pin1Plain
+        Write-OK "PIN-Schutz wird aktiviert."
+        break
+    } while ($true)
+}
+
 Write-Host ""
 
 # =============================================
@@ -250,6 +275,12 @@ ARCHIVE_DIR=./data/archive
 if ($watchDir) {
     # Fuer Docker muss der Pfad relativ oder als Volume sein
     $envContent += "`nWATCH_DIR=./data/watch"
+}
+
+if ($pinEnabled) {
+    $envContent += "`n`n# PIN-Schutz"
+    $envContent += "`nPIN_ENABLED=true"
+    $envContent += "`nPIN_CODE=$pinCode"
 }
 
 $envContent += @"
