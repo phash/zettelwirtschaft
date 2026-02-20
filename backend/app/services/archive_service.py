@@ -113,13 +113,14 @@ def _match_filing_scope(
     analysis: AnalysisResult,
     filing_scopes: list[dict],
     ocr_text: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Bestimmt den Filing Scope. Returns (scope_id, scope_slug).
+) -> tuple[str | None, str | None, str | None]:
+    """Bestimmt den Filing Scope. Returns (scope_id, scope_slug, new_scope_suggestion).
 
     Prioritaet:
     1. Keyword-Match im OCR-Text (zuverlaessiger als LLM)
-    2. LLM-Zuweisung (wenn Konfidenz >= 0.7)
-    3. Default-Scope als Fallback
+    2. LLM-Zuweisung (wenn Konfidenz >= 0.7 und Scope existiert)
+    3. LLM-Vorschlag fuer neuen Scope (wenn Name unbekannt)
+    4. Default-Scope als Fallback
     """
     # 1. Keyword-Match im OCR-Text - hat Vorrang
     if ocr_text:
@@ -139,24 +140,35 @@ def _match_filing_scope(
                 "Filing Scope '%s' via Keyword-Match (%d Treffer)",
                 best_scope["name"], best_hits,
             )
-            return best_scope["id"], best_scope["slug"]
+            return best_scope["id"], best_scope["slug"], None
 
-    # 2. LLM-Zuweisung
+    # 2. LLM-Zuweisung (bekannter Scope)
     if analysis.filing_scope and analysis.filing_scope_confidence >= 0.7:
         for scope in filing_scopes:
             if scope["name"].lower() == analysis.filing_scope.lower():
-                return scope["id"], scope["slug"]
+                return scope["id"], scope["slug"], None
 
-    # 3. Fallback auf Default-Scope
+    # 3. LLM-Vorschlag fuer neuen Scope (Name unbekannt)
+    new_scope_suggestion = None
+    if analysis.filing_scope and analysis.filing_scope_confidence > 0:
+        known_names = [s["name"].lower() for s in filing_scopes]
+        if analysis.filing_scope.lower() not in known_names:
+            new_scope_suggestion = analysis.filing_scope
+            logger.info(
+                "LLM schlaegt neuen Ablagebereich vor: '%s' (Konfidenz: %.0f%%)",
+                new_scope_suggestion, analysis.filing_scope_confidence * 100,
+            )
+
+    # 4. Fallback auf Default-Scope
     for scope in filing_scopes:
         if scope.get("is_default"):
-            return scope["id"], scope["slug"]
+            return scope["id"], scope["slug"], new_scope_suggestion
 
-    # 4. Erster Scope als Fallback
+    # 5. Erster Scope als Fallback
     if filing_scopes:
-        return filing_scopes[0]["id"], filing_scopes[0]["slug"]
+        return filing_scopes[0]["id"], filing_scopes[0]["slug"], new_scope_suggestion
 
-    return None, None
+    return None, None, new_scope_suggestion
 
 
 async def check_duplicate(file_path: Path, session: AsyncSession) -> Document | None:
@@ -206,9 +218,10 @@ async def archive_document(
     # Filing Scope bestimmen
     scope_id = None
     scope_slug = None
+    new_scope_suggestion = None
     ocr_text = ocr_result.full_text if ocr_result else None
     if filing_scopes:
-        scope_id, scope_slug = _match_filing_scope(analysis, filing_scopes, ocr_text=ocr_text)
+        scope_id, scope_slug, new_scope_suggestion = _match_filing_scope(analysis, filing_scopes, ocr_text=ocr_text)
 
     # Archiv-Pfad bestimmen und Datei verschieben
     archive_path = _build_archive_path(
@@ -287,17 +300,30 @@ async def archive_document(
             )
             session.add(question)
 
-    # Review-Frage bei unsicherer Scope-Zuordnung
-    if filing_scopes and analysis.filing_scope_confidence < 0.7:
+    # Review-Frage bei unsicherer Scope-Zuordnung oder neuem Scope-Vorschlag
+    if filing_scopes and (new_scope_suggestion or analysis.filing_scope_confidence < 0.7):
         scope_names = [s["name"] for s in filing_scopes]
-        scope_question = ReviewQuestion(
-            document_id=document.id,
-            question="Zu welchem Ablagebereich gehoert dieses Dokument?",
-            question_type="classification",
-            field_affected="filing_scope",
-            suggested_answers="|".join(scope_names),
-            priority=5,
-        )
+        if new_scope_suggestion:
+            # Neuen Vorschlag als erste Option mit "NEU: " Prefix
+            suggested = [f"NEU: {new_scope_suggestion}"] + scope_names
+            scope_question = ReviewQuestion(
+                document_id=document.id,
+                question=f"Die KI schlaegt einen neuen Ablagebereich '{new_scope_suggestion}' vor. Soll dieser erstellt werden?",
+                question_type="classification",
+                field_affected="filing_scope",
+                suggested_answers="|".join(suggested),
+                explanation=f"Das Dokument passt zu keinem bestehenden Ablagebereich. Vorschlag: '{new_scope_suggestion}'",
+                priority=8,
+            )
+        else:
+            scope_question = ReviewQuestion(
+                document_id=document.id,
+                question="Zu welchem Ablagebereich gehoert dieses Dokument?",
+                question_type="classification",
+                field_affected="filing_scope",
+                suggested_answers="|".join(scope_names),
+                priority=5,
+            )
         session.add(scope_question)
         if not analysis.needs_review:
             document.review_status = ReviewStatus.NEEDS_REVIEW

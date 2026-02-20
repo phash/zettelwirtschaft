@@ -247,7 +247,7 @@ async def download_document_file(
     document_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
-    """Gibt die Originaldatei eines Dokuments zurueck."""
+    """Gibt die Originaldatei eines Dokuments zurueck (inline fuer Vorschau)."""
     result = await db.execute(
         select(Document).where(Document.id == document_id)
     )
@@ -259,10 +259,26 @@ async def download_document_file(
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Datei nicht gefunden")
 
+    # MIME-Typ anhand Dateiendung bestimmen fuer inline-Vorschau
+    mime_types = {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "tiff": "image/tiff",
+        "tif": "image/tiff",
+        "bmp": "image/bmp",
+    }
+    ext = file_path.suffix.lower().lstrip(".")
+    media_type = mime_types.get(ext, "application/octet-stream")
+
     return FileResponse(
         path=file_path,
         filename=document.original_filename,
-        media_type="application/octet-stream",
+        media_type=media_type,
+        content_disposition_type="inline",
     )
 
 

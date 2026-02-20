@@ -241,10 +241,17 @@ onMounted(loadReviewDocs)
                     @click="answers[q.id] = suggestion.trim()"
                     :class="[
                       'badge cursor-pointer transition-colors',
-                      answers[q.id] === suggestion.trim() ? 'bg-primary-100 text-primary-700 ring-1 ring-primary-300' : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
+                      answers[q.id] === suggestion.trim()
+                        ? (suggestion.trim().startsWith('NEU: ') ? 'bg-green-100 text-green-700 ring-1 ring-green-400' : 'bg-primary-100 text-primary-700 ring-1 ring-primary-300')
+                        : (suggestion.trim().startsWith('NEU: ') ? 'bg-green-50 text-green-600 hover:bg-green-100 border border-dashed border-green-300' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'),
                     ]"
                   >
-                    {{ suggestion.trim() }}
+                    <span v-if="suggestion.trim().startsWith('NEU: ')" class="inline-flex items-center gap-1">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+                      {{ suggestion.trim().substring(5) }}
+                      <span class="text-xs opacity-70">(neu erstellen)</span>
+                    </span>
+                    <span v-else>{{ suggestion.trim() }}</span>
                   </button>
                 </div>
                 <textarea

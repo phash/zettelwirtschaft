@@ -145,8 +145,24 @@ function Show-Welcome {
     $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 13)
     $pnlContent.Controls.Add($lbl)
 
+    # Reinstall-Erkennung
+    $envExists = Test-Path (Join-Path $script:ProjectDir ".env")
+    $dbExists = Test-Path (Join-Path $script:ProjectDir "data\zettelwirtschaft.db")
+    $isReinstall = $envExists -and $dbExists
+
+    if ($isReinstall) {
+        $hint = New-Object System.Windows.Forms.Label
+        $hint.Location = [System.Drawing.Point]::new(30, 55)
+        $hint.Size = [System.Drawing.Size]::new(560, 40)
+        $hint.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+        $hint.ForeColor = $cOK
+        $hint.Text = "Bestehende Installation erkannt.`nDaten und Konfiguration werden beibehalten."
+        $pnlContent.Controls.Add($hint)
+    }
+
+    $descY = if ($isReinstall) { 100 } else { 60 }
     $desc = New-Object System.Windows.Forms.Label
-    $desc.Location = [System.Drawing.Point]::new(30, 60)
+    $desc.Location = [System.Drawing.Point]::new(30, $descY)
     $desc.Size = [System.Drawing.Size]::new(560, 280)
     $desc.Text = "Zettelwirtschaft ist ein lokales Dokumentenmanagementsystem`nfuer Privathaushalte.`n`nRechnungen, Belege und Dokumente werden per Scanner oder`nSmartphone erfasst, automatisch durch KI analysiert,`nkategorisiert und durchsuchbar archiviert.`n`nFolgende Komponenten werden installiert:`n`n    Backend-Server (Dokumentenverarbeitung + API)`n    Frontend (Weboberflaeche)`n    Ollama (lokale KI fuer Dokumentenanalyse)`n    LLM-Sprachmodell (ca. 2-4 GB Download)`n`nVoraussetzungen:`n    Docker Desktop installiert und gestartet`n    Mindestens 8 GB RAM empfohlen`n    Mindestens 10 GB freier Speicherplatz"
     $pnlContent.Controls.Add($desc)
@@ -372,19 +388,29 @@ function Phase-Config {
     Set-StepStatus 0 "active"
     Log "Erstelle Konfiguration..."
 
-    # .env
-    $env = "# Zettelwirtschaft - Konfiguration`n"
-    $env += "FRONTEND_PORT=$($script:Config.Port)`n"
-    $env += "OLLAMA_BASE_URL=http://ollama:11434`n"
-    $env += "OLLAMA_MODEL=$($script:Config.Model)`n"
-    $env += "UPLOAD_DIR=./data/uploads`n"
-    $env += "ARCHIVE_DIR=./data/archive`n"
-    if ($script:Config.WatchEnabled) { $env += "WATCH_DIR=./data/watch`n" }
-    if ($script:Config.PinEnabled) { $env += "PIN_ENABLED=true`nPIN_CODE=$($script:Config.PinCode)`n" }
-    $env += "OCR_LANGUAGES=deu+eng`n"
-    $env += "LOG_LEVEL=INFO`n"
-    [System.IO.File]::WriteAllText((Join-Path $script:ProjectDir ".env"), $env)
-    Log "  .env erstellt"
+    # Reinstall-Erkennung: .env und Datenbank vorhanden?
+    $envPath = Join-Path $script:ProjectDir ".env"
+    $dbPath = Join-Path $script:ProjectDir "data\zettelwirtschaft.db"
+    $isReinstall = (Test-Path $envPath) -and (Test-Path $dbPath)
+
+    if ($isReinstall) {
+        Log "  Bestehende Installation erkannt - Konfiguration und Daten werden beibehalten."
+        Log "  .env wird nicht ueberschrieben."
+    } else {
+        # .env neu erstellen
+        $env = "# Zettelwirtschaft - Konfiguration`n"
+        $env += "FRONTEND_PORT=$($script:Config.Port)`n"
+        $env += "OLLAMA_BASE_URL=http://ollama:11434`n"
+        $env += "OLLAMA_MODEL=$($script:Config.Model)`n"
+        $env += "UPLOAD_DIR=./data/uploads`n"
+        $env += "ARCHIVE_DIR=./data/archive`n"
+        if ($script:Config.WatchEnabled) { $env += "WATCH_DIR=./data/watch`n" }
+        if ($script:Config.PinEnabled) { $env += "PIN_ENABLED=true`nPIN_CODE=$($script:Config.PinCode)`n" }
+        $env += "OCR_LANGUAGES=deu+eng`n"
+        $env += "LOG_LEVEL=INFO`n"
+        [System.IO.File]::WriteAllText($envPath, $env)
+        Log "  .env erstellt"
+    }
 
     # data dir
     $dataDir = Join-Path $script:ProjectDir "data"

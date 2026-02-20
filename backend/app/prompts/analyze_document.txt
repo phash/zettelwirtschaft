@@ -40,7 +40,7 @@ Wichtige Regeln:
 - Steuerrelevanz: Handwerker-Rechnungen, Arzt-Rechnungen, Versicherungen und Lohnabrechnungen sind typischerweise steuerrelevant.
 - Tags sollen allgemeine Kategorien sein (z.B. "elektronik", "haushalt", "gesundheit", "auto", "versicherung").
 - Wenn der Text sehr schlecht lesbar ist, setze confidence entsprechend niedrig und needs_review auf true.
-- Ablagebereich (filing_scope): Ordne das Dokument einem der folgenden Ablagebereiche zu. Nutze die Schluesselwoerter zur Zuordnung. Wenn kein Bereich passt oder du unsicher bist, setze filing_scope auf null und filing_scope_confidence auf 0.0.
+- Ablagebereich (filing_scope): Ordne das Dokument einem der folgenden Ablagebereiche zu. Nutze die Schluesselwoerter zur Zuordnung. Wenn kein bestehender Bereich passt, kannst du einen neuen Bereichsnamen vorschlagen (setze filing_scope auf den vorgeschlagenen Namen und filing_scope_confidence auf 0.4). Wenn du dir unsicher bist, setze filing_scope auf null und filing_scope_confidence auf 0.0.
 {filing_scopes}
 
 OCR-Text des Dokuments:

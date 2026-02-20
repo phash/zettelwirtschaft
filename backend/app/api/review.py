@@ -251,15 +251,40 @@ async def _update_field_from_answer(
         doc.tax_relevant = answer.lower() in ("ja", "yes", "true", "1")
 
     elif field == "filing_scope":
-        scope_result = await session.execute(
-            select(FilingScope).where(FilingScope.name == answer)
-        )
-        scope = scope_result.scalar_one_or_none()
-        if scope:
-            old_scope_id = doc.filing_scope_id
-            doc.filing_scope_id = scope.id
-            if old_scope_id and old_scope_id != scope.id:
-                await _record_correction(session, "filing_scope", old_scope_id, scope.id)
+        if answer.startswith("NEU: "):
+            # Neuen Ablagebereich erstellen
+            new_name = answer[5:].strip()
+            if new_name:
+                from app.models.filing_scope import generate_slug
+                new_slug = generate_slug(new_name)
+                # Pruefen ob Scope mit diesem Namen/Slug bereits existiert
+                existing = await session.execute(
+                    select(FilingScope).where(
+                        (FilingScope.name == new_name) | (FilingScope.slug == new_slug)
+                    )
+                )
+                scope = existing.scalar_one_or_none()
+                if not scope:
+                    scope = FilingScope(
+                        name=new_name,
+                        slug=new_slug,
+                        is_default=False,
+                    )
+                    session.add(scope)
+                    await session.flush()
+                    logger.info("Neuer Ablagebereich erstellt: '%s' (Slug: %s)", new_name, new_slug)
+                old_scope_id = doc.filing_scope_id
+                doc.filing_scope_id = scope.id
+        else:
+            scope_result = await session.execute(
+                select(FilingScope).where(FilingScope.name == answer)
+            )
+            scope = scope_result.scalar_one_or_none()
+            if scope:
+                old_scope_id = doc.filing_scope_id
+                doc.filing_scope_id = scope.id
+                if old_scope_id and old_scope_id != scope.id:
+                    await _record_correction(session, "filing_scope", old_scope_id, scope.id)
 
 
 async def _record_correction(
