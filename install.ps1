@@ -336,12 +336,13 @@ Write-Step "4/6" "Baue und starte Services (dies kann einige Minuten dauern)..."
 Write-Host ""
 
 # Erkennen ob Quellcode vorhanden (Dev) oder nur Images (Release)
+# Docker schreibt Fortschritt auf stderr - cmd /c merged stderr bevor PowerShell es sieht
 $hasSources = Test-Path (Join-Path $ProjectDir "backend")
 if ($hasSources) {
-    docker compose up --build -d 2>&1 | ForEach-Object { Write-Info $_ }
+    cmd /c "docker compose up --build -d 2>&1" | ForEach-Object { Write-Info $_ }
 } else {
-    docker compose pull 2>&1 | ForEach-Object { Write-Info $_ }
-    docker compose up -d 2>&1 | ForEach-Object { Write-Info $_ }
+    cmd /c "docker compose pull 2>&1" | ForEach-Object { Write-Info $_ }
+    cmd /c "docker compose up -d 2>&1" | ForEach-Object { Write-Info $_ }
 }
 
 if ($LASTEXITCODE -ne 0) {
@@ -380,7 +381,7 @@ Write-Info "Lade LLM-Modell '$model' herunter (kann 2-5 Minuten dauern)..."
 Write-Info "Modellgroesse: ca. 2-4 GB"
 Write-Host ""
 
-docker compose exec ollama ollama pull $model 2>&1 | ForEach-Object { Write-Info $_ }
+cmd /c "docker compose exec ollama ollama pull $model 2>&1" | ForEach-Object { Write-Info $_ }
 
 if ($LASTEXITCODE -eq 0) {
     Write-OK "LLM-Modell '$model' ist bereit."
