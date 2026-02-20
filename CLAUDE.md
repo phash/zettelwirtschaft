@@ -97,6 +97,16 @@ zettelwirtschaft/
     Dockerfile                   # Multi-Stage: Node Build + Nginx
   docker-compose.yml
   .env.example
+  install.bat                    # Windows-Installer Einstiegspunkt
+  install.ps1                    # PowerShell-Installationsassistent
+  start.bat                      # System starten + Browser oeffnen
+  stop.bat                       # System stoppen
+  update.bat                     # System updaten (mit Backup)
+  uninstall.bat                  # System deinstallieren
+  .github/
+    workflows/
+      ci.yml                     # CI: Tests + Build auf Push/PR
+      release.yml                # Release: Tag v* -> GitHub Release + GHCR Images
   planung/                       # Anforderungsdokumente und Prompts
 ```
 
@@ -118,6 +128,9 @@ zettelwirtschaft/
 - **Frontend: TailwindCSS:** Utility-first CSS ohne Component-Library-Overhead. Custom `btn`, `input`, `badge`, `card` Klassen.
 - **Ablagebereiche (Filing Scopes):** Dokumente werden Ablagebereichen zugeordnet (z.B. "Privat", "Praxis Dr. Klotz-Roedig"). Zuweisung: 1. Keyword-Match im OCR-Text (Prioritaet), 2. LLM-Zuweisung (Konfidenz >= 0.7), 3. Default-Scope Fallback. Bei unsicherer Zuordnung: ReviewQuestion mit field_affected="filing_scope".
 - **TaxCategory Enum-Storage:** `values_callable` fuer SQLAlchemy Enum, damit Enum-Values (z.B. "Werbungskosten") statt Names (z.B. "WERBUNGSKOSTEN") in SQLite gespeichert werden. LLM-Compound-Werte (z.B. "A | B") werden auf den ersten gueltigen Wert reduziert.
+- **Frontend-Port konfigurierbar:** `${FRONTEND_PORT:-8080}` in docker-compose.yml. Default 8080 statt 80.
+- **GPU-Support optional:** NVIDIA GPU deploy-Section in docker-compose.yml. Installer generiert `docker-compose.override.yml` ohne GPU fuer CPU-only Systeme.
+- **Update mit Backup:** `update.bat` erstellt lokale Sicherheitskopie der DB + .env vor jedem Update. Bricht ab wenn DB-Backup fehlschlaegt.
 
 ## Wichtige Datenmodelle
 
@@ -217,6 +230,8 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Prompt 10 - Installation und Deployment (Backup-Service, System-Health, Wartung)
 - [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
 - [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
+- [x] Windows-Installer - install.bat/ps1 (interaktiver Assistent), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
+- [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
 
 ### Alembic-Migrationen
 - `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
