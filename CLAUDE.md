@@ -25,6 +25,7 @@ zettelwirtschaft/
       database.py                # SQLAlchemy Engine, Session, Base
       models/
         document.py              # Document, Tag, DocumentTag, Enums (DocumentType, DocumentStatus, ReviewStatus, TaxCategory)
+        filing_scope.py          # FilingScope (Ablagebereiche: Privat, Praxis etc.)
         processing_job.py        # ProcessingJob + JobStatus/JobSource Enums
         warranty_info.py         # WarrantyInfo + WarrantyType Enum
         review_question.py       # ReviewQuestion (erweitert: question_type, explanation, suggested_answers, priority)
@@ -34,6 +35,7 @@ zettelwirtschaft/
         correction_mapping.py    # CorrectionMapping (Lerneffekt aus Korrekturen)
       schemas/
         document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
+        filing_scope.py          # FilingScopeCreate, FilingScopeUpdate, FilingScopeResponse
         processing_job.py        # JobStatusResponse, UploadResponse
         search.py                # SearchResponse, SearchResultItem, SearchFacets, SuggestResponse, SavedSearchResponse
         tax.py                   # TaxYearSummary, TaxExportRequest, TaxExportValidation
@@ -41,9 +43,10 @@ zettelwirtschaft/
         notification.py          # NotificationResponse, NotificationCount
       api/
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
+        filing_scopes.py         # Ablagebereich-CRUD (Privat, Praxis etc.)
         search.py                # Volltextsuche + Autocomplete + SavedSearch
         health.py                # Health-Check
-        jobs.py                  # Processing-Job-Status
+        jobs.py                  # Processing-Job-Status (kommagetrennte Status-Filter)
         tax.py                   # Steuerpaket-Export + Summary + Validation
         warranties.py            # Garantie-Liste + Stats + Update
         notifications.py         # Benachrichtigungen + Mark-Read
@@ -58,7 +61,7 @@ zettelwirtschaft/
         ocr_service.py           # OCR: pdfplumber (digital) + Tesseract (Scans/Bilder)
         llm_service.py           # Ollama /api/chat mit JSON-Format, Retry-Logik
         analysis_service.py      # Dokumentenanalyse-Pipeline (OCR -> LLM -> AnalysisResult)
-        archive_service.py       # Datei-Archivierung + DB-Eintrag + Tags + FTS-Index
+        archive_service.py       # Datei-Archivierung + DB-Eintrag + Tags + FTS-Index + Scope-Zuweisung
         search_service.py        # FTS5 Volltextsuche + Facetten + Autocomplete
         tax_export_service.py    # Steuerpaket-Export (ZIP + PDF via reportlab + CSV)
         warranty_reminder_service.py # Garantie-Erinnerungen (90/30/0 Tage)
@@ -66,7 +69,7 @@ zettelwirtschaft/
       core/
         file_utils.py            # Dateinamen-Sanitizing, Magic-Bytes, UUID-Prefix
       prompts/                   # LLM-Prompt-Templates (Textdateien)
-    alembic/                     # DB-Migrationen (001-004)
+    alembic/                     # DB-Migrationen (001-005)
     requirements.txt
     Dockerfile
   frontend/
@@ -84,7 +87,7 @@ zettelwirtschaft/
         TaxView.vue              # Steuerbelege-Dashboard mit Kategorien + ZIP-Export
         WarrantyView.vue         # Garantie-Dashboard mit Status-Filter + Fortschrittsbalken
         ScanView.vue             # Kamera-Scan mit Aufnahme + Vorschau + Upload
-        SettingsView.vue         # System-Health + Backup + Wartung
+        SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
       stores/                    # Pinia Stores (documents, notifications)
@@ -105,7 +108,7 @@ zettelwirtschaft/
 - **LLM-Prompts als Textdateien** unter `backend/app/prompts/`, nicht hardcoded.
 - **Synchrone Verarbeitung:** Ein Dokument gleichzeitig (Heim-Hardware).
 - **Soft-Delete** fuer Dokumente (Status `DELETED`, nicht physisch loeschen).
-- **Archiv-Ordnerstruktur:** `data/archive/{jahr}/{monat}/{document_type}/`
+- **Archiv-Ordnerstruktur:** `data/archive/{scope_slug}/{jahr}/{monat}/{document_type}/`
 - **Dateinamen im Archiv:** UUID-Prefix + bereinigter Originalname.
 - **Kombinierter LLM-Prompt als Primaerstrategie:** Ein Ollama-Aufruf fuer Klassifikation + Metadaten + Steuer + Garantie. 4 Einzel-Prompts als Fallback bei JSON-Parse-Fehler.
 - **OCR-Strategie fuer PDFs:** Zuerst pdfplumber (digitaler Text, Konfidenz 1.0), dann Tesseract (Scans via pdf2image).
@@ -113,11 +116,14 @@ zettelwirtschaft/
 - **FTS5 Standalone-Tabelle:** Eigene FTS5-Tabelle mit `doc_id` statt content-sync (zuverlaessiger mit async SQLAlchemy). Index wird bei Archivierung aktualisiert.
 - **Tag-Zuweisung via Junction-Table:** Tags werden ueber DocumentTag-Eintraege zugewiesen (nicht ueber Relationship-Assignment), um MissingGreenlet in async-Kontext zu vermeiden.
 - **Frontend: TailwindCSS:** Utility-first CSS ohne Component-Library-Overhead. Custom `btn`, `input`, `badge`, `card` Klassen.
+- **Ablagebereiche (Filing Scopes):** Dokumente werden Ablagebereichen zugeordnet (z.B. "Privat", "Praxis Dr. Klotz-Roedig"). Zuweisung: 1. Keyword-Match im OCR-Text (Prioritaet), 2. LLM-Zuweisung (Konfidenz >= 0.7), 3. Default-Scope Fallback. Bei unsicherer Zuordnung: ReviewQuestion mit field_affected="filing_scope".
+- **TaxCategory Enum-Storage:** `values_callable` fuer SQLAlchemy Enum, damit Enum-Values (z.B. "Werbungskosten") statt Names (z.B. "WERBUNGSKOSTEN") in SQLite gespeichert werden. LLM-Compound-Werte (z.B. "A | B") werden auf den ersten gueltigen Wert reduziert.
 
 ## Wichtige Datenmodelle
 
 - `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON)
-- `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status. Relationships: tags, warranty_info, review_questions (alle lazy="selectin")
+- `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status + filing_scope_id. Relationships: tags, warranty_info, review_questions, filing_scope (alle lazy="selectin")
+- `FilingScope` - Ablagebereiche: name (unique), slug (unique), description, keywords (JSON-Liste), is_default, color (Hex). Slug auto-generiert (Umlaute -> ae/oe/ue/ss)
 - `Tag` / `DocumentTag` - Schlagwort-System (automatisch + manuell), Many-to-Many ueber Junction-Table
 - `WarrantyInfo` - Garantie-Informationen: Produkt, Kaufdatum, Ablaufdatum, Typ (LEGAL/MANUFACTURER/EXTENDED), Haendler
 - `ReviewQuestion` - KI-Rueckfragen: Frage, Antwort, Feld, beantwortet-Status
@@ -153,7 +159,8 @@ Dokument-Eingang (Upload oder Watch-Ordner)
   -> Konfidenz-Check gegen CONFIDENCE_THRESHOLD (0.7)
   -> Archivierung:
      - SHA-256 Hash berechnen + Duplikat-Check
-     - Datei nach archive/{jahr}/{monat}/{typ}/ verschieben
+     - Filing Scope bestimmen (Keyword-Match > LLM > Default)
+     - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ verschieben
      - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
      - FTS5-Index aktualisieren
   -> Status: COMPLETED | NEEDS_REVIEW (+ review_questions) | FAILED
@@ -209,16 +216,18 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Prompt 09 - Smartphone-Integration (PWA via vite-plugin-pwa, Kamera-Scan, BottomNav)
 - [x] Prompt 10 - Installation und Deployment (Backup-Service, System-Health, Wartung)
 - [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
+- [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
 
 ### Alembic-Migrationen
 - `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
-- `002_add_documents` - Document, Tags, DocumentTags, WarrantyInfo, ReviewQuestions, AuditLog Tabellen
+- `002_add_document_models` - Document, Tags, DocumentTags, WarrantyInfo, ReviewQuestions, AuditLog Tabellen
 - `003_add_fts5_saved` - FTS5 Virtual Table + SavedSearch Tabelle
 - `004_notifications_corrections` - Notification, CorrectionMapping Tabellen + ReviewQuestion-Erweiterungen
+- `005_add_filing_scopes` - FilingScope-Tabelle + filing_scope_id auf Documents + Default-Scopes
 
 ### Tests
-- 160 Tests gesamt (1 skipped fuer Tesseract)
-- Backend: API-Tests (documents, upload, jobs, search, tax, warranties, notifications, review, system), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
+- 175 Tests gesamt (1 skipped fuer Tesseract)
+- Backend: API-Tests (documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
 
 ## Planungsdokumente
 

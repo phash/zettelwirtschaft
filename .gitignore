@@ -21,6 +21,7 @@ env/
 
 # Environment
 .env
+docker-compose.override.yml
 
 # Data directories
 data/
