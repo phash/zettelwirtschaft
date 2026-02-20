@@ -114,10 +114,10 @@ jobs:
           cp update.bat release/
           cp uninstall.bat release/
 
-          # Archive erstellen
+          # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit)
           cd release
-          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz *
-          zip -r ../zettelwirtschaft-${VERSION}.zip *
+          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz .env.example *
+          zip -r ../zettelwirtschaft-${VERSION}.zip .env.example *
 
       - name: Generate changelog
         id: changelog
