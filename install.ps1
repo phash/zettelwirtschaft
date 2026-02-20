@@ -331,7 +331,14 @@ Write-Host ""
 Write-Step "4/6" "Baue und starte Services (dies kann einige Minuten dauern)..."
 Write-Host ""
 
-docker compose up --build -d 2>&1 | ForEach-Object { Write-Info $_ }
+# Erkennen ob Quellcode vorhanden (Dev) oder nur Images (Release)
+$hasSources = Test-Path (Join-Path $ProjectDir "backend")
+if ($hasSources) {
+    docker compose up --build -d 2>&1 | ForEach-Object { Write-Info $_ }
+} else {
+    docker compose pull 2>&1 | ForEach-Object { Write-Info $_ }
+    docker compose up -d 2>&1 | ForEach-Object { Write-Info $_ }
+}
 
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Services konnten nicht gestartet werden."

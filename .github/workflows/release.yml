@@ -95,9 +95,70 @@ jobs:
 
       - name: Create release archive
         run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          REPO=${{ github.repository }}
           mkdir -p release
-          # Installer-Dateien und Konfiguration
-          cp docker-compose.yml release/
+
+          # docker-compose.yml mit GHCR-Images statt build-Kontexten generieren
+          cat > release/docker-compose.yml << 'COMPOSE_EOF'
+          services:
+            backend:
+              image: ghcr.io/REPO_PLACEHOLDER/backend:VERSION_PLACEHOLDER
+              ports:
+                - "8000:8000"
+              volumes:
+                - ./data:/app/data
+              env_file:
+                - .env
+              depends_on:
+                ollama:
+                  condition: service_started
+              restart: unless-stopped
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+                interval: 30s
+                timeout: 5s
+                retries: 3
+                start_period: 15s
+
+            ollama:
+              image: ollama/ollama:latest
+              volumes:
+                - ollama-models:/root/.ollama
+              restart: unless-stopped
+              deploy:
+                resources:
+                  reservations:
+                    devices:
+                      - driver: nvidia
+                        count: all
+                        capabilities: [gpu]
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+                interval: 30s
+                timeout: 5s
+                retries: 3
+                start_period: 10s
+
+            frontend:
+              image: ghcr.io/REPO_PLACEHOLDER/frontend:VERSION_PLACEHOLDER
+              ports:
+                - "${FRONTEND_PORT:-8080}:80"
+              depends_on:
+                backend:
+                  condition: service_started
+              restart: unless-stopped
+
+          volumes:
+            ollama-models:
+          COMPOSE_EOF
+
+          # Platzhalter ersetzen und Einrueckung fixen
+          sed -i "s|REPO_PLACEHOLDER|${REPO}|g" release/docker-compose.yml
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" release/docker-compose.yml
+          sed -i 's/^          //' release/docker-compose.yml
+
+          # Installer-Dateien kopieren
           cp .env.example release/
           cp install.bat release/
           cp install.ps1 release/
@@ -105,11 +166,11 @@ jobs:
           cp stop.bat release/
           cp update.bat release/
           cp uninstall.bat release/
+
           # Archive erstellen
           cd release
-          tar -czf ../zettelwirtschaft-${{ steps.version.outputs.VERSION }}.tar.gz *
-          cd ..
-          cd release && zip -r ../zettelwirtschaft-${{ steps.version.outputs.VERSION }}.zip * && cd ..
+          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz *
+          zip -r ../zettelwirtschaft-${VERSION}.zip *
 
       - name: Generate changelog
         id: changelog

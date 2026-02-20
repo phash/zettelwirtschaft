@@ -84,8 +84,13 @@ docker compose pull 2>nul
 :: =============================================
 :: Schritt 4: Neu bauen und starten
 :: =============================================
-echo  [4/5] Baue und starte Services neu...
-docker compose up --build -d
+echo  [4/5] Starte Services neu...
+:: Erkennen ob Quellcode vorhanden (Dev) oder nur Images (Release)
+if exist backend (
+    docker compose up --build -d
+) else (
+    docker compose up -d
+)
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo  [FEHLER] Update fehlgeschlagen.
