@@ -440,7 +440,15 @@ function Phase-Pull {
     $dir = $script:ProjectDir
     $script:Job = Start-Job -ScriptBlock {
         param($d); Set-Location $d
-        & cmd /c "docker compose pull 2>&1" | ForEach-Object { Write-Output $_ }
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        & cmd /c "chcp 65001 >nul & docker compose pull 2>&1" | ForEach-Object {
+            $parts = "$_" -split "`r"
+            foreach ($part in $parts) {
+                $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
+                $clean = $clean.Trim()
+                if ($clean.Length -gt 0) { Write-Output $clean }
+            }
+        }
         if ($LASTEXITCODE -ne 0) { throw "Docker pull fehlgeschlagen (Exit $LASTEXITCODE)" }
     } -ArgumentList $dir
     $timer.Start()
@@ -454,8 +462,16 @@ function Phase-Up {
     $src = $script:HasSources
     $script:Job = Start-Job -ScriptBlock {
         param($d, $s); Set-Location $d
-        if ($s) { & cmd /c "docker compose up --build -d 2>&1" | ForEach-Object { Write-Output $_ } }
-        else { & cmd /c "docker compose up -d 2>&1" | ForEach-Object { Write-Output $_ } }
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $cmd = if ($s) { "docker compose up --build -d" } else { "docker compose up -d" }
+        & cmd /c "chcp 65001 >nul & $cmd 2>&1" | ForEach-Object {
+            $parts = "$_" -split "`r"
+            foreach ($part in $parts) {
+                $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
+                $clean = $clean.Trim()
+                if ($clean.Length -gt 0) { Write-Output $clean }
+            }
+        }
         if ($LASTEXITCODE -ne 0) { throw "Container-Start fehlgeschlagen (Exit $LASTEXITCODE)" }
     } -ArgumentList $dir, $src
     $timer.Start()
@@ -488,7 +504,31 @@ function Phase-Model {
     $dir = $script:ProjectDir
     $script:Job = Start-Job -ScriptBlock {
         param($d, $mod); Set-Location $d
-        & cmd /c "docker compose exec ollama ollama pull $mod 2>&1" | ForEach-Object { Write-Output $_ }
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $lastPct = @{}
+        & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama pull $mod 2>&1" | ForEach-Object {
+            $parts = "$_" -split "`r"
+            foreach ($part in $parts) {
+                # Strip ANSI escape sequences and all non-ASCII characters
+                $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
+                $clean = $clean.Trim()
+                if ($clean -match 'pulling\s+([a-f0-9]+).*?(\d+)%') {
+                    $hash = $Matches[1].Substring(0, [Math]::Min(12, $Matches[1].Length))
+                    $pct = [int]$Matches[2]
+                    $prev = if ($lastPct.ContainsKey($hash)) { $lastPct[$hash] } else { -10 }
+                    if ($pct -ge ($prev + 10) -or $pct -ge 100) {
+                        $filled = [Math]::Floor($pct / 5)
+                        $bar = "[" + ("#" * $filled) + ("." * (20 - $filled)) + "]"
+                        $size = ""
+                        if ($clean -match '([\d.]+\s*[KMGT]?B\s*/\s*[\d.]+\s*[KMGT]?B)') { $size = "  " + $Matches[1] }
+                        Write-Output "$hash  $bar  ${pct}%$size"
+                        $lastPct[$hash] = $pct
+                    }
+                } elseif ($clean.Length -gt 2 -and $clean -notmatch '^\s*\d+%\s*$') {
+                    Write-Output $clean
+                }
+            }
+        }
     } -ArgumentList $dir, $m
     $timer.Start()
 }
