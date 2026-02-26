@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2"
-    OLLAMA_TIMEOUT: int = 120
+    OLLAMA_TIMEOUT: int = 300
     OLLAMA_MAX_RETRIES: int = 2
 
     OCR_LANGUAGES: str = "deu+eng"
@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     PIN_ENABLED: bool = False
     PIN_CODE: str = ""
     PIN_SESSION_TIMEOUT_MINUTES: int = 1440
+
+    # ChromaDB / RAG
+    CHROMADB_HOST: str = "localhost"
+    CHROMADB_PORT: int = 8000
+    EMBEDDING_MODEL: str = "nomic-embed-text"
+    RAG_CHUNK_SIZE: int = 800
+    RAG_CHUNK_OVERLAP: int = 150
+    RAG_TOP_K: int = 5
 
     @property
     def allowed_file_types_list(self) -> list[str]:

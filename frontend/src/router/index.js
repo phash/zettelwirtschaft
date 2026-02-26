@@ -50,6 +50,11 @@ const routes = [
     component: () => import('../views/WarrantyView.vue'),
   },
   {
+    path: '/assistent',
+    name: 'chat',
+    component: () => import('../views/ChatView.vue'),
+  },
+  {
     path: '/scan',
     name: 'scan',
     component: () => import('../views/ScanView.vue'),

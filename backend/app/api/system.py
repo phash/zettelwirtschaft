@@ -50,6 +50,20 @@ async def system_health(
     except Exception:
         components["ollama"] = {"status": "offline", "message": "Nicht erreichbar"}
 
+    # ChromaDB
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat")
+            if resp.status_code == 200:
+                from app.services.vectorize_service import get_collection_count
+                vec_count = get_collection_count(settings)
+                components["chromadb"] = {"status": "ok", "vectors": vec_count}
+            else:
+                components["chromadb"] = {"status": "error", "message": f"HTTP {resp.status_code}"}
+    except Exception:
+        components["chromadb"] = {"status": "offline", "message": "Nicht erreichbar"}
+
     # Speicher-Info
     sys_info = get_system_info(settings)
 
@@ -124,3 +138,32 @@ async def rebuild_index(session: AsyncSession = Depends(get_db)):
     except Exception:
         logger.exception("Index-Rebuild fehlgeschlagen")
         raise HTTPException(500, "Index-Rebuild fehlgeschlagen")
+
+
+@router.post("/system/maintenance/rebuild-vectors")
+async def rebuild_vectors(
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Vektor-Index fuer alle Dokumente neu aufbauen."""
+    try:
+        from app.services.vectorize_service import vectorize_document
+
+        result = await session.execute(
+            select(Document).where(Document.status != DocumentStatus.DELETED)
+        )
+        docs = result.scalars().all()
+
+        total_chunks = 0
+        for doc in docs:
+            chunks = await vectorize_document(doc, settings)
+            total_chunks += chunks
+
+        return {
+            "message": f"Vektor-Index fuer {len(docs)} Dokumente aufgebaut ({total_chunks} Chunks)",
+            "documents": len(docs),
+            "chunks": total_chunks,
+        }
+    except Exception:
+        logger.exception("Vektor-Rebuild fehlgeschlagen")
+        raise HTTPException(500, "Vektor-Rebuild fehlgeschlagen")

@@ -128,7 +128,7 @@ zettelwirtschaft/
 - **FTS5 Standalone-Tabelle:** Eigene FTS5-Tabelle mit `doc_id` statt content-sync (zuverlaessiger mit async SQLAlchemy). Index wird bei Archivierung aktualisiert.
 - **Tag-Zuweisung via Junction-Table:** Tags werden ueber DocumentTag-Eintraege zugewiesen (nicht ueber Relationship-Assignment), um MissingGreenlet in async-Kontext zu vermeiden.
 - **Frontend: TailwindCSS:** Utility-first CSS ohne Component-Library-Overhead. Custom `btn`, `input`, `badge`, `card` Klassen.
-- **Ablagebereiche (Filing Scopes):** Dokumente werden Ablagebereichen zugeordnet (z.B. "Privat", "Praxis Dr. Klotz-Roedig"). Zuweisung: 1. Keyword-Match im OCR-Text (Prioritaet), 2. LLM-Zuweisung (Konfidenz >= 0.7), 3. Default-Scope Fallback. Bei unsicherer Zuordnung: ReviewQuestion mit field_affected="filing_scope".
+- **Ablagebereiche (Filing Scopes):** Dokumente werden Ablagebereichen zugeordnet. Nur "Privat" als Default-Scope. Weitere Scopes werden vom Benutzer in den Einstellungen angelegt. Zuweisung: 1. Keyword-Match im OCR-Text (Prioritaet), 2. LLM-Zuweisung (Konfidenz >= 0.7), 3. Default-Scope Fallback. Bei unsicherer Zuordnung: ReviewQuestion mit field_affected="filing_scope".
 - **TaxCategory Enum-Storage:** `values_callable` fuer SQLAlchemy Enum, damit Enum-Values (z.B. "Werbungskosten") statt Names (z.B. "WERBUNGSKOSTEN") in SQLite gespeichert werden. LLM-Compound-Werte (z.B. "A | B") werden auf den ersten gueltigen Wert reduziert.
 - **Frontend-Port konfigurierbar:** `${FRONTEND_PORT:-8080}` in docker-compose.yml. Default 8080 statt 80.
 - **GPU-Support optional:** NVIDIA GPU deploy-Section in docker-compose.yml. Installer generiert `docker-compose.override.yml` ohne GPU fuer CPU-only Systeme.

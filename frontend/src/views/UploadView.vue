@@ -71,8 +71,11 @@ function startPolling() {
         const status = await getJobStatus(job.id)
         job.status = status.status
         job.statusLabel = statusLabels[status.status] || status.status
-      } catch {
-        // ignore polling errors
+      } catch (err) {
+        if (err?.response?.status === 404) {
+          job.status = 'FAILED'
+          job.statusLabel = 'Nicht gefunden'
+        }
       }
       if (!['COMPLETED', 'FAILED', 'NEEDS_REVIEW'].includes(job.status)) {
         allDone = false

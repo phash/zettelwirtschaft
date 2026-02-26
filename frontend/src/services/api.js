@@ -280,6 +280,30 @@ export async function deleteFilingScope(id) {
   return data
 }
 
+// === Chat (KI-Assistent) ===
+
+export async function askQuestion(question, filingScopeId = null) {
+  const body = { question }
+  if (filingScopeId) body.filing_scope_id = filingScopeId
+  const { data } = await api.post('/chat', body, { timeout: 60000 })
+  return data
+}
+
+export async function getChatHistory(limit = 50, offset = 0) {
+  const { data } = await api.get('/chat/history', { params: { limit, offset } })
+  return data
+}
+
+export async function clearChatHistory() {
+  const { data } = await api.delete('/chat/history')
+  return data
+}
+
+export async function rebuildVectors() {
+  const { data } = await api.post('/system/maintenance/rebuild-vectors', null, { timeout: 300000 })
+  return data
+}
+
 // === Health ===
 
 export async function checkHealth() {

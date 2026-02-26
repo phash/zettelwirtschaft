@@ -87,6 +87,10 @@ class TestQueueWorker:
             "app.services.queue_worker_service.analyze_document",
             new_callable=AsyncMock,
             return_value=_mock_analyze_success(),
+        ), patch(
+            "app.services.vectorize_service.vectorize_document",
+            new_callable=AsyncMock,
+            return_value=0,
         ):
             task = asyncio.create_task(run_queue_worker(test_session_factory, test_settings))
             await asyncio.sleep(1.0)
@@ -131,6 +135,10 @@ class TestQueueWorker:
             "app.services.queue_worker_service.analyze_document",
             new_callable=AsyncMock,
             return_value=_mock_analyze_needs_review(),
+        ), patch(
+            "app.services.vectorize_service.vectorize_document",
+            new_callable=AsyncMock,
+            return_value=0,
         ):
             task = asyncio.create_task(run_queue_worker(test_session_factory, test_settings))
             await asyncio.sleep(1.0)

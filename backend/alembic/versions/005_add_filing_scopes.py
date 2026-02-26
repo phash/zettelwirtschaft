@@ -15,9 +15,8 @@ down_revision = "004_notifications_corrections"
 branch_labels = None
 depends_on = None
 
-# Default scope IDs
+# Default scope ID
 PRIVAT_ID = str(uuid.uuid4())
-PRAXIS_ID = str(uuid.uuid4())
 
 
 def upgrade() -> None:
@@ -50,21 +49,6 @@ def upgrade() -> None:
             color="#3B82F6",
         )
     )
-    op.execute(
-        sa.text(
-            "INSERT INTO filing_scopes (id, name, slug, description, keywords, is_default, color) "
-            "VALUES (:id, :name, :slug, :desc, :keywords, :is_default, :color)"
-        ).bindparams(
-            id=PRAXIS_ID,
-            name="Praxis Dr. Klotz-Roedig",
-            slug="praxis-dr-klotz-roedig",
-            desc="Arztpraxis Dr. Klotz-Roedig",
-            keywords='["KBV", "Kassenaerztliche", "Praxis", "Dr. Klotz", "BFS health finance", "KRONES BKK", "Arztpraxis"]',
-            is_default=False,
-            color="#10B981",
-        )
-    )
-
     # filing_scope_id Spalte auf documents
     op.add_column("documents", sa.Column("filing_scope_id", sa.String(36), nullable=True))
     op.create_index("ix_documents_filing_scope_id", "documents", ["filing_scope_id"])

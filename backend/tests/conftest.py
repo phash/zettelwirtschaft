@@ -11,6 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import Settings
 from app.database import Base, get_db
 
+# Alle Modelle importieren, damit Base.metadata vollstaendig ist
+import app.models.document  # noqa: F401
+import app.models.filing_scope  # noqa: F401
+import app.models.processing_job  # noqa: F401
+import app.models.warranty_info  # noqa: F401
+import app.models.review_question  # noqa: F401
+import app.models.audit_log  # noqa: F401
+import app.models.saved_search  # noqa: F401
+import app.models.notification  # noqa: F401
+import app.models.correction_mapping  # noqa: F401
+import app.models.chat_message  # noqa: F401
+
 
 @pytest.fixture
 def test_settings(tmp_path: Path) -> Settings:
@@ -37,6 +49,10 @@ async def test_engine(test_settings: Settings):
     engine = create_async_engine(test_settings.DATABASE_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # FTS5 Virtual Table ist nicht in Base.metadata - manuell erstellen (wie Lifespan)
+    from app.services.search_service import ensure_fts_table
+    async with AsyncSession(engine) as session:
+        await ensure_fts_table(session)
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

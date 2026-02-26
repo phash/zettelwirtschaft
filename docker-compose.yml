@@ -10,6 +10,8 @@ services:
     depends_on:
       ollama:
         condition: service_started
+      chromadb:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
@@ -30,6 +32,18 @@ services:
       retries: 3
       start_period: 10s
 
+  chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - chromadb-data:/chroma/chroma
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   frontend:
     build: ./frontend
     ports:
@@ -41,3 +55,4 @@ services:
 
 volumes:
   ollama-models:
+  chromadb-data:

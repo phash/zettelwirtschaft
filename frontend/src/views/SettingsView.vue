@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope } from '../services/api'
+import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, rebuildVectors, getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
@@ -12,6 +12,7 @@ const backups = ref([])
 const backingUp = ref(false)
 const optimizing = ref(false)
 const rebuilding = ref(false)
+const rebuildingVectors = ref(false)
 
 // Filing Scopes
 const scopes = ref([])
@@ -140,6 +141,19 @@ async function doRebuildIndex() {
     notify.error('Index-Rebuild fehlgeschlagen.')
   } finally {
     rebuilding.value = false
+  }
+}
+
+async function doRebuildVectors() {
+  rebuildingVectors.value = true
+  try {
+    const result = await rebuildVectors()
+    notify.success(result.message || 'Vektor-Index aufgebaut.')
+    await loadHealth()
+  } catch {
+    notify.error('Vektor-Rebuild fehlgeschlagen. Ist ChromaDB erreichbar?')
+  } finally {
+    rebuildingVectors.value = false
   }
 }
 
@@ -328,6 +342,9 @@ onMounted(async () => {
           </button>
           <button @click="doRebuildIndex" :disabled="rebuilding" class="btn-secondary">
             {{ rebuilding ? 'Baue auf...' : 'Suchindex neu aufbauen' }}
+          </button>
+          <button @click="doRebuildVectors" :disabled="rebuildingVectors" class="btn-secondary">
+            {{ rebuildingVectors ? 'Vektorisiere...' : 'Vektor-Index aufbauen' }}
           </button>
         </div>
       </div>

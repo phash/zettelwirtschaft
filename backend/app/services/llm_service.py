@@ -122,6 +122,98 @@ async def call_llm(
     return None
 
 
+async def call_llm_text(
+    prompt: str,
+    settings: Settings,
+    system_prompt: str | None = None,
+) -> str | None:
+    """Sendet einen Prompt an Ollama und gibt Freitext-Antwort zurueck.
+
+    Wie call_llm(), aber OHNE format: "json" und mit temperature: 0.3.
+    Fuer natuerlichsprachige Antworten im Chat.
+
+    Args:
+        prompt: Der User-Prompt fuer das LLM.
+        settings: App-Konfiguration.
+        system_prompt: Optionaler System-Prompt.
+
+    Returns:
+        Die LLM-Antwort als String, oder None bei Fehler.
+    """
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": settings.OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+        },
+    }
+
+    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+
+    for attempt in range(settings.OLLAMA_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT)
+            ) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+
+                data = response.json()
+                content = data.get("message", {}).get("content", "")
+                if content:
+                    logger.info("LLM-Text-Antwort erhalten (%d Zeichen)", len(content))
+                    return content
+
+                logger.warning("LLM-Text-Antwort leer")
+                return None
+
+        except httpx.ConnectError:
+            if attempt < settings.OLLAMA_MAX_RETRIES:
+                logger.warning(
+                    "Ollama nicht erreichbar (Versuch %d/%d), warte 2s...",
+                    attempt + 1,
+                    settings.OLLAMA_MAX_RETRIES + 1,
+                )
+                await asyncio.sleep(2)
+            else:
+                logger.error(
+                    "Ollama nicht erreichbar nach %d Versuchen",
+                    settings.OLLAMA_MAX_RETRIES + 1,
+                )
+                return None
+
+        except httpx.TimeoutException:
+            if attempt < settings.OLLAMA_MAX_RETRIES:
+                logger.warning(
+                    "Ollama Timeout (Versuch %d/%d), warte 2s...",
+                    attempt + 1,
+                    settings.OLLAMA_MAX_RETRIES + 1,
+                )
+                await asyncio.sleep(2)
+            else:
+                logger.error(
+                    "Ollama Timeout nach %d Versuchen",
+                    settings.OLLAMA_MAX_RETRIES + 1,
+                )
+                return None
+
+        except httpx.HTTPStatusError as e:
+            logger.error("Ollama HTTP-Fehler: %s", e)
+            return None
+
+        except Exception:
+            logger.exception("Unerwarteter Fehler bei LLM-Text-Aufruf")
+            return None
+
+    return None
+
+
 async def check_ollama_available(settings: Settings) -> bool:
     """Prueft ob Ollama erreichbar ist.
 

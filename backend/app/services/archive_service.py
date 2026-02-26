@@ -341,8 +341,9 @@ async def archive_document(
 
     await session.flush()
 
-    # FTS-Index aktualisieren
+    # FTS-Index aktualisieren (in Savepoint, damit Fehler die Session nicht korrumpieren)
     try:
+        nested = await session.begin_nested()
         tag_names = " ".join(analysis.tags) if analysis.tags else ""
         await index_document(
             session=session,
@@ -353,8 +354,17 @@ async def archive_document(
             summary=document.summary,
             tags=tag_names,
         )
+        await nested.commit()
     except Exception:
+        await nested.rollback()
         logger.warning("FTS-Indexierung fehlgeschlagen fuer %s", document.id, exc_info=True)
+
+    # Vektorisierung (fuer RAG-Chat)
+    try:
+        from app.services.vectorize_service import vectorize_document
+        await vectorize_document(document, settings)
+    except Exception:
+        logger.warning("Vektorisierung fehlgeschlagen fuer %s", document.id, exc_info=True)
 
     logger.info(
         "Dokument archiviert: %s (Typ: %s, Konfidenz: %.0f%%)",
