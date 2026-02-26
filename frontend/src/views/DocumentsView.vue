@@ -3,7 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
-import { getDocuments, getFilingScopes } from '../services/api'
+import { getDocuments, getFilingScopes, updateDocument } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
 const router = useRouter()
@@ -84,6 +84,17 @@ function formatDate(d) {
 function formatAmount(amount, currency) {
   if (amount == null) return '-'
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(amount)
+}
+
+async function toggleTax(doc) {
+  const prev = doc.tax_relevant
+  doc.tax_relevant = !prev
+  try {
+    await updateDocument(doc.id, { tax_relevant: doc.tax_relevant })
+  } catch {
+    doc.tax_relevant = prev
+    notify.error('Steuerrelevanz konnte nicht geaendert werden.')
+  }
 }
 
 function sortIcon(column) {
@@ -171,13 +182,14 @@ onMounted(async () => {
             <th class="px-4 py-3 cursor-pointer hover:text-gray-700" @click="toggleSort('amount')">
               Betrag{{ sortIcon('amount') }}
             </th>
+            <th class="px-4 py-3">Steuer</th>
             <th class="px-4 py-3">Aussteller</th>
             <th class="px-4 py-3">Tags</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
           <tr v-if="documents.length === 0">
-            <td colspan="7" class="px-4 py-12 text-center text-sm text-gray-400">
+            <td colspan="8" class="px-4 py-12 text-center text-sm text-gray-400">
               Keine Dokumente gefunden.
             </td>
           </tr>
@@ -199,6 +211,15 @@ onMounted(async () => {
             <td class="px-4 py-3"><DocTypeBadge :type="doc.document_type" /></td>
             <td class="px-4 py-3 text-sm text-gray-600">{{ formatDate(doc.document_date) }}</td>
             <td class="px-4 py-3 text-sm text-gray-600">{{ formatAmount(doc.amount, doc.currency) }}</td>
+            <td class="px-4 py-3 text-center">
+              <input
+                type="checkbox"
+                :checked="doc.tax_relevant"
+                @click.stop
+                @change="toggleTax(doc)"
+                class="rounded border-gray-300"
+              />
+            </td>
             <td class="px-4 py-3 text-sm text-gray-600 truncate max-w-[120px]">{{ doc.issuer || '-' }}</td>
             <td class="px-4 py-3">
               <div class="flex flex-wrap gap-1">
