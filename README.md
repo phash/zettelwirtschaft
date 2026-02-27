@@ -12,8 +12,10 @@ Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 - **Steuerpaket-Export** - Belege nach Steuerkategorien filtern und als ZIP exportieren
 - **Garantie-Tracker** - Ablaufdaten im Blick mit automatischen Erinnerungen
 - **Smartphone-Scan** - Dokumente per Kamera erfassen (PWA)
+- **KI-Assistent (RAG)** - Fragen zu eigenen Dokumenten in natuerlicher Sprache stellen
 - **Ablagebereiche** - Dokumente nach Bereichen organisieren (z.B. Privat, Praxis)
 - **Rueckfrage-System** - KI fragt bei unklaren Dokumenten gezielt nach
+- **Steuerrelevanz** - Direkt in der Dokumentenliste sichtbar und per Klick aenderbar
 
 ## Installation (Windows)
 
@@ -58,9 +60,10 @@ Der Installer prueft automatisch Docker, konfiguriert Ports und LLM-Modell, und 
    docker compose up --build -d
    ```
 
-4. LLM-Modell herunterladen:
+4. LLM-Modelle herunterladen:
    ```bash
    docker compose exec ollama ollama pull llama3.2
+   docker compose exec ollama ollama pull nomic-embed-text
    ```
 
 5. Im Browser oeffnen:
@@ -78,6 +81,8 @@ Die Konfiguration erfolgt ueber die `.env`-Datei. Wichtige Einstellungen:
 | `OLLAMA_MODEL` | `llama3.2` | LLM-Modell (llama3.2 fuer <=16GB RAM, llama3.1 fuer >16GB) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama-Server URL |
 | `OCR_LANGUAGES` | `deu+eng` | OCR-Sprachen |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding-Modell fuer RAG-Vektorisierung |
+| `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen fuer RAG-Antworten |
 
 ## Verzeichnisstruktur
 
@@ -95,7 +100,8 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Backend:** Python 3.12 / FastAPI
 - **Datenbank:** SQLite (SQLAlchemy + Alembic)
 - **OCR:** Tesseract + pdfplumber
-- **KI:** Ollama mit lokalem LLM (Llama 3.2 / Mistral)
+- **KI:** Ollama mit lokalem LLM (Llama 3.2 / Mistral) + Embeddings (nomic-embed-text)
+- **Vektor-Suche:** ChromaDB (RAG-basierter KI-Assistent)
 - **Frontend:** Vue.js 3 + TailwindCSS (PWA)
 - **Deployment:** Docker Compose
 

@@ -11,8 +11,9 @@ Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und 
 - **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs)
 - **KI-Analyse:** Ollama + lokales LLM (Llama 3.2 / Mistral)
 - **Frontend:** Vue.js 3 (Composition API, `<script setup>`) + Vite
-- **Deployment:** Docker Compose (Backend, Frontend/Nginx, Ollama)
+- **Deployment:** Docker Compose (Backend, Frontend/Nginx, Ollama, ChromaDB)
 - **Smartphone:** PWA (Progressive Web App)
+- **Vektor-Suche:** ChromaDB + Ollama Embeddings (nomic-embed-text) fuer RAG
 
 ## Projektstruktur
 
@@ -33,6 +34,7 @@ zettelwirtschaft/
         saved_search.py          # SavedSearch
         notification.py          # Notification + NotificationType Enum
         correction_mapping.py    # CorrectionMapping (Lerneffekt aus Korrekturen)
+        chat_message.py          # ChatMessage (RAG-Chat-Verlauf)
       schemas/
         document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
         filing_scope.py          # FilingScopeCreate, FilingScopeUpdate, FilingScopeResponse
@@ -41,6 +43,7 @@ zettelwirtschaft/
         tax.py                   # TaxYearSummary, TaxExportRequest, TaxExportValidation
         warranty.py              # WarrantyListItem, WarrantyUpdate, WarrantyStats
         notification.py          # NotificationResponse, NotificationCount
+        chat.py                  # ChatRequest, ChatResponse, ChatMessage schemas
       api/
         auth.py                  # PIN-Login, Session-Status, Logout (in-memory Sessions)
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
@@ -52,7 +55,8 @@ zettelwirtschaft/
         warranties.py            # Garantie-Liste + Stats + Update
         notifications.py         # Benachrichtigungen + Mark-Read
         review.py                # Erweitertes Rueckfrage-System + Approve + Stats
-        system.py                # System-Health + Backup + Wartung
+        system.py                # System-Health + Backup + Wartung + Vektor-Index Rebuild
+        chat.py                  # RAG-Chat (POST /api/chat, GET/DELETE /api/chat/history)
       services/
         upload_service.py        # Datei-Upload-Verarbeitung
         file_validation_service.py # Dateityp- und Magic-Byte-Validierung
@@ -67,10 +71,13 @@ zettelwirtschaft/
         tax_export_service.py    # Steuerpaket-Export (ZIP + PDF via reportlab + CSV)
         warranty_reminder_service.py # Garantie-Erinnerungen (90/30/0 Tage)
         backup_service.py        # Backup-Service (DB + Config, Auto-Backup taeglich)
+        embedding_service.py     # Ollama /api/embed mit Retry-Logik
+        vectorize_service.py     # Chunking (Satzgrenzen), Vektorisierung bei Archivierung
+        rag_service.py           # RAG-Pipeline (Embed -> ChromaDB-Retrieve -> LLM-Generate)
       core/
         file_utils.py            # Dateinamen-Sanitizing, Magic-Bytes, UUID-Prefix
-      prompts/                   # LLM-Prompt-Templates (Textdateien)
-    alembic/                     # DB-Migrationen (001-005)
+      prompts/                   # LLM-Prompt-Templates (Textdateien, inkl. rag_answer.txt)
+    alembic/                     # DB-Migrationen (001-006)
     requirements.txt
     Dockerfile
   frontend/
@@ -90,6 +97,7 @@ zettelwirtschaft/
         WarrantyView.vue         # Garantie-Dashboard mit Status-Filter + Fortschrittsbalken
         ScanView.vue             # Kamera-Scan mit Aufnahme + Vorschau + Upload
         SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche
+        ChatView.vue             # RAG-Chat mit Verlauf, Scope-Filter, Beispielfragen
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
       stores/                    # Pinia Stores (documents, notifications, auth)
@@ -133,6 +141,9 @@ zettelwirtschaft/
 - **Frontend-Port konfigurierbar:** `${FRONTEND_PORT:-8080}` in docker-compose.yml. Default 8080 statt 80.
 - **GPU-Support optional:** NVIDIA GPU deploy-Section in docker-compose.yml. Installer generiert `docker-compose.override.yml` ohne GPU fuer CPU-only Systeme.
 - **Update mit Backup:** `update.bat` erstellt lokale Sicherheitskopie der DB + .env vor jedem Update. Bricht ab wenn DB-Backup fehlschlaegt.
+- **RAG-Pipeline:** Dokumente werden bei Archivierung vektorisiert (Chunking mit Satzgrenzen-Erkennung, Metadaten-Chunks). Vektorisierungsfehler blockieren Archivierung nicht (graceful degradation). Retrieval per Cosine-Similarity aus ChromaDB.
+- **call_llm_text():** Freitext-LLM-Antworten ohne JSON-Format (fuer RAG-Antwortgenerierung).
+- **ChromaDB als Vektor-Store:** Separater Docker-Service. Collection pro Ablagebereich. Vektor-Index kann in System-Wartung neu aufgebaut werden.
 
 ## Wichtige Datenmodelle
 
@@ -147,6 +158,7 @@ zettelwirtschaft/
 - `documents_fts` - FTS5 Virtual Table (title, ocr_text, issuer, summary, tags)
 - `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, PROCESSING_DONE, SYSTEM)
 - `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen (auto_apply nach 3x gleicher Korrektur)
+- `ChatMessage` - RAG-Chat-Verlauf (question, answer, sources JSON, scope_filter, created_at)
 
 ## Dokumenttypen (Enum)
 
@@ -178,6 +190,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
      - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ verschieben
      - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
      - FTS5-Index aktualisieren
+     - Vektorisierung (Chunking -> Ollama Embedding -> ChromaDB) - non-blocking
   -> Status: COMPLETED | NEEDS_REVIEW (+ review_questions) | FAILED
 ```
 
@@ -235,6 +248,8 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Windows-Installer - install.bat/ps1 (interaktiver Assistent), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
 - [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
 - [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
+- [x] RAG-basierter KI-Assistent - ChromaDB + nomic-embed-text Vektorisierung, natuerlichsprachige Dokumenten-Fragen, ChatView, Migration 006
+- [x] Steuerrelevant-Checkbox in Dokumentenliste - Steuer-Spalte direkt in der Liste sichtbar und per Klick aenderbar
 
 ### Alembic-Migrationen
 - `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
@@ -242,10 +257,11 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `003_add_fts5_saved` - FTS5 Virtual Table + SavedSearch Tabelle
 - `004_notifications_corrections` - Notification, CorrectionMapping Tabellen + ReviewQuestion-Erweiterungen
 - `005_add_filing_scopes` - FilingScope-Tabelle + filing_scope_id auf Documents + Default-Scopes
+- `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
 
 ### Tests
-- 185 Tests gesamt (1 skipped fuer Tesseract)
-- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup), Core-Tests (file_utils)
+- 225 Tests gesamt (1 skipped fuer Tesseract)
+- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
 
 ## Planungsdokumente
 
