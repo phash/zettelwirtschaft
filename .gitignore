@@ -42,3 +42,6 @@ Thumbs.db
 
 # Serena
 .serena/
+
+# PindeX index data
+.pindex/
