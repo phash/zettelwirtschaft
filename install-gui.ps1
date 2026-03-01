@@ -732,18 +732,22 @@ function Phase-Pull {
     Set-StepStatus 1 "active"
     if ($script:HasSources) { Set-StepStatus 1 "skip"; Next-Phase; return }
     Log "Lade Docker-Images herunter..."
-    $script:progressBar.Value = if ($script:IsUpdate) { 20 } else { 15 }
+    $script:progressBar.Style = "Marquee"
+    $script:progressBar.MarqueeAnimationSpeed = 30
     $dir = $script:ProjectDir
     $script:Job = Start-Job -ScriptBlock {
         param($d); Set-Location $d
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         & cmd /c "chcp 65001 >nul & docker compose pull 2>&1" | ForEach-Object {
+            # Bei \r-basiertem Output: letzten nicht-leeren Teil nehmen (aktuellster Stand)
             $parts = "$_" -split "`r"
-            foreach ($part in $parts) {
-                $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
-                $clean = $clean.Trim()
-                if ($clean.Length -gt 0) { Write-Output $clean }
-            }
+            $last = $parts | ForEach-Object {
+                ($_ -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', '').Trim()
+            } | Where-Object { $_.Length -gt 0 } | Select-Object -Last 1
+            if (-not $last) { return }
+            # Intermediate Downloading/Extracting-Fortschrittszeilen unterdrücken
+            if ($last -match '^[a-f0-9]{12}\s+(Downloading|Extracting)\s+\[') { return }
+            Write-Output $last
         }
         if ($LASTEXITCODE -ne 0) { throw "Docker pull fehlgeschlagen (Exit $LASTEXITCODE)" }
     } -ArgumentList $dir
@@ -881,6 +885,11 @@ $timer.add_Tick({
     if ($failed) { try { $errMsg = $script:Job.ChildJobs[0].JobStateInfo.Reason.Message } catch { $errMsg = "Unbekannter Fehler" } }
     Remove-Job $script:Job -Force; $script:Job = $null
 
+    # Marquee nach Phase-Pull zurücksetzen
+    if ($script:Phase -eq 1) {
+        $script:progressBar.Style = "Continuous"
+        $script:progressBar.MarqueeAnimationSpeed = 0
+    }
     switch ($script:Phase) {
         1 { $script:progressBar.Value = if ($script:IsUpdate) { 50 } else { 45 } }
         2 { $script:progressBar.Value = if ($script:IsUpdate) { 70 } else { 65 } }

@@ -107,6 +107,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.0.7
+- Fix: Installer-Log zeigte Docker-Fortschrittszeilen hunderte Male (Downloading-Spam durch \r-Output)
+- Fix: Progressbar zeigt jetzt animierten Marquee waehrend Docker-Images geladen werden statt einzufrieren
+
 ### v1.0.6
 - Fix: Setup.exe enthielt keine VERSION-Datei - Installer zeigte immer "v1.0.3" als neue Version
 - Fix: Fallback-Version im Installer von "1.0.3" auf "unbekannt" geaendert
