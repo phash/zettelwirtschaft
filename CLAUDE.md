@@ -107,8 +107,9 @@ zettelwirtschaft/
     Dockerfile                   # Multi-Stage: Node Build + Nginx
   docker-compose.yml
   .env.example
-  install.bat                    # Windows-Installer Einstiegspunkt
-  install.ps1                    # PowerShell-Installationsassistent
+  install.bat                    # Windows-Installer Einstiegspunkt (GUI bevorzugt, CLI als Fallback)
+  install-gui.ps1                # Grafischer Windows-Installer (Windows Forms, 4-Schritt-Wizard)
+  install.ps1                    # PowerShell-CLI-Installationsassistent (Fallback)
   start.bat                      # System starten + Browser oeffnen
   stop.bat                       # System stoppen
   update.bat                     # System updaten (mit Backup)
@@ -245,7 +246,8 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Prompt 10 - Installation und Deployment (Backup-Service, System-Health, Wartung)
 - [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
 - [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
-- [x] Windows-Installer - install.bat/ps1 (interaktiver Assistent), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
+- [x] Windows-Installer - install.bat + install-gui.ps1 (grafischer 4-Schritt-Wizard, Windows Forms) + install.ps1 (CLI-Fallback), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
+  - Bekannte Fixes: v1.0.3 - `$btnBrowse` in CheckedChanged-Handler muss `$script:`-Scope haben (Event-Handler laeuft ausserhalb Funktions-Scope)
 - [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
 - [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
 - [x] RAG-basierter KI-Assistent - ChromaDB + nomic-embed-text Vektorisierung, natuerlichsprachige Dokumenten-Fragen, ChatView, Migration 006

@@ -105,6 +105,21 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Frontend:** Vue.js 3 + TailwindCSS (PWA)
 - **Deployment:** Docker Compose
 
+## Changelog
+
+### v1.0.3
+- Fix: GUI-Installer (`install-gui.ps1`) - Absturz beim Klick auf Watch-Ordner-Checkbox behoben (`$btnBrowse` war als lokale Variable nicht im Event-Handler-Scope verfuegbar)
+
+### v1.0.2
+- Fix: `app`-Namenskonflikt in der `lifespan`-Funktion behoben
+- Feature: Watch-Ordner Startup-Scan, UI-konfigurierbare Ordner, Export-Ordner
+
+### v1.0.1
+- Fix: Docker Health-Checks auf curl-freie Alternativen umgestellt, ChromaDB Health-Check hinzugefuegt
+
+### v1.0.0
+- Erstveroeffentlichung mit vollem Feature-Set (RAG-Assistent, PIN-Schutz, Ablagebereiche, Steuerrelevanz-Checkbox)
+
 ## Entwicklung
 
 ### Tests ausfuehren
