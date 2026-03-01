@@ -1,6 +1,7 @@
 """System-Health und Backup-API."""
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,6 +23,28 @@ router = APIRouter(tags=["system"])
 class FolderSettings(BaseModel):
     watch_dir: str
     export_dir: str
+    watch_dir_host: str = ""
+    export_dir_host: str = ""
+    restart_required: bool = False
+
+
+HOST_MOUNTS_FILE = "/app/data/.host-mounts.json"
+
+
+def _write_host_mounts(watch_host: str, export_host: str) -> None:
+    """Schreibt Host-Mount-Konfiguration nach data/.host-mounts.json."""
+    from pathlib import Path
+    mounts: dict = {}
+    if watch_host:
+        mounts["watch"] = watch_host
+    if export_host:
+        mounts["export"] = export_host
+    path = Path(HOST_MOUNTS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mounts:
+        path.write_text(json.dumps(mounts, indent=2), encoding="utf-8")
+    elif path.exists():
+        path.unlink()
 
 
 @router.get("/system/settings", response_model=FolderSettings)
@@ -33,6 +56,8 @@ async def get_folder_settings(
     return FolderSettings(
         watch_dir=await get_db_setting(session, "watch_dir", settings.WATCH_DIR),
         export_dir=await get_db_setting(session, "export_dir", settings.EXPORT_DIR),
+        watch_dir_host=await get_db_setting(session, "watch_dir_host", ""),
+        export_dir_host=await get_db_setting(session, "export_dir_host", ""),
     )
 
 
@@ -46,24 +71,61 @@ async def update_folder_settings(
     """Aktualisiert Watch-Ordner und Export-Ordner. Startet Watch-Task bei Pfadaenderung neu."""
     old_watch_dir = await get_db_setting(session, "watch_dir", settings.WATCH_DIR)
 
-    await set_db_setting(session, "watch_dir", body.watch_dir)
-    await set_db_setting(session, "export_dir", body.export_dir)
+    restart_required = False
+    watch_dir = body.watch_dir
+    export_dir = body.export_dir
+
+    # Host-Pfade: Container-Pfade automatisch setzen
+    if body.watch_dir_host:
+        watch_dir = "/app/external/watch"
+    elif await get_db_setting(session, "watch_dir_host", ""):
+        # Host-Pfad wurde geleert -> Standard zurueck
+        watch_dir = watch_dir if watch_dir != "/app/external/watch" else settings.WATCH_DIR
+
+    if body.export_dir_host:
+        export_dir = "/app/external/export"
+    elif await get_db_setting(session, "export_dir_host", ""):
+        # Host-Pfad wurde geleert -> Standard zurueck
+        export_dir = export_dir if export_dir != "/app/external/export" else ""
+
+    # Pruefen ob Host-Mounts sich geaendert haben -> Neustart noetig
+    old_watch_host = await get_db_setting(session, "watch_dir_host", "")
+    old_export_host = await get_db_setting(session, "export_dir_host", "")
+    if body.watch_dir_host != old_watch_host or body.export_dir_host != old_export_host:
+        restart_required = True
+
+    await set_db_setting(session, "watch_dir", watch_dir)
+    await set_db_setting(session, "export_dir", export_dir)
+    await set_db_setting(session, "watch_dir_host", body.watch_dir_host)
+    await set_db_setting(session, "export_dir_host", body.export_dir_host)
     await session.commit()
 
+    # Host-Mounts-Datei schreiben
+    try:
+        _write_host_mounts(body.watch_dir_host, body.export_dir_host)
+    except Exception:
+        logger.warning("Konnte .host-mounts.json nicht schreiben")
+
     # Export-Verzeichnis anlegen (falls gesetzt)
-    if body.export_dir:
+    if export_dir:
         from pathlib import Path
         try:
-            Path(body.export_dir).mkdir(parents=True, exist_ok=True)
+            Path(export_dir).mkdir(parents=True, exist_ok=True)
         except Exception:
-            logger.warning("Export-Verzeichnis konnte nicht angelegt werden: %s", body.export_dir)
+            logger.warning("Export-Verzeichnis konnte nicht angelegt werden: %s", export_dir)
 
     # Watch-Task neu starten wenn sich der Pfad geaendert hat
-    if body.watch_dir != old_watch_dir:
+    if watch_dir != old_watch_dir:
         await _restart_watch_task(request.app, settings)
-        logger.info("Watch-Ordner geaendert: %s -> %s", old_watch_dir, body.watch_dir)
+        logger.info("Watch-Ordner geaendert: %s -> %s", old_watch_dir, watch_dir)
 
-    return FolderSettings(watch_dir=body.watch_dir, export_dir=body.export_dir)
+    return FolderSettings(
+        watch_dir=watch_dir,
+        export_dir=export_dir,
+        watch_dir_host=body.watch_dir_host,
+        export_dir_host=body.export_dir_host,
+        restart_required=restart_required,
+    )
 
 
 async def _restart_watch_task(app, settings: Settings) -> None:

@@ -22,6 +22,12 @@ if exist .env (
     for /f "tokens=1,2 delims==" %%a in ('findstr /r "^FRONTEND_PORT=" .env') do set FRONTEND_PORT=%%b
 )
 
+:: Host-Mounts generieren (Volume-Mounts fuer externe Windows-Ordner)
+if exist data\.host-mounts.json (
+    echo  Konfiguriere Host-Ordner...
+    powershell -ExecutionPolicy Bypass -File generate-mounts.ps1
+)
+
 :: Services starten
 echo  Starte Services...
 docker compose up -d

@@ -19,8 +19,11 @@ $script:ConfigMigrations = [ordered]@{
     "1.0.2" = @{
         "EXPORT_DIR" = @{ value = ""; comment = "# Zielordner fuer verarbeitete Dokumente (leer = deaktiviert)" }
     }
+    "1.0.9" = @{
+        "CHROMADB_HOST" = @{ value = "chromadb"; comment = "# ChromaDB (RAG / KI-Assistent)" }
+    }
     # Neue Versionen hier ergaenzen:
-    # "1.0.4" = @{ "NEW_VAR" = @{ value = "default"; comment = "# Beschreibung" } }
+    # "1.1.0" = @{ "NEW_VAR" = @{ value = "default"; comment = "# Beschreibung" } }
 }
 
 # --- State ---
@@ -601,6 +604,8 @@ function Phase-Config {
     if ($script:Config.PinEnabled) { $env += "PIN_ENABLED=true`nPIN_CODE=$($script:Config.PinCode)`n" }
     $env += "OCR_LANGUAGES=deu+eng`n"
     $env += "LOG_LEVEL=INFO`n"
+    $env += "`n# ChromaDB (RAG / KI-Assistent)`n"
+    $env += "CHROMADB_HOST=chromadb`n"
     [System.IO.File]::WriteAllText($envPath, $env)
     Log "  .env erstellt"
 

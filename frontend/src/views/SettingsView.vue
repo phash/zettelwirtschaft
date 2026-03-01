@@ -15,8 +15,9 @@ const rebuilding = ref(false)
 const rebuildingVectors = ref(false)
 
 // Ordner-Einstellungen
-const folderSettings = ref({ watch_dir: '', export_dir: '' })
+const folderSettings = ref({ watch_dir: '', export_dir: '', watch_dir_host: '', export_dir_host: '' })
 const savingFolders = ref(false)
+const restartRequired = ref(false)
 
 async function loadFolderSettings() {
   try {
@@ -29,13 +30,24 @@ async function loadFolderSettings() {
 async function saveFolderSettings() {
   savingFolders.value = true
   try {
-    folderSettings.value = await updateSystemSettings(folderSettings.value)
+    const result = await updateSystemSettings(folderSettings.value)
+    folderSettings.value = result
+    if (result.restart_required) {
+      restartRequired.value = true
+    }
     notify.success('Ordner gespeichert.')
   } catch (e) {
     notify.error(e.response?.data?.detail || 'Speichern fehlgeschlagen.')
   } finally {
     savingFolders.value = false
   }
+}
+
+function resetHostPaths() {
+  folderSettings.value.watch_dir_host = ''
+  folderSettings.value.export_dir_host = ''
+  folderSettings.value.watch_dir = '/app/data/watch'
+  folderSettings.value.export_dir = ''
 }
 
 // Filing Scopes
@@ -235,37 +247,70 @@ onMounted(async () => {
   <div class="space-y-6">
     <h1 class="text-2xl font-bold text-gray-900">System</h1>
 
+    <!-- Neustart-Banner -->
+    <div v-if="restartRequired" class="rounded-lg border border-amber-300 bg-amber-50 p-4 flex items-start gap-3">
+      <span class="text-amber-500 text-xl flex-shrink-0">!</span>
+      <div>
+        <p class="text-sm font-semibold text-amber-800">Neustart erforderlich</p>
+        <p class="text-xs text-amber-700 mt-1">
+          Die Host-Ordner wurden geaendert. Bitte das System stoppen und neu starten
+          (<code class="bg-amber-100 px-1 rounded">stop.bat</code> &rarr; <code class="bg-amber-100 px-1 rounded">start.bat</code>),
+          damit die Ordner im Container eingebunden werden.
+        </p>
+      </div>
+    </div>
+
     <!-- Ordner-Konfiguration -->
     <div class="card">
       <h2 class="text-lg font-semibold text-gray-900 mb-4">Ordner</h2>
       <div class="space-y-4">
+        <!-- Watch-Ordner: Host-Pfad -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Eingangsordner (Watch-Ordner)</label>
-          <p class="text-xs text-gray-500 mb-2">Neue Dateien in diesem Ordner werden automatisch eingelesen. Aenderungen starten die Ueberwachung neu.</p>
-          <div class="flex gap-2">
-            <input v-model="folderSettings.watch_dir" class="input font-mono text-sm flex-1" :class="isWindowsPath(folderSettings.watch_dir) ? 'border-red-400 bg-red-50' : ''" placeholder="/app/data/watch" />
-            <button @click="folderSettings.watch_dir = '/app/data/watch'" class="btn-secondary text-xs whitespace-nowrap" title="Standardpfad wiederherstellen">Standard</button>
-          </div>
-          <p v-if="isWindowsPath(folderSettings.watch_dir)" class="text-xs text-red-600 mt-1 font-medium">
-            ⚠ Windows-Pfad erkannt! Docker kann diesen Pfad nicht lesen. Bitte einen Container-Pfad verwenden, z.B. <code class="bg-red-100 px-1 rounded">/app/data/watch</code>. Der Host-Ordner <code class="bg-red-100 px-1 rounded">{Installationsordner}/data/watch</code> ist unter diesem Pfad im Container erreichbar.
+          <p class="text-xs text-gray-500 mb-2">Windows-Ordner, der automatisch ueberwacht wird. Neue Dateien werden eingelesen.</p>
+          <input v-model="folderSettings.watch_dir_host" class="input font-mono text-sm" placeholder="Leer = Standard (data/watch), z.B. V:\Zettelwirtschaft\eingang" />
+          <p v-if="folderSettings.watch_dir_host" class="text-xs text-gray-500 mt-1">
+            Container-Pfad: <code class="bg-gray-100 px-1 rounded font-mono">/app/external/watch</code> (wird automatisch gesetzt)
           </p>
-          <p v-else class="text-xs text-gray-400 mt-1">Pfad innerhalb des Docker-Containers. Host-Ordner: <code class="bg-gray-100 px-1 rounded">{Installationsordner}/data/watch</code></p>
+          <p v-else class="text-xs text-gray-400 mt-1">
+            Standard: <code class="bg-gray-100 px-1 rounded font-mono">{Installationsordner}/data/watch</code>
+          </p>
         </div>
+
+        <!-- Export-Ordner: Host-Pfad -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner fuer verarbeitete Dokumente</label>
-          <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Ordner kopiert (Struktur: Scope/Jahr/Monat/Typ). Leer lassen zum Deaktivieren.</p>
-          <div class="flex gap-2">
-            <input v-model="folderSettings.export_dir" class="input font-mono text-sm flex-1" :class="isWindowsPath(folderSettings.export_dir) ? 'border-red-400 bg-red-50' : ''" placeholder="Leer = deaktiviert, z.B. /app/data/export" />
-            <button v-if="folderSettings.export_dir" @click="folderSettings.export_dir = ''" class="btn-secondary text-xs whitespace-nowrap">Leeren</button>
-          </div>
-          <p v-if="isWindowsPath(folderSettings.export_dir)" class="text-xs text-red-600 mt-1 font-medium">
-            ⚠ Windows-Pfad erkannt! Bitte einen Container-Pfad verwenden, z.B. <code class="bg-red-100 px-1 rounded">/app/data/export</code>.
+          <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Windows-Ordner kopiert. Leer lassen zum Deaktivieren.</p>
+          <input v-model="folderSettings.export_dir_host" class="input font-mono text-sm" placeholder="Leer = deaktiviert, z.B. V:\Zettelwirtschaft\fertig" />
+          <p v-if="folderSettings.export_dir_host" class="text-xs text-gray-500 mt-1">
+            Container-Pfad: <code class="bg-gray-100 px-1 rounded font-mono">/app/external/export</code> (wird automatisch gesetzt)
           </p>
-          <p v-else class="text-xs text-gray-400 mt-1">Pfad innerhalb des Docker-Containers. Host-Ordner entspricht <code class="bg-gray-100 px-1 rounded">{Installationsordner}/data/...</code></p>
+          <p v-else class="text-xs text-gray-400 mt-1">
+            Kein Zielordner konfiguriert. Dokumente werden nur im Archiv gespeichert.
+          </p>
         </div>
-        <div>
+
+        <!-- Container-Pfade (nur anzeigen wenn kein Host-Pfad gesetzt, als Fallback fuer fortgeschrittene User) -->
+        <details v-if="!folderSettings.watch_dir_host && !folderSettings.export_dir_host" class="text-xs">
+          <summary class="text-gray-400 cursor-pointer hover:text-gray-600">Erweitert: Container-Pfade manuell setzen</summary>
+          <div class="mt-2 space-y-3 pl-2 border-l-2 border-gray-200">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Watch-Ordner (Container-Pfad)</label>
+              <input v-model="folderSettings.watch_dir" class="input font-mono text-sm" placeholder="/app/data/watch" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Export-Ordner (Container-Pfad)</label>
+              <input v-model="folderSettings.export_dir" class="input font-mono text-sm" placeholder="Leer = deaktiviert" />
+            </div>
+          </div>
+        </details>
+
+        <div class="flex gap-2">
           <button @click="saveFolderSettings" :disabled="savingFolders" class="btn-primary">
             {{ savingFolders ? 'Speichere...' : 'Speichern' }}
+          </button>
+          <button v-if="folderSettings.watch_dir_host || folderSettings.export_dir_host" @click="resetHostPaths" class="btn-secondary text-sm">
+            Auf Standard zuruecksetzen
           </button>
         </div>
       </div>

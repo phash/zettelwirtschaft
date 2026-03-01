@@ -62,6 +62,8 @@ class TestSystemSettings:
         data = resp.json()
         assert "watch_dir" in data
         assert "export_dir" in data
+        assert "watch_dir_host" in data
+        assert "export_dir_host" in data
 
     async def test_update_settings(self, client):
         resp = await client.put("/api/system/settings", json={"watch_dir": "/app/data/watch", "export_dir": ""})
@@ -78,6 +80,75 @@ class TestSystemSettings:
         data = resp.json()
         assert data["watch_dir"] == "/app/data/custom"
         assert data["export_dir"] == "/app/data/out"
+
+    async def test_host_path_sets_container_path(self, client):
+        """Host-Pfad setzt automatisch Container-Pfad auf /app/external/..."""
+        resp = await client.put("/api/system/settings", json={
+            "watch_dir": "",
+            "export_dir": "",
+            "watch_dir_host": "V:\\Zettelwirtschaft\\eingang",
+            "export_dir_host": "V:\\Zettelwirtschaft\\fertig",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["watch_dir"] == "/app/external/watch"
+        assert data["export_dir"] == "/app/external/export"
+        assert data["watch_dir_host"] == "V:\\Zettelwirtschaft\\eingang"
+        assert data["export_dir_host"] == "V:\\Zettelwirtschaft\\fertig"
+        assert data["restart_required"] is True
+
+    async def test_host_path_roundtrip(self, client):
+        """Host-Pfade werden gespeichert und koennen gelesen werden."""
+        await client.put("/api/system/settings", json={
+            "watch_dir": "",
+            "export_dir": "",
+            "watch_dir_host": "D:\\Docs\\watch",
+            "export_dir_host": "",
+        })
+        resp = await client.get("/api/system/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["watch_dir_host"] == "D:\\Docs\\watch"
+        assert data["watch_dir"] == "/app/external/watch"
+
+    async def test_host_mounts_json_written(self, client):
+        """Host-Mount-Konfiguration wird als .host-mounts.json geschrieben."""
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from app.api.system import HOST_MOUNTS_FILE
+
+        # Temp-Pfad verwenden
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            tmp_path = f.name
+
+        try:
+            with patch("app.api.system.HOST_MOUNTS_FILE", tmp_path):
+                resp = await client.put("/api/system/settings", json={
+                    "watch_dir": "",
+                    "export_dir": "",
+                    "watch_dir_host": "V:\\Watch",
+                    "export_dir_host": "V:\\Export",
+                })
+                assert resp.status_code == 200
+
+                content = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
+                assert content["watch"] == "V:\\Watch"
+                assert content["export"] == "V:\\Export"
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    async def test_clear_host_path_no_restart(self, client):
+        """Wenn Host-Pfade nicht geaendert werden, kein restart_required."""
+        resp = await client.put("/api/system/settings", json={
+            "watch_dir": "/app/data/watch",
+            "export_dir": "",
+            "watch_dir_host": "",
+            "export_dir_host": "",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["restart_required"] is False
 
 
 @pytest.mark.asyncio
