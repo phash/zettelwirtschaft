@@ -255,12 +255,12 @@ function Show-Configuration {
     $script:txtWatch.Enabled = $script:chkWatch.Checked
     $pnlContent.Controls.Add($script:txtWatch)
 
-    $btnBrowse = New-Object System.Windows.Forms.Button
-    $btnBrowse.Location = [System.Drawing.Point]::new(486, $y); $btnBrowse.Size = [System.Drawing.Size]::new(80, 26)
-    $btnBrowse.Text = "Waehlen..."; $btnBrowse.FlatStyle = "Flat"; $btnBrowse.FlatAppearance.BorderColor = $cBorder
-    $btnBrowse.add_Click({ $fbd = New-Object System.Windows.Forms.FolderBrowserDialog; if ($fbd.ShowDialog() -eq "OK") { $script:txtWatch.Text = $fbd.SelectedPath } })
-    $pnlContent.Controls.Add($btnBrowse)
-    $script:chkWatch.add_CheckedChanged({ $script:txtWatch.Enabled = $script:chkWatch.Checked; $btnBrowse.Enabled = $script:chkWatch.Checked })
+    $script:btnBrowse = New-Object System.Windows.Forms.Button
+    $script:btnBrowse.Location = [System.Drawing.Point]::new(486, $y); $script:btnBrowse.Size = [System.Drawing.Size]::new(80, 26)
+    $script:btnBrowse.Text = "Waehlen..."; $script:btnBrowse.FlatStyle = "Flat"; $script:btnBrowse.FlatAppearance.BorderColor = $cBorder
+    $script:btnBrowse.add_Click({ $fbd = New-Object System.Windows.Forms.FolderBrowserDialog; if ($fbd.ShowDialog() -eq "OK") { $script:txtWatch.Text = $fbd.SelectedPath } })
+    $pnlContent.Controls.Add($script:btnBrowse)
+    $script:chkWatch.add_CheckedChanged({ $script:txtWatch.Enabled = $script:chkWatch.Checked; $script:btnBrowse.Enabled = $script:chkWatch.Checked })
     $y += 45
 
     # LLM Model
