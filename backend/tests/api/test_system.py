@@ -55,6 +55,32 @@ class TestSystemBackup:
 
 
 @pytest.mark.asyncio
+class TestSystemSettings:
+    async def test_get_settings(self, client):
+        resp = await client.get("/api/system/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "watch_dir" in data
+        assert "export_dir" in data
+
+    async def test_update_settings(self, client):
+        resp = await client.put("/api/system/settings", json={"watch_dir": "/app/data/watch", "export_dir": ""})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["watch_dir"] == "/app/data/watch"
+        assert data["export_dir"] == ""
+
+    async def test_settings_roundtrip(self, client):
+        """Gespeicherte Einstellungen koennen wieder gelesen werden."""
+        await client.put("/api/system/settings", json={"watch_dir": "/app/data/custom", "export_dir": "/app/data/out"})
+        resp = await client.get("/api/system/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["watch_dir"] == "/app/data/custom"
+        assert data["export_dir"] == "/app/data/out"
+
+
+@pytest.mark.asyncio
 class TestSystemMaintenance:
     async def test_rebuild_index(self, client):
         resp = await client.post("/api/system/maintenance/rebuild-index")

@@ -854,19 +854,11 @@ function Phase-Shortcut {
         Log "  Desktop-Verknuepfung erstellt"
     } catch { Log "  Verknuepfung konnte nicht erstellt werden" }
 
-    # VERSION-Datei schreiben: tatsaechliche Backend-Version bevorzugen
+    # VERSION-Datei schreiben: Installer-Paket-Version ist massgeblich
     $dataDir = Join-Path $script:ProjectDir "data"
     if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
-    $actualVersion = $script:NewVersion
-    try {
-        $resp = Invoke-RestMethod -Uri "http://localhost:8000/api/system/health" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
-        if ($resp.app_version -and $resp.app_version -ne "unknown") {
-            $actualVersion = $resp.app_version
-            Log "  Backend-Version bestaetigt: $actualVersion"
-        }
-    } catch { Log "  Version aus Installer-Paket: $actualVersion" }
-    [System.IO.File]::WriteAllText($instVersionFile, $actualVersion)
-    Log "  Version $actualVersion gespeichert"
+    [System.IO.File]::WriteAllText($instVersionFile, $script:NewVersion)
+    Log "  Version $($script:NewVersion) gespeichert"
 
     $script:progressBar.Value = 100
     Next-Phase

@@ -110,6 +110,28 @@ async function confirmDeleteScope() {
   }
 }
 
+function isWindowsPath(p) {
+  if (!p) return false
+  return /^[A-Za-z]:[\\\/]/.test(p)
+}
+
+function copyChromaError(comp) {
+  const text = [
+    '## ChromaDB Fehler-Report',
+    '',
+    `**Status:** ${comp.status}`,
+    `**Fehlermeldung:** ${comp.message || 'keine'}`,
+    `**Zeitpunkt:** ${new Date().toLocaleString('de-DE')}`,
+    '',
+    '**Zur Diagnose:**',
+    '```',
+    'docker compose ps',
+    'docker compose logs chromadb --tail=50',
+    '```',
+  ].join('\n')
+  navigator.clipboard.writeText(text).then(() => notify.success('In Zwischenablage kopiert.'))
+}
+
 async function loadHealth() {
   loading.value = true
   try {
@@ -220,12 +242,26 @@ onMounted(async () => {
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Eingangsordner (Watch-Ordner)</label>
           <p class="text-xs text-gray-500 mb-2">Neue Dateien in diesem Ordner werden automatisch eingelesen. Aenderungen starten die Ueberwachung neu.</p>
-          <input v-model="folderSettings.watch_dir" class="input font-mono text-sm" placeholder="z.B. /data/watch oder C:/Eingang" />
+          <div class="flex gap-2">
+            <input v-model="folderSettings.watch_dir" class="input font-mono text-sm flex-1" :class="isWindowsPath(folderSettings.watch_dir) ? 'border-red-400 bg-red-50' : ''" placeholder="/app/data/watch" />
+            <button @click="folderSettings.watch_dir = '/app/data/watch'" class="btn-secondary text-xs whitespace-nowrap" title="Standardpfad wiederherstellen">Standard</button>
+          </div>
+          <p v-if="isWindowsPath(folderSettings.watch_dir)" class="text-xs text-red-600 mt-1 font-medium">
+            ⚠ Windows-Pfad erkannt! Docker kann diesen Pfad nicht lesen. Bitte einen Container-Pfad verwenden, z.B. <code class="bg-red-100 px-1 rounded">/app/data/watch</code>. Der Host-Ordner <code class="bg-red-100 px-1 rounded">{Installationsordner}/data/watch</code> ist unter diesem Pfad im Container erreichbar.
+          </p>
+          <p v-else class="text-xs text-gray-400 mt-1">Pfad innerhalb des Docker-Containers. Host-Ordner: <code class="bg-gray-100 px-1 rounded">{Installationsordner}/data/watch</code></p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner fuer verarbeitete Dokumente</label>
           <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Ordner kopiert (Struktur: Scope/Jahr/Monat/Typ). Leer lassen zum Deaktivieren.</p>
-          <input v-model="folderSettings.export_dir" class="input font-mono text-sm" placeholder="Leer = deaktiviert, z.B. /mnt/nas/archiv" />
+          <div class="flex gap-2">
+            <input v-model="folderSettings.export_dir" class="input font-mono text-sm flex-1" :class="isWindowsPath(folderSettings.export_dir) ? 'border-red-400 bg-red-50' : ''" placeholder="Leer = deaktiviert, z.B. /app/data/export" />
+            <button v-if="folderSettings.export_dir" @click="folderSettings.export_dir = ''" class="btn-secondary text-xs whitespace-nowrap">Leeren</button>
+          </div>
+          <p v-if="isWindowsPath(folderSettings.export_dir)" class="text-xs text-red-600 mt-1 font-medium">
+            ⚠ Windows-Pfad erkannt! Bitte einen Container-Pfad verwenden, z.B. <code class="bg-red-100 px-1 rounded">/app/data/export</code>.
+          </p>
+          <p v-else class="text-xs text-gray-400 mt-1">Pfad innerhalb des Docker-Containers. Host-Ordner entspricht <code class="bg-gray-100 px-1 rounded">{Installationsordner}/data/...</code></p>
         </div>
         <div>
           <button @click="saveFolderSettings" :disabled="savingFolders" class="btn-primary">
@@ -333,17 +369,35 @@ onMounted(async () => {
       <div class="card">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">Komponenten</h2>
         <div class="space-y-3">
-          <div v-for="(comp, name) in health.components" :key="name" class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span :class="['h-2.5 w-2.5 rounded-full', componentStatusClass(comp.status)]"></span>
-              <span class="text-sm font-medium text-gray-700 capitalize">{{ name }}</span>
+          <div v-for="(comp, name) in health.components" :key="name" class="space-y-1">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span :class="['h-2.5 w-2.5 rounded-full', componentStatusClass(comp.status)]"></span>
+                <span class="text-sm font-medium text-gray-700 capitalize">{{ name }}</span>
+              </div>
+              <div class="text-sm text-gray-500">
+                <span v-if="comp.status === 'ok'" class="text-green-600">OK</span>
+                <span v-else class="text-red-600">{{ comp.message || comp.status }}</span>
+                <span v-if="comp.models" class="ml-2 text-xs text-gray-400">
+                  ({{ comp.models.join(', ') }})
+                </span>
+              </div>
             </div>
-            <div class="text-sm text-gray-500">
-              <span v-if="comp.status === 'ok'" class="text-green-600">OK</span>
-              <span v-else>{{ comp.message || comp.status }}</span>
-              <span v-if="comp.models" class="ml-2 text-xs text-gray-400">
-                ({{ comp.models.join(', ') }})
-              </span>
+            <!-- ChromaDB Fehler-Hilfe -->
+            <div v-if="name === 'chromadb' && comp.status !== 'ok'" class="ml-5 rounded-lg bg-red-50 border border-red-100 p-3 text-xs text-red-700 space-y-2">
+              <p class="font-medium">ChromaDB ist nicht erreichbar. Der KI-Assistent (RAG) ist dadurch deaktiviert.</p>
+              <p>Moegliche Ursachen und Loesungen:</p>
+              <ul class="list-disc list-inside space-y-1 text-red-600">
+                <li>ChromaDB-Container ist nicht gestartet → <code class="bg-red-100 px-1 rounded">docker compose up -d chromadb</code></li>
+                <li>Port-Konflikt → <code class="bg-red-100 px-1 rounded">docker compose ps</code> pruefen</li>
+                <li>Neustart: <code class="bg-red-100 px-1 rounded">docker compose restart chromadb</code></li>
+              </ul>
+              <button
+                @click="copyChromaError(comp)"
+                class="mt-1 flex items-center gap-1 text-xs text-red-600 hover:text-red-800 underline"
+              >
+                Fehler fuer Issue-Report kopieren
+              </button>
             </div>
           </div>
         </div>

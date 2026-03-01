@@ -107,6 +107,14 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.0.8
+- Fix: Dashboard zeigte keine Statistiken (falscher API-Endpunkt `/stats` statt korrektem Pfad)
+- Fix: Installer schrieb Version zirkulaer aus API (las `data/.version`, schrieb sie zurueck) - jetzt direkt aus Installer-Paket
+- Fix: Windows-Pfade (z.B. `V:\Ordner`) in Watch/Export-Ordner werden erkannt und mit Warnung markiert (Docker kann nur Container-Pfade lesen)
+- Fix: ChromaDB-Fehler zeigt jetzt Hilfetext mit Diagnosebefehlen statt nur "HTTP 404"
+- Verbesserung: Ordner-Einstellungen mit Standard-Button und Pfad-Hinweisen
+- Tests: 232 Tests (System-Settings Roundtrip, Dashboard-Stats-Struktur)
+
 ### v1.0.7
 - Fix: Installer-Log zeigte Docker-Fortschrittszeilen hunderte Male (Downloading-Spam durch \r-Output)
 - Fix: Progressbar zeigt jetzt animierten Marquee waehrend Docker-Images geladen werden statt einzufrieren

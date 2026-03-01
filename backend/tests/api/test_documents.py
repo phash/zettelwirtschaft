@@ -71,6 +71,29 @@ class TestUploadEndpoint:
         assert len(data["rejected"]) == 1
 
 
+@pytest.mark.asyncio
+class TestDashboardStats:
+    async def test_stats_endpoint_exists(self, client: AsyncClient):
+        """GET /api/stats muss erreichbar sein (Dashboard-Endpunkt)."""
+        resp = await client.get("/api/stats")
+        assert resp.status_code == 200
+
+    async def test_stats_structure(self, client: AsyncClient):
+        resp = await client.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_documents" in data
+        assert "documents_this_month" in data
+        assert "pending_reviews" in data
+        assert "expiring_warranties_30d" in data
+
+    async def test_stats_total_is_non_negative(self, client: AsyncClient):
+        resp = await client.get("/api/stats")
+        data = resp.json()
+        assert data["total_documents"] >= 0
+        assert data["pending_reviews"] >= 0
+
+
 class TestDocumentStatusEndpoint:
     async def test_get_status(self, client: AsyncClient, sample_pdf: Path):
         # Erst hochladen

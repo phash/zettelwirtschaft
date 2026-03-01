@@ -255,6 +255,9 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
 - [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
 - [x] RAG-basierter KI-Assistent - ChromaDB + nomic-embed-text Vektorisierung, natuerlichsprachige Dokumenten-Fragen, ChatView, Migration 006
+- [x] Issue #11: FilePicker-Hinweis + Windows-Pfad-Warnung in SettingsView
+- [x] Issue #12: ChromaDB-Fehler mit Hilfetext + Kopier-Button, Versions-Zirkelbug behoben
+- [x] Issue #13: Watch-Ordner Windows-Pfad-Problem erkannt und gewarnt
 - [x] Steuerrelevant-Checkbox in Dokumentenliste - Steuer-Spalte direkt in der Liste sichtbar und per Klick aenderbar
 - [x] Dashboard-Verbesserungen - Auto-Polling (3s) bei aktiven Jobs, Queue-Pause/Fortsetzen, fehlgeschlagene Jobs mit Copy-for-Claude-Button
 - [x] ReviewView-Verbesserungen - Zoom (Mausrad + Buttons), Drag-to-Pan, Download, In-neuem-Tab-oeffnen
@@ -274,7 +277,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
 
 ### Tests
-- 226 Tests gesamt (1 skipped fuer Tesseract)
+- 232 Tests gesamt (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
 
 ## Planungsdokumente
