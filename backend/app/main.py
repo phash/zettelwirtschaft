@@ -49,9 +49,6 @@ async def lifespan(app: FastAPI):
         Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
         logger.info("Export-Verzeichnis bereit: %s", settings.EXPORT_DIR)
 
-    # Modelle registrieren (muessen vor init_db importiert sein)
-    import app.models.system_setting  # noqa: F401
-
     # Datenbank initialisieren
     await init_db()
     logger.info("Datenbank initialisiert")
