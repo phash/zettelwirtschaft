@@ -2,6 +2,7 @@
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
+const appVersion = __APP_VERSION__
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: 'home' },
@@ -61,5 +62,8 @@ const icons = {
         {{ item.label }}
       </router-link>
     </nav>
+    <div class="border-t border-gray-200 px-6 py-3">
+      <p class="text-xs text-gray-400">v{{ appVersion }}</p>
+    </div>
   </aside>
 </template>

@@ -795,12 +795,22 @@ function Phase-Health {
 function Phase-Model {
     Set-StepStatus 4 "active"
     $m = $script:Config.Model
-    Log "Lade LLM-Modell '$m' (kann 2-5 Minuten dauern)..."
+    Log "Pruefe LLM-Modell '$m'..."
     $script:progressBar.Value = 85
     $dir = $script:ProjectDir
     $script:Job = Start-Job -ScriptBlock {
         param($d, $mod); Set-Location $d
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+        # Pruefen ob Modell bereits vorhanden
+        $existingModels = & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama list 2>&1"
+        $modelBase = $mod -replace ':.*$', ''  # "llama3.2:latest" -> "llama3.2"
+        if ($existingModels -match [regex]::Escape($modelBase)) {
+            Write-Output "Modell '$mod' ist bereits vorhanden, kein Download noetig."
+            return
+        }
+
+        Write-Output "Lade LLM-Modell '$mod' (kann 2-5 Minuten dauern)..."
         $lastPct = @{}
         & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama pull $mod 2>&1" | ForEach-Object {
             $parts = "$_" -split "`r"
@@ -840,11 +850,19 @@ function Phase-Shortcut {
         Log "  Desktop-Verknuepfung erstellt"
     } catch { Log "  Verknuepfung konnte nicht erstellt werden" }
 
-    # VERSION-Datei schreiben (im data-Verzeichnis, wird nicht durch Updates ueberschrieben)
+    # VERSION-Datei schreiben: tatsaechliche Backend-Version bevorzugen
     $dataDir = Join-Path $script:ProjectDir "data"
     if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($instVersionFile, $script:NewVersion)
-    Log "  Version $($script:NewVersion) gespeichert"
+    $actualVersion = $script:NewVersion
+    try {
+        $resp = Invoke-RestMethod -Uri "http://localhost:8000/api/system/health" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        if ($resp.app_version -and $resp.app_version -ne "unknown") {
+            $actualVersion = $resp.app_version
+            Log "  Backend-Version bestaetigt: $actualVersion"
+        }
+    } catch { Log "  Version aus Installer-Paket: $actualVersion" }
+    [System.IO.File]::WriteAllText($instVersionFile, $actualVersion)
+    Log "  Version $actualVersion gespeichert"
 
     $script:progressBar.Value = 100
     Next-Phase

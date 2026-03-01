@@ -316,11 +316,16 @@ onMounted(async () => {
     </div>
 
     <template v-else-if="health">
-      <!-- Gesamtstatus -->
-      <div class="card !p-4 flex items-center gap-3">
-        <span :class="['h-3 w-3 rounded-full', componentStatusClass(health.status)]"></span>
-        <span class="text-sm font-medium text-gray-900">
-          System {{ health.status === 'ok' ? 'betriebsbereit' : 'eingeschraenkt' }}
+      <!-- Gesamtstatus + Version -->
+      <div class="card !p-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span :class="['h-3 w-3 rounded-full', componentStatusClass(health.status)]"></span>
+          <span class="text-sm font-medium text-gray-900">
+            System {{ health.status === 'ok' ? 'betriebsbereit' : 'eingeschraenkt' }}
+          </span>
+        </div>
+        <span v-if="health.app_version" class="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">
+          v{{ health.app_version }}
         </span>
       </div>
 

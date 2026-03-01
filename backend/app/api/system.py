@@ -144,8 +144,17 @@ async def system_health(
     )
     doc_count = doc_count_result.scalar() or 0
 
+    # Installierte Version lesen
+    from pathlib import Path
+    version_file = Path("./data/.version")
+    try:
+        app_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
+    except Exception:
+        app_version = "unknown"
+
     return {
         "status": "ok" if all(c.get("status") == "ok" for c in components.values()) else "degraded",
+        "app_version": app_version,
         "components": components,
         "statistics": {
             "total_documents": doc_count,
