@@ -247,11 +247,23 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
 - [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
 - [x] Windows-Installer - install.bat + install-gui.ps1 (grafischer 4-Schritt-Wizard, Windows Forms) + install.ps1 (CLI-Fallback), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
+  - Installer erkennt bestehende Installation: version-Datei (`data\.version`) allein reicht, oder `.env` + DB/Archiv-Ordner
+  - Semantischer Versionsvergleich (`[System.Version]`): Downgrade = rote Warnung, gleiche Version = Reparatur-Modus
+  - Nach Install: Backend-Version via `/api/system/health` abgefragt und in `data\.version` gespeichert
+  - Ollama-Modell-Check: `ollama list` vor Download - kein Re-Download wenn bereits vorhanden
   - Bekannte Fixes: v1.0.3 - `$btnBrowse` in CheckedChanged-Handler muss `$script:`-Scope haben (Event-Handler laeuft ausserhalb Funktions-Scope)
 - [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
 - [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
 - [x] RAG-basierter KI-Assistent - ChromaDB + nomic-embed-text Vektorisierung, natuerlichsprachige Dokumenten-Fragen, ChatView, Migration 006
 - [x] Steuerrelevant-Checkbox in Dokumentenliste - Steuer-Spalte direkt in der Liste sichtbar und per Klick aenderbar
+- [x] Dashboard-Verbesserungen - Auto-Polling (3s) bei aktiven Jobs, Queue-Pause/Fortsetzen, fehlgeschlagene Jobs mit Copy-for-Claude-Button
+- [x] ReviewView-Verbesserungen - Zoom (Mausrad + Buttons), Drag-to-Pan, Download, In-neuem-Tab-oeffnen
+- [x] Versionierung - Sidebar-Footer + Einstellungen zeigen `app_version`; `/api/system/health` liefert Version aus `data/.version`
+
+### Architektur-Details: Version-Tracking
+- `VERSION` - Datei im Projekt-Root (vom Installer/Release gelesen)
+- `data/.version` - Geschrieben vom Installer nach erfolgreichem Deploy; gelesen vom Backend (via `/api/system/health → app_version`); via `./data:/app/data` Volume im Container sichtbar
+- Frontend: Vite `define.__APP_VERSION__` bettet Version zur Build-Zeit ein (liest `../VERSION`)
 
 ### Alembic-Migrationen
 - `001_add_ocr_analysis` - OCR- und Analyse-Spalten auf ProcessingJob
@@ -262,7 +274,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
 
 ### Tests
-- 225 Tests gesamt (1 skipped fuer Tesseract)
+- 226 Tests gesamt (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
 
 ## Planungsdokumente

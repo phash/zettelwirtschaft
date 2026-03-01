@@ -107,6 +107,22 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.0.5
+- Feature: Installierte Version im Sidebar-Footer und in Einstellungen → System angezeigt
+- Feature: `/api/system/health` liefert jetzt `app_version` aus `data/.version`
+- Fix: Installer schreibt nach Install tatsaechliche Backend-Version (nicht mehr aus VERSION-Datei)
+- Fix: Installer-Erkennung einer bestehenden Installation robuster (version-Datei allein reicht)
+- Fix: Versionsvergleich im Installer - Downgrade wird als Warnung angezeigt
+- Fix: Ollama-Modell-Download wird uebersprungen wenn Modell bereits vorhanden
+- Feature: Dashboard zeigt fehlgeschlagene Jobs mit "Kopieren"-Button fuer Claude Code Fehler-Report
+- Feature: Dashboard Queue-Pause/Fortsetzen-Button
+- Feature: Dashboard Auto-Polling wenn aktive Jobs vorhanden
+- Feature: ReviewView - Zoom (Mausrad + Buttons), Pan, Download, In-neuem-Tab-oeffnen
+
+### v1.0.4
+- Fix: GUI-Installer - Erkennung bestehender Installation und Migrations-Dialog
+- Fix: GUI-Installer - semantischer Versionsvergleich (Downgrade-Warnung)
+
 ### v1.0.3
 - Fix: GUI-Installer (`install-gui.ps1`) - Absturz beim Klick auf Watch-Ordner-Checkbox behoben (`$btnBrowse` war als lokale Variable nicht im Event-Handler-Scope verfuegbar)
 
