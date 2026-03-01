@@ -231,6 +231,25 @@ async def archive_document(
     shutil.move(str(file_path), str(archive_path))
     logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
 
+    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
+    # Pfad aus DB lesen (Fallback auf .env-Wert)
+    try:
+        from app.services.settings_service import get_db_setting
+        export_dir = await get_db_setting(session, "export_dir", settings.EXPORT_DIR)
+    except Exception:
+        export_dir = settings.EXPORT_DIR
+
+    if export_dir:
+        try:
+            export_path = _build_archive_path(
+                export_dir, doc_type.value, doc_date, stored_filename,
+                scope_slug=scope_slug,
+            )
+            shutil.copy2(str(archive_path), str(export_path))
+            logger.info("Export-Kopie erstellt: %s", export_path)
+        except Exception:
+            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
+
     # Review-Status bestimmen
     review_status = ReviewStatus.OK
     if analysis.needs_review:

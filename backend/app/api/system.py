@@ -1,9 +1,11 @@
 """System-Health und Backup-API."""
 
+import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,9 +13,78 @@ from app.config import Settings, get_settings
 from app.database import get_db
 from app.models.document import Document, DocumentStatus
 from app.services.backup_service import create_backup, get_system_info, list_backups
+from app.services.settings_service import get_db_setting, set_db_setting
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
+
+
+class FolderSettings(BaseModel):
+    watch_dir: str
+    export_dir: str
+
+
+@router.get("/system/settings", response_model=FolderSettings)
+async def get_folder_settings(
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Liest die konfigurierten Ordner-Einstellungen."""
+    return FolderSettings(
+        watch_dir=await get_db_setting(session, "watch_dir", settings.WATCH_DIR),
+        export_dir=await get_db_setting(session, "export_dir", settings.EXPORT_DIR),
+    )
+
+
+@router.put("/system/settings", response_model=FolderSettings)
+async def update_folder_settings(
+    body: FolderSettings,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Aktualisiert Watch-Ordner und Export-Ordner. Startet Watch-Task bei Pfadaenderung neu."""
+    old_watch_dir = await get_db_setting(session, "watch_dir", settings.WATCH_DIR)
+
+    await set_db_setting(session, "watch_dir", body.watch_dir)
+    await set_db_setting(session, "export_dir", body.export_dir)
+    await session.commit()
+
+    # Export-Verzeichnis anlegen (falls gesetzt)
+    if body.export_dir:
+        from pathlib import Path
+        try:
+            Path(body.export_dir).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.warning("Export-Verzeichnis konnte nicht angelegt werden: %s", body.export_dir)
+
+    # Watch-Task neu starten wenn sich der Pfad geaendert hat
+    if body.watch_dir != old_watch_dir:
+        await _restart_watch_task(request.app, settings)
+        logger.info("Watch-Ordner geaendert: %s -> %s", old_watch_dir, body.watch_dir)
+
+    return FolderSettings(watch_dir=body.watch_dir, export_dir=body.export_dir)
+
+
+async def _restart_watch_task(app, settings: Settings) -> None:
+    """Stoppt den laufenden Watch-Task und startet ihn mit dem neuen Pfad neu."""
+    old_task = getattr(app.state, "watch_task", None)
+    if old_task and not old_task.done():
+        old_task.cancel()
+        try:
+            await old_task
+        except asyncio.CancelledError:
+            pass
+
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        logger.warning("session_factory nicht in app.state – Watch-Task kann nicht neu gestartet werden")
+        return
+
+    from app.services.watch_folder_service import run_watch_folder
+    new_task = asyncio.create_task(run_watch_folder(session_factory, settings))
+    app.state.watch_task = new_task
+    logger.info("Watch-Ordner-Task neu gestartet")
 
 
 @router.get("/system/health")

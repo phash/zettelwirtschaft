@@ -85,13 +85,59 @@ def _move_to_rejected(file_path: Path, settings: Settings) -> None:
         logger.exception("Fehler beim Verschieben nach rejected: %s", file_path.name)
 
 
+async def _scan_existing_files(
+    session_factory, settings: Settings, watch_dir: Path
+) -> None:
+    """Verarbeitet beim Start alle vorhandenen Dateien im Watch-Ordner."""
+    allowed_exts = set(settings.allowed_file_types_list)
+
+    files = [
+        f for f in watch_dir.iterdir()
+        if f.is_file() and get_file_extension(f.name) in allowed_exts
+    ]
+
+    if not files:
+        return
+
+    logger.info("Watch-Ordner-Startup-Scan: %d Datei(en) gefunden", len(files))
+
+    for file_path in files:
+        try:
+            async with session_factory() as session:
+                await process_upload(
+                    file_path=file_path,
+                    original_name=file_path.name,
+                    file_size=file_path.stat().st_size,
+                    source=JobSource.WATCH_FOLDER,
+                    settings=settings,
+                    db=session,
+                )
+                await session.commit()
+                logger.info("Watch-Ordner-Startup: Datei eingereicht: %s", file_path.name)
+
+        except FileValidationError as e:
+            logger.warning("Startup-Scan: Datei abgelehnt: %s - %s", file_path.name, e.message)
+            _move_to_rejected(file_path, settings)
+
+        except Exception:
+            logger.exception("Startup-Scan: Fehler bei Datei: %s", file_path.name)
+            _move_to_rejected(file_path, settings)
+
+
 async def run_watch_folder(
     session_factory,
     settings: Settings,
 ) -> None:
-    """Startet die Watch-Ordner-Ueberwachung."""
-    watch_dir = Path(settings.WATCH_DIR)
+    """Startet die Watch-Ordner-Ueberwachung. Liest den Pfad aus der DB (Fallback: .env)."""
+    # Pfad aus DB laden (ermoeglicht UI-Konfiguration ohne .env-Aenderung)
+    from app.services.settings_service import get_db_setting
+    async with session_factory() as session:
+        watch_dir_str = await get_db_setting(session, "watch_dir", settings.WATCH_DIR)
+    watch_dir = Path(watch_dir_str)
     watch_dir.mkdir(parents=True, exist_ok=True)
+
+    # Beim Start vorhandene Dateien einlesen
+    await _scan_existing_files(session_factory, settings, watch_dir)
 
     loop = asyncio.get_running_loop()
     handler = _WatchHandler(settings, session_factory, loop)

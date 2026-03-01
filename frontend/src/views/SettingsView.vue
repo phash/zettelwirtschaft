@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, rebuildVectors, getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope } from '../services/api'
+import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, rebuildVectors, getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope, getSystemSettings, updateSystemSettings } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
@@ -13,6 +13,30 @@ const backingUp = ref(false)
 const optimizing = ref(false)
 const rebuilding = ref(false)
 const rebuildingVectors = ref(false)
+
+// Ordner-Einstellungen
+const folderSettings = ref({ watch_dir: '', export_dir: '' })
+const savingFolders = ref(false)
+
+async function loadFolderSettings() {
+  try {
+    folderSettings.value = await getSystemSettings()
+  } catch {
+    // ignore
+  }
+}
+
+async function saveFolderSettings() {
+  savingFolders.value = true
+  try {
+    folderSettings.value = await updateSystemSettings(folderSettings.value)
+    notify.success('Ordner gespeichert.')
+  } catch (e) {
+    notify.error(e.response?.data?.detail || 'Speichern fehlgeschlagen.')
+  } finally {
+    savingFolders.value = false
+  }
+}
 
 // Filing Scopes
 const scopes = ref([])
@@ -181,13 +205,35 @@ function componentStatusClass(status) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadHealth(), loadBackups(), loadScopes()])
+  await Promise.all([loadHealth(), loadBackups(), loadScopes(), loadFolderSettings()])
 })
 </script>
 
 <template>
   <div class="space-y-6">
     <h1 class="text-2xl font-bold text-gray-900">System</h1>
+
+    <!-- Ordner-Konfiguration -->
+    <div class="card">
+      <h2 class="text-lg font-semibold text-gray-900 mb-4">Ordner</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Eingangsordner (Watch-Ordner)</label>
+          <p class="text-xs text-gray-500 mb-2">Neue Dateien in diesem Ordner werden automatisch eingelesen. Aenderungen starten die Ueberwachung neu.</p>
+          <input v-model="folderSettings.watch_dir" class="input font-mono text-sm" placeholder="z.B. /data/watch oder C:/Eingang" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner fuer verarbeitete Dokumente</label>
+          <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Ordner kopiert (Struktur: Scope/Jahr/Monat/Typ). Leer lassen zum Deaktivieren.</p>
+          <input v-model="folderSettings.export_dir" class="input font-mono text-sm" placeholder="Leer = deaktiviert, z.B. /mnt/nas/archiv" />
+        </div>
+        <div>
+          <button @click="saveFolderSettings" :disabled="savingFolders" class="btn-primary">
+            {{ savingFolders ? 'Speichere...' : 'Speichern' }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Ablagebereiche -->
     <div class="card">

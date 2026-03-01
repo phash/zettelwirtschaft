@@ -45,6 +45,13 @@ async def lifespan(app: FastAPI):
         Path(dir_path).mkdir(parents=True, exist_ok=True)
         logger.info("Verzeichnis bereit: %s", dir_path)
 
+    if settings.EXPORT_DIR:
+        Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+        logger.info("Export-Verzeichnis bereit: %s", settings.EXPORT_DIR)
+
+    # Modelle registrieren (muessen vor init_db importiert sein)
+    import app.models.system_setting  # noqa: F401
+
     # Datenbank initialisieren
     await init_db()
     logger.info("Datenbank initialisiert")
@@ -84,6 +91,10 @@ async def lifespan(app: FastAPI):
         run_watch_folder(async_session_factory, settings)
     )
     background_tasks.append(watch_task)
+
+    # Task-Referenz und Session-Factory in app.state (fuer Watch-Task-Neustart via API)
+    app.state.watch_task = watch_task
+    app.state.session_factory = async_session_factory
 
     # Garantie-Reminder
     from app.services.warranty_reminder_service import run_warranty_reminder
@@ -145,7 +156,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zettelwirtschaft",
     description="Lokales Dokumentenmanagementsystem fuer Privathaushalte",
-    version="0.1.0",
+    version="1.0.2",
     lifespan=lifespan,
 )
 

@@ -248,6 +248,16 @@ export async function getBackups() {
   return data
 }
 
+export async function getSystemSettings() {
+  const { data } = await api.get('/system/settings')
+  return data
+}
+
+export async function updateSystemSettings(settings) {
+  const { data } = await api.put('/system/settings', settings)
+  return data
+}
+
 export async function optimizeDb() {
   const { data } = await api.post('/system/maintenance/optimize-db')
   return data
