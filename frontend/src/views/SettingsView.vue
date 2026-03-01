@@ -13,6 +13,7 @@ const backingUp = ref(false)
 const optimizing = ref(false)
 const rebuilding = ref(false)
 const rebuildingVectors = ref(false)
+const installPath = ref('')
 
 // Ordner-Einstellungen
 const folderSettings = ref({ watch_dir: '', export_dir: '', watch_dir_host: '', export_dir_host: '' })
@@ -156,10 +157,17 @@ function copyChromaError(comp) {
   navigator.clipboard.writeText(text).then(() => notify.success('In Zwischenablage kopiert.'))
 }
 
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => notify.success('Kopiert.'))
+}
+
 async function loadHealth() {
   loading.value = true
   try {
     health.value = await getSystemHealth()
+    if (health.value.install_path) {
+      installPath.value = health.value.install_path
+    }
   } catch {
     notify.error('Systemstatus konnte nicht geladen werden.')
   } finally {
@@ -277,6 +285,12 @@ onUnmounted(() => {
           (<code class="bg-amber-100 px-1 rounded">stop.bat</code> &rarr; <code class="bg-amber-100 px-1 rounded">start.bat</code>),
           damit die Ordner im Container eingebunden werden.
         </p>
+        <div v-if="installPath" class="mt-2 flex items-center gap-2">
+          <span class="text-xs text-amber-700">Installationsordner:</span>
+          <code class="bg-amber-100 px-2 py-0.5 rounded text-xs font-mono text-amber-900 select-all">{{ installPath }}</code>
+          <button @click="copyText(installPath)" class="text-xs text-amber-700 underline hover:text-amber-900">Kopieren</button>
+          <button @click="copyText('explorer.exe &quot;' + installPath + '&quot;')" class="text-xs text-amber-700 underline hover:text-amber-900">Explorer-Befehl</button>
+        </div>
       </div>
     </div>
 
@@ -436,16 +450,24 @@ onUnmounted(() => {
 
     <template v-else-if="health">
       <!-- Gesamtstatus + Version -->
-      <div class="card !p-4 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <span :class="['h-3 w-3 rounded-full', componentStatusClass(health.status)]"></span>
-          <span class="text-sm font-medium text-gray-900">
-            System {{ health.status === 'ok' ? 'betriebsbereit' : 'eingeschraenkt' }}
+      <div class="card !p-4 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span :class="['h-3 w-3 rounded-full', componentStatusClass(health.status)]"></span>
+            <span class="text-sm font-medium text-gray-900">
+              System {{ health.status === 'ok' ? 'betriebsbereit' : 'eingeschraenkt' }}
+            </span>
+          </div>
+          <span v-if="health.app_version" class="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">
+            v{{ health.app_version }}
           </span>
         </div>
-        <span v-if="health.app_version" class="text-xs font-mono text-gray-400 bg-gray-100 px-2 py-1 rounded">
-          v{{ health.app_version }}
-        </span>
+        <div v-if="installPath" class="flex items-center gap-2 text-xs text-gray-500">
+          <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+          <span>Installationsordner:</span>
+          <code class="bg-gray-100 px-1.5 py-0.5 rounded font-mono text-gray-600 select-all">{{ installPath }}</code>
+          <button @click="copyText('explorer.exe &quot;' + installPath + '&quot;')" class="text-primary-600 hover:text-primary-700 underline" title="Explorer-Befehl kopieren">Ordner oeffnen</button>
+        </div>
       </div>
 
       <!-- Komponenten -->

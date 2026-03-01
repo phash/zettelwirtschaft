@@ -206,15 +206,20 @@ async def system_health(
     )
     doc_count = doc_count_result.scalar() or 0
 
-    # Installierte Version lesen
+    # Installierte Version und Pfad lesen
     from pathlib import Path
     version_file = Path("./data/.version")
+    install_path_file = Path("./data/.install-path")
     try:
         app_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
     except Exception:
         app_version = "unknown"
+    try:
+        install_path = install_path_file.read_text(encoding="utf-8").strip() if install_path_file.exists() else ""
+    except Exception:
+        install_path = ""
 
-    return {
+    result = {
         "status": "ok" if all(c.get("status") == "ok" for c in components.values()) else "degraded",
         "app_version": app_version,
         "components": components,
@@ -223,6 +228,9 @@ async def system_health(
             **sys_info,
         },
     }
+    if install_path:
+        result["install_path"] = install_path
+    return result
 
 
 @router.post("/system/backup")

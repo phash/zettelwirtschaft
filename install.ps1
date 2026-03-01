@@ -308,6 +308,7 @@ $dataDir = Join-Path $ProjectDir "data"
 if (-not (Test-Path $dataDir)) {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 }
+Set-Content -Path (Join-Path $dataDir ".install-path") -Value $ProjectDir -Encoding UTF8
 
 # docker-compose.override.yml fuer GPU-Konfiguration (nur bei NVIDIA GPU)
 if ($hasNvidiaGPU) {

@@ -863,6 +863,7 @@ function Phase-Shortcut {
     $dataDir = Join-Path $script:ProjectDir "data"
     if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
     [System.IO.File]::WriteAllText($instVersionFile, $script:NewVersion)
+    [System.IO.File]::WriteAllText((Join-Path $dataDir ".install-path"), $script:ProjectDir)
     Log "  Version $($script:NewVersion) gespeichert"
 
     $script:progressBar.Value = 100
