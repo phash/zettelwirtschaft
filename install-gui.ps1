@@ -24,14 +24,15 @@ $script:ConfigMigrations = [ordered]@{
 }
 
 # --- State ---
-$script:Step     = 0
-$script:IsUpdate = $false
-$script:BackupDir = ""
-$script:Config   = @{ Port=8080; WatchEnabled=$false; Model="llama3.2"; PinEnabled=$false; PinCode="" }
-$script:Checks   = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; RAM=0; FreeGB=0 }
-$script:Job      = $null
-$script:Phase    = 0
-$script:HasSources = Test-Path (Join-Path $script:ProjectDir "backend")
+$script:Step           = 0
+$script:IsUpdate       = $false
+$script:BackupDir      = ""
+$script:ExistingInstall = $false
+$script:Config         = @{ Port=8080; WatchEnabled=$false; Model="llama3.2"; PinEnabled=$false; PinCode="" }
+$script:Checks         = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; RAM=0; FreeGB=0 }
+$script:Job            = $null
+$script:Phase          = 0
+$script:HasSources     = Test-Path (Join-Path $script:ProjectDir "backend")
 
 # --- Colors ---
 $cAccent  = [System.Drawing.Color]::FromArgb(0, 150, 136)
@@ -176,9 +177,12 @@ function Show-Welcome {
     $pnlContent.Controls.Add($lbl)
 
     # Bestehende Installation erkennen
-    $envExists = Test-Path (Join-Path $script:ProjectDir ".env")
-    $dbExists  = Test-Path (Join-Path $script:ProjectDir "data\zettelwirtschaft.db")
-    $script:ExistingInstall = $envExists -and $dbExists
+    $envExists     = Test-Path (Join-Path $script:ProjectDir ".env")
+    $dbExists      = Test-Path (Join-Path $script:ProjectDir "data\zettelwirtschaft.db")
+    $archiveExists = Test-Path (Join-Path $script:ProjectDir "data\archive")
+    $verExists     = Test-Path $instVersionFile
+    # Erkennung: version-Datei allein reicht; alternativ .env + (DB oder Archiv-Ordner)
+    $script:ExistingInstall = $verExists -or ($envExists -and ($dbExists -or $archiveExists))
 
     if ($script:ExistingInstall) {
         $instVer = if ($script:InstalledVersion) { "v$($script:InstalledVersion)" } else { "unbekannte Version" }
@@ -210,6 +214,18 @@ function Show-Migration {
 
     $instVer = if ($script:InstalledVersion) { "v$($script:InstalledVersion)" } else { "unbekannte Version" }
 
+    # Semantischer Versionsvergleich
+    $versionRelation = "upgrade"  # upgrade | downgrade | same | unknown
+    if ($script:InstalledVersion -and $script:NewVersion) {
+        try {
+            $vInst = [System.Version]$script:InstalledVersion
+            $vNew  = [System.Version]$script:NewVersion
+            if     ($vNew -gt $vInst) { $versionRelation = "upgrade" }
+            elseif ($vNew -lt $vInst) { $versionRelation = "downgrade" }
+            else                       { $versionRelation = "same" }
+        } catch { $versionRelation = "unknown" }
+    }
+
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = "Bestehende Installation gefunden"
     $lbl.Location = [System.Drawing.Point]::new(30, 20); $lbl.Size = [System.Drawing.Size]::new(560, 30)
@@ -223,58 +239,88 @@ function Show-Migration {
     $pnlContent.Controls.Add($verPanel)
 
     $lblInstVer = New-Object System.Windows.Forms.Label
-    $lblInstVer.Location = [System.Drawing.Point]::new(15, 8); $lblInstVer.Size = [System.Drawing.Size]::new(250, 20)
+    $lblInstVer.Location = [System.Drawing.Point]::new(15, 8); $lblInstVer.Size = [System.Drawing.Size]::new(530, 20)
     $lblInstVer.Text = "Installierte Version:   $instVer"; $lblInstVer.ForeColor = $cSub
     $verPanel.Controls.Add($lblInstVer)
 
+    $newVerColor = switch ($versionRelation) {
+        "upgrade"   { $cOK }
+        "downgrade" { $cErr }
+        "same"      { $cSub }
+        default     { $cSub }
+    }
+    $newVerArrow = switch ($versionRelation) {
+        "upgrade"   { "  (Upgrade)" }
+        "downgrade" { "  (DOWNGRADE - aelter als installierte Version!)" }
+        "same"      { "  (gleiche Version)" }
+        default     { "" }
+    }
     $lblNewVer = New-Object System.Windows.Forms.Label
-    $lblNewVer.Location = [System.Drawing.Point]::new(15, 28); $lblNewVer.Size = [System.Drawing.Size]::new(250, 20)
-    $lblNewVer.Text = "Neue Version:          v$($script:NewVersion)"; $lblNewVer.ForeColor = $cOK
+    $lblNewVer.Location = [System.Drawing.Point]::new(15, 28); $lblNewVer.Size = [System.Drawing.Size]::new(530, 20)
+    $lblNewVer.Text = "Installer-Version:      v$($script:NewVersion)$newVerArrow"
+    $lblNewVer.ForeColor = $newVerColor
     $lblNewVer.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $verPanel.Controls.Add($lblNewVer)
 
-    # Option 1: Update
+    # Option 1: Update / Beibehalten
     $pnlUpdate = New-Object System.Windows.Forms.Panel
-    $pnlUpdate.Location = [System.Drawing.Point]::new(30, 125); $pnlUpdate.Size = [System.Drawing.Size]::new(560, 80)
-    $pnlUpdate.BackColor = [System.Drawing.Color]::FromArgb(232, 245, 233)
+    $pnlUpdate.Location = [System.Drawing.Point]::new(30, 125); $pnlUpdate.Size = [System.Drawing.Size]::new(560, 90)
     $pnlUpdate.Cursor = "Hand"
     $pnlContent.Controls.Add($pnlUpdate)
 
+    switch ($versionRelation) {
+        "upgrade" {
+            $pnlUpdate.BackColor = [System.Drawing.Color]::FromArgb(232, 245, 233)
+            $updateTitle = "Aktualisieren auf v$($script:NewVersion)  (empfohlen)"
+            $updateDesc  = "Datenbank, Konfiguration und Dokumente bleiben erhalten. Automatisches Backup vor dem Update."
+            $updateColor = $cOK
+        }
+        "downgrade" {
+            $pnlUpdate.BackColor = [System.Drawing.Color]::FromArgb(255, 235, 238)
+            $updateTitle = "Downgrade auf v$($script:NewVersion)  (nicht empfohlen)"
+            $updateDesc  = "Achtung: Der Installer ist aelter als die installierte Version. Datenbank-Aenderungen koennen inkompatibel sein."
+            $updateColor = $cErr
+        }
+        "same" {
+            $pnlUpdate.BackColor = [System.Drawing.Color]::FromArgb(245, 250, 255)
+            $updateTitle = "Installation reparieren / neu konfigurieren"
+            $updateDesc  = "Gleiche Version. Docker-Images werden neu eingespielt, Konfiguration kann angepasst werden."
+            $updateColor = $cSub
+        }
+        default {
+            $pnlUpdate.BackColor = [System.Drawing.Color]::FromArgb(245, 250, 255)
+            $updateTitle = "Installation aktualisieren"
+            $updateDesc  = "Datenbank, Konfiguration und Dokumente bleiben erhalten. Automatisches Backup vor dem Update."
+            $updateColor = $cSub
+        }
+    }
+
     $lblUpdate = New-Object System.Windows.Forms.Label
-    $lblUpdate.Location = [System.Drawing.Point]::new(15, 10); $lblUpdate.Size = [System.Drawing.Size]::new(450, 22)
-    $lblUpdate.Text = "Aktualisieren auf v$($script:NewVersion)  (empfohlen)"
+    $lblUpdate.Location = [System.Drawing.Point]::new(15, 10); $lblUpdate.Size = [System.Drawing.Size]::new(530, 22)
+    $lblUpdate.Text = $updateTitle
     $lblUpdate.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $lblUpdate.ForeColor = $cOK
+    $lblUpdate.ForeColor = $updateColor
     $pnlUpdate.Controls.Add($lblUpdate)
 
     $lblUpdateDesc = New-Object System.Windows.Forms.Label
-    $lblUpdateDesc.Location = [System.Drawing.Point]::new(15, 34); $lblUpdateDesc.Size = [System.Drawing.Size]::new(520, 36)
-    $lblUpdateDesc.Text = "Datenbank, Konfiguration und Dokumente bleiben erhalten. Automatisches Backup vor dem Update."
+    $lblUpdateDesc.Location = [System.Drawing.Point]::new(15, 36); $lblUpdateDesc.Size = [System.Drawing.Size]::new(530, 44)
+    $lblUpdateDesc.Text = $updateDesc
     $lblUpdateDesc.ForeColor = $cSub
     $pnlUpdate.Controls.Add($lblUpdateDesc)
 
-    $pnlUpdate.add_Click({
+    $doUpdate = {
         $script:IsUpdate = $true
         $script:Step = 10
         $btnNext.Visible = $true
         Show-Prerequisites
-    })
-    $lblUpdate.add_Click({
-        $script:IsUpdate = $true
-        $script:Step = 10
-        $btnNext.Visible = $true
-        Show-Prerequisites
-    })
-    $lblUpdateDesc.add_Click({
-        $script:IsUpdate = $true
-        $script:Step = 10
-        $btnNext.Visible = $true
-        Show-Prerequisites
-    })
+    }
+    $pnlUpdate.add_Click($doUpdate)
+    $lblUpdate.add_Click($doUpdate)
+    $lblUpdateDesc.add_Click($doUpdate)
 
     # Option 2: Reinstall
     $pnlReinstall = New-Object System.Windows.Forms.Panel
-    $pnlReinstall.Location = [System.Drawing.Point]::new(30, 220); $pnlReinstall.Size = [System.Drawing.Size]::new(560, 80)
+    $pnlReinstall.Location = [System.Drawing.Point]::new(30, 230); $pnlReinstall.Size = [System.Drawing.Size]::new(560, 80)
     $pnlReinstall.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
     $pnlReinstall.Cursor = "Hand"
     $pnlContent.Controls.Add($pnlReinstall)
