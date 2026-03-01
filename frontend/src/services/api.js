@@ -347,4 +347,9 @@ export async function resumeQueue() {
   return data
 }
 
+export async function retryJob(jobId) {
+  const { data } = await api.post(`/jobs/${jobId}/retry`)
+  return data
+}
+
 export default api

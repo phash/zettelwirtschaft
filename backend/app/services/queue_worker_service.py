@@ -162,10 +162,11 @@ async def run_queue_worker(
                     logger.info("Job %s abgeschlossen (Status: %s)", job.id, job.status)
 
                 except Exception as e:
+                    error_msg = str(e) or f"{type(e).__name__}: Unbekannter Fehler"
                     job.retry_count += 1
                     if job.retry_count >= settings.MAX_RETRIES:
                         job.status = JobStatus.FAILED
-                        job.error_message = str(e)
+                        job.error_message = error_msg
                         logger.error(
                             "Job %s endgueltig fehlgeschlagen nach %d Versuchen: %s",
                             job.id,
@@ -174,7 +175,7 @@ async def run_queue_worker(
                         )
                     else:
                         job.status = JobStatus.PENDING
-                        job.error_message = str(e)
+                        job.error_message = error_msg
                         logger.warning(
                             "Job %s fehlgeschlagen (Versuch %d/%d): %s",
                             job.id,

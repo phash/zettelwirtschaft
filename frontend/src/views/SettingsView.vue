@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, rebuildVectors, getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope, getSystemSettings, updateSystemSettings } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
@@ -40,6 +40,18 @@ async function saveFolderSettings() {
     notify.error(e.response?.data?.detail || 'Speichern fehlgeschlagen.')
   } finally {
     savingFolders.value = false
+  }
+}
+
+function onPastePath(event, field) {
+  const pasted = (event.clipboardData || window.clipboardData).getData('text')
+  if (pasted) {
+    // "Als Pfad kopieren" fuegt Anfuehrungszeichen hinzu -> entfernen
+    const cleaned = pasted.trim().replace(/^"|"$/g, '')
+    if (cleaned !== pasted) {
+      event.preventDefault()
+      folderSettings.value[field] = cleaned
+    }
   }
 }
 
@@ -238,8 +250,16 @@ function componentStatusClass(status) {
   return 'bg-red-500'
 }
 
+let healthTimer = null
+
 onMounted(async () => {
   await Promise.all([loadHealth(), loadBackups(), loadScopes(), loadFolderSettings()])
+  // Auto-Polling: Health-Status alle 10 Sekunden aktualisieren
+  healthTimer = setInterval(loadHealth, 10000)
+})
+
+onUnmounted(() => {
+  if (healthTimer) clearInterval(healthTimer)
 })
 </script>
 
@@ -264,11 +284,24 @@ onMounted(async () => {
     <div class="card">
       <h2 class="text-lg font-semibold text-gray-900 mb-4">Ordner</h2>
       <div class="space-y-4">
+        <!-- Tipp: Pfad kopieren -->
+        <div class="rounded-lg bg-blue-50 border border-blue-200 p-3 flex items-start gap-2">
+          <svg class="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <p class="text-xs text-blue-700">
+            <strong>Tipp:</strong> Ordner im Windows-Explorer mit <strong>Rechtsklick</strong> &rarr; <strong>Als Pfad kopieren</strong> auswaehlen, dann hier einfuegen (Strg+V). Anfuehrungszeichen werden automatisch entfernt.
+          </p>
+        </div>
+
         <!-- Watch-Ordner: Host-Pfad -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Eingangsordner (Watch-Ordner)</label>
           <p class="text-xs text-gray-500 mb-2">Windows-Ordner, der automatisch ueberwacht wird. Neue Dateien werden eingelesen.</p>
-          <input v-model="folderSettings.watch_dir_host" class="input font-mono text-sm" placeholder="Leer = Standard (data/watch), z.B. V:\Zettelwirtschaft\eingang" />
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 pointer-events-none">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+            </span>
+            <input v-model="folderSettings.watch_dir_host" @paste="onPastePath($event, 'watch_dir_host')" class="input font-mono text-sm pl-9" placeholder="Leer = Standard (data/watch), z.B. V:\Zettelwirtschaft\eingang" />
+          </div>
           <p v-if="folderSettings.watch_dir_host" class="text-xs text-gray-500 mt-1">
             Container-Pfad: <code class="bg-gray-100 px-1 rounded font-mono">/app/external/watch</code> (wird automatisch gesetzt)
           </p>
@@ -281,7 +314,12 @@ onMounted(async () => {
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner fuer verarbeitete Dokumente</label>
           <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Windows-Ordner kopiert. Leer lassen zum Deaktivieren.</p>
-          <input v-model="folderSettings.export_dir_host" class="input font-mono text-sm" placeholder="Leer = deaktiviert, z.B. V:\Zettelwirtschaft\fertig" />
+          <div class="relative">
+            <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 pointer-events-none">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+            </span>
+            <input v-model="folderSettings.export_dir_host" @paste="onPastePath($event, 'export_dir_host')" class="input font-mono text-sm pl-9" placeholder="Leer = deaktiviert, z.B. V:\Zettelwirtschaft\fertig" />
+          </div>
           <p v-if="folderSettings.export_dir_host" class="text-xs text-gray-500 mt-1">
             Container-Pfad: <code class="bg-gray-100 px-1 rounded font-mono">/app/external/export</code> (wird automatisch gesetzt)
           </p>

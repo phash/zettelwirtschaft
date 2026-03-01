@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
-import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, getFilingScopes } from '../services/api'
+import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, getFilingScopes, createFilingScope } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
 const route = useRoute()
@@ -136,6 +136,28 @@ async function handleRemoveTag(tagName) {
   }
 }
 
+// Quick-add filing scope
+const showNewScope = ref(false)
+const newScopeName = ref('')
+const creatingScopeInline = ref(false)
+
+async function quickAddScope() {
+  if (!newScopeName.value.trim()) return
+  creatingScopeInline.value = true
+  try {
+    const created = await createFilingScope({ name: newScopeName.value.trim(), keywords: [] })
+    filingScopes.value = await getFilingScopes()
+    editForm.value.filing_scope_id = created.id
+    newScopeName.value = ''
+    showNewScope.value = false
+    notify.success('Ablagebereich erstellt.')
+  } catch (e) {
+    notify.error(e.response?.data?.detail || 'Erstellen fehlgeschlagen.')
+  } finally {
+    creatingScopeInline.value = false
+  }
+}
+
 // Review questions
 const reviewAnswers = ref({})
 
@@ -246,12 +268,19 @@ onMounted(async () => {
             <input v-model="editForm.reference_number" class="input" />
           </div>
 
-          <div v-if="filingScopes.length > 1">
+          <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Ablagebereich</label>
-            <select v-model="editForm.filing_scope_id" class="input">
-              <option :value="null">Kein Bereich</option>
-              <option v-for="s in filingScopes" :key="s.id" :value="s.id">{{ s.name }}</option>
-            </select>
+            <div class="flex gap-2">
+              <select v-model="editForm.filing_scope_id" class="input flex-1">
+                <option :value="null">Kein Bereich</option>
+                <option v-for="s in filingScopes" :key="s.id" :value="s.id">{{ s.name }}</option>
+              </select>
+              <button @click="showNewScope = !showNewScope" class="btn-secondary !px-2" title="Neuen Ablagebereich anlegen">+</button>
+            </div>
+            <div v-if="showNewScope" class="mt-2 flex gap-2">
+              <input v-model="newScopeName" class="input flex-1 text-sm" placeholder="Neuer Bereich..." @keydown.enter="quickAddScope" />
+              <button @click="quickAddScope" :disabled="creatingScopeInline" class="btn-primary text-xs">Anlegen</button>
+            </div>
           </div>
 
           <div class="flex items-center gap-3 pt-1">

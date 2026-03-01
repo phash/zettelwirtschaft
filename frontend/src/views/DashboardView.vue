@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import StatCard from '../components/common/StatCard.vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
-import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue } from '../services/api'
+import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
 const router = useRouter()
@@ -55,6 +55,16 @@ async function toggleQueue() {
     }
   } catch {
     notify.error('Queue-Status konnte nicht geaendert werden.')
+  }
+}
+
+async function handleRetry(job) {
+  try {
+    await retryJob(job.id)
+    failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
+    notify.success(`"${job.original_filename}" wird erneut verarbeitet.`)
+  } catch {
+    notify.error('Wiederholung fehlgeschlagen.')
   }
 }
 
@@ -219,15 +229,27 @@ onMounted(loadData)
               <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0 flex-1">
                   <p class="text-sm font-medium text-gray-900 truncate">{{ job.original_filename }}</p>
-                  <p class="mt-1 text-xs text-red-600 line-clamp-2">{{ job.error_message || 'Keine Fehlermeldung verfuegbar' }}</p>
+                  <p class="mt-1 text-xs text-gray-500">{{ new Date(job.updated_at || job.created_at).toLocaleString('de-DE') }}</p>
                 </div>
-                <button
-                  @click="copyForClaude(job)"
-                  title="Fehlerinfo fuer Claude Code kopieren"
-                  class="flex-shrink-0 rounded-md bg-white px-2 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-gray-200 hover:bg-gray-50"
-                >
-                  Kopieren
-                </button>
+                <div class="flex gap-1 flex-shrink-0">
+                  <button
+                    @click="handleRetry(job)"
+                    title="Erneut verarbeiten"
+                    class="rounded-md bg-white px-2 py-1 text-xs font-medium text-primary-600 shadow-sm ring-1 ring-gray-200 hover:bg-primary-50"
+                  >
+                    Wiederholen
+                  </button>
+                  <button
+                    @click="copyForClaude(job)"
+                    title="Fehlerinfo kopieren"
+                    class="rounded-md bg-white px-2 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-gray-200 hover:bg-gray-50"
+                  >
+                    Kopieren
+                  </button>
+                </div>
+              </div>
+              <div class="mt-2 rounded bg-red-100 p-2 text-xs text-red-700 font-mono break-all select-all cursor-text">
+                {{ job.error_message || 'Keine Fehlermeldung verfuegbar. Bitte "Kopieren" nutzen und Logs pruefen.' }}
               </div>
             </div>
           </div>

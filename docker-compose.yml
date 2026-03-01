@@ -33,7 +33,7 @@ services:
       start_period: 10s
 
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.6.3
     volumes:
       - chromadb-data:/chroma/chroma
     restart: unless-stopped
