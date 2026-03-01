@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.processing_job import JobStatus, ProcessingJob
 from app.schemas.processing_job import JobStatusResponse, PaginatedJobsResponse
+from app.services.queue_worker_service import is_queue_paused, pause_queue, resume_queue
 
 logger = logging.getLogger("zettelwirtschaft.api.jobs")
 
@@ -50,3 +51,23 @@ async def list_jobs(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/jobs/queue-status")
+async def get_queue_status() -> dict:
+    """Gibt den aktuellen Status der Verarbeitungs-Queue zurueck."""
+    return {"paused": is_queue_paused()}
+
+
+@router.post("/jobs/pause")
+async def pause_job_queue() -> dict:
+    """Pausiert die Verarbeitungs-Queue (laufende Jobs werden abgeschlossen)."""
+    pause_queue()
+    return {"paused": True, "message": "Queue pausiert"}
+
+
+@router.post("/jobs/resume")
+async def resume_job_queue() -> dict:
+    """Setzt die Verarbeitungs-Queue fort."""
+    resume_queue()
+    return {"paused": False, "message": "Queue fortgesetzt"}

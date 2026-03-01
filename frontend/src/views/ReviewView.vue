@@ -14,6 +14,36 @@ const loadingDoc = ref(false)
 const answers = ref({})
 const currentQuestionIdx = ref(0)
 
+// Zoom & Pan state
+const zoomLevel = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const isDragging = ref(false)
+const dragStart = ref({ x: 0, y: 0, panX: 0, panY: 0 })
+
+function zoomIn() { zoomLevel.value = Math.min(zoomLevel.value + 0.25, 4) }
+function zoomOut() { zoomLevel.value = Math.max(zoomLevel.value - 0.25, 0.5) }
+function resetZoom() { zoomLevel.value = 1; panX.value = 0; panY.value = 0 }
+
+function onWheel(e) {
+  const delta = e.deltaY > 0 ? -0.15 : 0.15
+  zoomLevel.value = Math.max(0.5, Math.min(4, zoomLevel.value + delta))
+}
+
+function onDragStart(e) {
+  if (zoomLevel.value <= 1) return
+  isDragging.value = true
+  dragStart.value = { x: e.clientX, y: e.clientY, panX: panX.value, panY: panY.value }
+}
+
+function onDragMove(e) {
+  if (!isDragging.value) return
+  panX.value = dragStart.value.panX + (e.clientX - dragStart.value.x)
+  panY.value = dragStart.value.panY + (e.clientY - dragStart.value.y)
+}
+
+function onDragEnd() { isDragging.value = false }
+
 const totalCount = computed(() => documents.value.length)
 
 const questions = computed(() => reviewData.value?.questions || [])
@@ -42,6 +72,7 @@ async function loadReviewDocs() {
 async function loadCurrentDoc() {
   if (currentIndex.value >= documents.value.length) return
   loadingDoc.value = true
+  resetZoom()
   try {
     const docId = documents.value[currentIndex.value].id
     reviewData.value = await getReviewDetail(docId)
@@ -161,15 +192,62 @@ onMounted(loadReviewDocs)
 
     <!-- Review content -->
     <div v-else-if="currentDoc" class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <!-- Document preview (55%) -->
+      <!-- Document preview -->
       <div class="card !p-0 overflow-hidden lg:col-span-1">
-        <div class="p-4 border-b border-gray-200 flex items-center gap-3">
+        <div class="p-3 border-b border-gray-200 flex items-center gap-2">
           <DocTypeBadge :type="currentDoc.document_type" />
-          <span class="text-sm font-medium text-gray-900 truncate">{{ currentDoc.title }}</span>
+          <span class="text-sm font-medium text-gray-900 truncate flex-1">{{ currentDoc.title }}</span>
+          <!-- Download & open in new tab -->
+          <a :href="fileUrl" :download="currentDoc.original_filename" title="Herunterladen"
+            class="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+          </a>
+          <a :href="fileUrl" target="_blank" rel="noopener" title="In neuem Tab oeffnen"
+            class="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </a>
         </div>
-        <div class="aspect-[3/4] bg-gray-100">
-          <iframe v-if="currentDoc.file_type === 'pdf'" :src="fileUrl" class="h-full w-full" title="Vorschau"></iframe>
-          <img v-else :src="fileUrl" :alt="currentDoc.title" class="h-full w-full object-contain p-4" />
+        <!-- PDF: native viewer -->
+        <div v-if="currentDoc.file_type === 'pdf'" class="aspect-[3/4] bg-gray-100">
+          <iframe :src="fileUrl" class="h-full w-full" title="Vorschau"></iframe>
+        </div>
+        <!-- Image: zoom + pan -->
+        <div v-else
+          class="relative aspect-[3/4] bg-gray-100 overflow-hidden select-none"
+          @wheel.prevent="onWheel"
+          @mousedown.prevent="onDragStart"
+          @mousemove="onDragMove"
+          @mouseup="onDragEnd"
+          @mouseleave="onDragEnd"
+          :style="{ cursor: isDragging ? 'grabbing' : (zoomLevel > 1 ? 'grab' : 'default') }"
+        >
+          <!-- Zoom controls overlay -->
+          <div class="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-lg bg-white/90 shadow-md px-2 py-1">
+            <button @click="zoomOut" title="Verkleinern" class="rounded p-0.5 text-gray-600 hover:bg-gray-100 text-base leading-none font-medium w-6 h-6 flex items-center justify-center">−</button>
+            <span class="text-xs text-gray-600 w-10 text-center">{{ Math.round(zoomLevel * 100) }}%</span>
+            <button @click="zoomIn" title="Vergroessern" class="rounded p-0.5 text-gray-600 hover:bg-gray-100 text-base leading-none font-medium w-6 h-6 flex items-center justify-center">+</button>
+            <button v-if="zoomLevel !== 1 || panX !== 0 || panY !== 0" @click="resetZoom" title="Zuruecksetzen"
+              class="ml-1 rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-100">1:1</button>
+          </div>
+          <div class="flex h-full w-full items-center justify-center">
+            <img
+              :src="fileUrl"
+              :alt="currentDoc.title"
+              draggable="false"
+              :style="{
+                transform: `translate(${panX}px, ${panY}px) scale(${zoomLevel})`,
+                transformOrigin: 'center center',
+                transition: isDragging ? 'none' : 'transform 0.1s ease',
+                maxWidth: '100%',
+                maxHeight: '100%',
+                objectFit: 'contain',
+              }"
+            />
+          </div>
         </div>
       </div>
 

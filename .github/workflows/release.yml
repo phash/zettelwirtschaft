@@ -115,6 +115,9 @@ jobs:
           cp update.bat release/
           cp uninstall.bat release/
 
+          # VERSION-Datei mit aktueller Version schreiben
+          echo "${VERSION}" > release/VERSION
+
           # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit)
           cd release
           tar -czf ../zettelwirtschaft-${VERSION}.tar.gz .env.example *

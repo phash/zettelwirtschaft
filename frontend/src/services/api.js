@@ -332,4 +332,19 @@ export async function getJobs(params = {}) {
   return data
 }
 
+export async function getQueueStatus() {
+  const { data } = await api.get('/jobs/queue-status')
+  return data
+}
+
+export async function pauseQueue() {
+  const { data } = await api.post('/jobs/pause')
+  return data
+}
+
+export async function resumeQueue() {
+  const { data } = await api.post('/jobs/resume')
+  return data
+}
+
 export default api

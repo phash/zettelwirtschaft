@@ -15,6 +15,25 @@ from app.services.thumbnail_service import generate_thumbnail
 
 logger = logging.getLogger("zettelwirtschaft.queue_worker")
 
+# Globales Pause-Flag (in-memory, resets on restart)
+_queue_paused: bool = False
+
+
+def pause_queue() -> None:
+    global _queue_paused
+    _queue_paused = True
+    logger.info("Queue-Worker pausiert")
+
+
+def resume_queue() -> None:
+    global _queue_paused
+    _queue_paused = False
+    logger.info("Queue-Worker fortgesetzt")
+
+
+def is_queue_paused() -> bool:
+    return _queue_paused
+
 
 async def _process_job(
     job: ProcessingJob,
@@ -111,6 +130,10 @@ async def run_queue_worker(
 
     while True:
         try:
+            if _queue_paused:
+                await asyncio.sleep(settings.QUEUE_POLL_INTERVAL)
+                continue
+
             async with session_factory() as session:
                 # Naechsten PENDING-Job holen
                 result = await session.execute(
