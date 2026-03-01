@@ -10,7 +10,7 @@ Add-Type -AssemblyName System.Drawing
 # --- Versionierung ---
 $newVersionFile  = Join-Path $script:ProjectDir "VERSION"
 $instVersionFile = Join-Path $script:ProjectDir "data\.version"
-$script:NewVersion       = if (Test-Path $newVersionFile)  { (Get-Content $newVersionFile  -Raw).Trim() } else { "1.0.3" }
+$script:NewVersion       = if (Test-Path $newVersionFile)  { (Get-Content $newVersionFile  -Raw).Trim() } else { "unbekannt" }
 $script:InstalledVersion = if (Test-Path $instVersionFile) { (Get-Content $instVersionFile -Raw).Trim() } else { "" }
 
 # --- Migrationspfade: Neue .env-Variablen pro Version ---

@@ -107,6 +107,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.0.6
+- Fix: Setup.exe enthielt keine VERSION-Datei - Installer zeigte immer "v1.0.3" als neue Version
+- Fix: Fallback-Version im Installer von "1.0.3" auf "unbekannt" geaendert
+
 ### v1.0.5
 - Feature: Installierte Version im Sidebar-Footer und in Einstellungen → System angezeigt
 - Feature: `/api/system/health` liefert jetzt `app_version` aus `data/.version`
