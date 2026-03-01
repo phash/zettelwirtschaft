@@ -107,6 +107,16 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.0.9
+- Feature: Host-Ordner fuer Watch/Export via Docker-Volume-Mount (Windows-Pfade wie `V:\Zettelwirtschaft` werden als Docker-Volume gemountet)
+- Feature: Installationspfad in Settings anzeigen mit "Ordner oeffnen"-Button (kopiert Explorer-Befehl)
+- Feature: Settings Auto-Refresh (Health-Status alle 10 Sekunden aktualisiert)
+- Fix: Ablagebereich-Dropdown immer sichtbar + Schnell-Anlegen per "+"-Button (#15)
+- Fix: Fehlgeschlagene Jobs mit Retry-Button, selektierbarer Fehlermeldung und Zeitstempel (#16)
+- Fix: ChromaDB-Image auf 0.6.3 gepinnt (Kompatibilitaet mit chromadb-client 0.6.x)
+- Fix: Bessere Fehlermeldungen bei leeren Exceptions im Queue-Worker
+- Tests: 237 Tests (Host-Mount-Settings, Retry-Endpoint)
+
 ### v1.0.8
 - Fix: Dashboard zeigte keine Statistiken (falscher API-Endpunkt `/stats` statt korrektem Pfad)
 - Fix: Installer schrieb Version zirkulaer aus API (las `data/.version`, schrieb sie zurueck) - jetzt direkt aus Installer-Paket

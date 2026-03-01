@@ -110,7 +110,8 @@ zettelwirtschaft/
   install.bat                    # Windows-Installer Einstiegspunkt (GUI bevorzugt, CLI als Fallback)
   install-gui.ps1                # Grafischer Windows-Installer (Windows Forms, 4-Schritt-Wizard)
   install.ps1                    # PowerShell-CLI-Installationsassistent (Fallback)
-  start.bat                      # System starten + Browser oeffnen
+  generate-mounts.ps1             # Generiert docker-compose.override.yml aus .host-mounts.json
+  start.bat                      # System starten (ruft generate-mounts.ps1) + Browser oeffnen
   stop.bat                       # System stoppen
   update.bat                     # System updaten (mit Backup)
   uninstall.bat                  # System deinstallieren
@@ -262,6 +263,12 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] Dashboard-Verbesserungen - Auto-Polling (3s) bei aktiven Jobs, Queue-Pause/Fortsetzen, fehlgeschlagene Jobs mit Copy-for-Claude-Button
 - [x] ReviewView-Verbesserungen - Zoom (Mausrad + Buttons), Drag-to-Pan, Download, In-neuem-Tab-oeffnen
 - [x] Versionierung - Sidebar-Footer + Einstellungen zeigen `app_version`; `/api/system/health` liefert Version aus `data/.version`
+- [x] Host-Ordner (Issue #14) - Windows-Pfade als Watch/Export via Docker-Volume-Mount, `generate-mounts.ps1` erzeugt `docker-compose.override.yml`, Restart-Banner in Settings
+- [x] Ablagebereich-Wechsel (Issue #15) - Scope-Dropdown immer sichtbar, "+"-Button fuer Inline-Anlage
+- [x] Fehlerbehandlung (Issue #16) - Job-Retry-Endpoint, Retry-Button in Dashboard, bessere Fehlermeldungen
+- [x] ChromaDB-Pinning - Image auf 0.6.3 gepinnt (Kompatibilitaet mit chromadb-client 0.6.x)
+- [x] Installationspfad - In Settings anzeigen, "Ordner oeffnen"-Button kopiert Explorer-Befehl
+- [x] Settings Auto-Refresh - Health-Status Polling alle 10 Sekunden
 
 ### Architektur-Details: Version-Tracking
 - `VERSION` - Datei im Projekt-Root (vom Installer/Release gelesen)
@@ -277,7 +284,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
 
 ### Tests
-- 232 Tests gesamt (1 skipped fuer Tesseract)
+- 237 Tests gesamt (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
 
 ## Planungsdokumente
