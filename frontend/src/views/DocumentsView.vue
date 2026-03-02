@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
@@ -102,12 +102,18 @@ function sortIcon(column) {
   return sortOrder.value === 'asc' ? ' \u2191' : ' \u2193'
 }
 
+let skipPageWatch = false
+
 watch([filterType, filterDateFrom, filterDateTo, filterTaxRelevant, filterScope, sortBy, sortOrder], () => {
+  skipPageWatch = true
   page.value = 1
   loadDocuments()
+  nextTick(() => { skipPageWatch = false })
 })
 
-watch(page, loadDocuments)
+watch(page, () => {
+  if (!skipPageWatch) loadDocuments()
+})
 
 onMounted(async () => {
   try { filingScopes.value = await getFilingScopes() } catch {}

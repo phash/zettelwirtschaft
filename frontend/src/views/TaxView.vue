@@ -142,7 +142,7 @@ onMounted(async () => {
             <div class="mt-3 h-2 rounded-full bg-gray-100 overflow-hidden">
               <div
                 class="h-full rounded-full bg-primary-500"
-                :style="{ width: Math.max(2, (cat.total_amount / summary.total_amount) * 100) + '%' }"
+                :style="{ width: Math.max(2, summary.total_amount ? (cat.total_amount / summary.total_amount) * 100 : 0) + '%' }"
               ></div>
             </div>
           </div>

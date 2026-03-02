@@ -155,7 +155,7 @@ class Tag(Base):
     )
 
     documents: Mapped[list["Document"]] = relationship(
-        secondary="document_tags", back_populates="tags", lazy="selectin"
+        secondary="document_tags", back_populates="tags", lazy="noload"
     )
 
 

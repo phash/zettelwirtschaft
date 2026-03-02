@@ -9,6 +9,15 @@ from app.services.ocr_service import OcrResult, extract_text
 
 logger = logging.getLogger("zettelwirtschaft.analysis")
 
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Sichere Konvertierung zu float."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 VALID_DOCUMENT_TYPES = {
     "RECHNUNG",
     "QUITTUNG",
@@ -117,7 +126,7 @@ def _build_result_from_combined(data: dict, confidence_threshold: float) -> Anal
     if doc_type not in VALID_DOCUMENT_TYPES:
         doc_type = "SONSTIGES"
 
-    confidence = float(data.get("confidence", 0.0))
+    confidence = _safe_float(data.get("confidence", 0.0))
     needs_review = data.get("needs_review", False) or confidence < confidence_threshold
 
     review_questions = data.get("review_questions", [])
@@ -146,7 +155,7 @@ def _build_result_from_combined(data: dict, confidence_threshold: float) -> Anal
         needs_review=needs_review,
         review_questions=review_questions,
         filing_scope=data.get("filing_scope"),
-        filing_scope_confidence=float(data.get("filing_scope_confidence", 0.0)),
+        filing_scope_confidence=_safe_float(data.get("filing_scope_confidence", 0.0)),
     )
 
 
@@ -174,8 +183,8 @@ async def _try_combined_analysis(
         logger.error("Kombiniertes Prompt-Template nicht gefunden")
         return None
 
-    prompt = template.replace("{ocr_text}", ocr_text)
-    prompt = prompt.replace("{filing_scopes}", _format_filing_scopes(filing_scopes))
+    prompt = template.replace("{filing_scopes}", _format_filing_scopes(filing_scopes))
+    prompt = prompt.replace("{ocr_text}", ocr_text)
     raw_response = await call_llm(prompt, settings)
     if not raw_response:
         return None
@@ -206,7 +215,7 @@ async def _try_sequential_analysis(
                 doc_type = data.get("document_type", "SONSTIGES")
                 if doc_type in VALID_DOCUMENT_TYPES:
                     result.document_type = doc_type
-                result.confidence = float(data.get("confidence", 0.0))
+                result.confidence = _safe_float(data.get("confidence", 0.0))
     except Exception:
         logger.exception("Fehler bei Klassifikation")
 

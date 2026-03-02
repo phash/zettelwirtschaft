@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sqlite3
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -36,9 +37,19 @@ def create_backup(settings: Settings, include_documents: bool = False) -> str:
     db_file = _db_path(settings)
 
     with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Datenbank
+        # Datenbank - via SQLite Backup API fuer konsistente Sicherung
         if db_file.exists():
-            zf.write(db_file, "database/zettelwirtschaft.db")
+            backup_db = backup_path.parent / f"_temp_{timestamp}.db"
+            try:
+                src = sqlite3.connect(str(db_file))
+                dst = sqlite3.connect(str(backup_db))
+                src.backup(dst)
+                src.close()
+                dst.close()
+                zf.write(backup_db, "database/zettelwirtschaft.db")
+            finally:
+                if backup_db.exists():
+                    backup_db.unlink()
 
         # .env Konfiguration
         env_file = Path(".env")
@@ -123,7 +134,7 @@ async def run_auto_backup(session_factory, settings: Settings) -> None:
     while True:
         try:
             # Backup erstellen
-            path = create_backup(settings, include_documents=False)
+            path = await asyncio.to_thread(create_backup, settings, False)
             logger.info("Auto-Backup erstellt: %s", path)
             # Alte aufraeumen
             cleanup_old_backups(settings)

@@ -3,7 +3,7 @@ import json
 import logging
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
@@ -135,22 +135,36 @@ async def run_queue_worker(
                 continue
 
             async with session_factory() as session:
-                # Naechsten PENDING-Job holen
+                # 1. Naechsten PENDING-Job finden (nur ID)
                 result = await session.execute(
-                    select(ProcessingJob)
+                    select(ProcessingJob.id)
                     .where(ProcessingJob.status == JobStatus.PENDING)
                     .order_by(ProcessingJob.created_at.asc())
                     .limit(1)
                 )
-                job = result.scalar_one_or_none()
+                job_id = result.scalar_one_or_none()
 
-                if job is None:
+                if job_id is None:
                     await asyncio.sleep(settings.QUEUE_POLL_INTERVAL)
                     continue
 
-                # Status auf PROCESSING setzen
-                job.status = JobStatus.PROCESSING
+                # 2. Atomic claim: nur erfolgreich wenn noch PENDING
+                claim_result = await session.execute(
+                    update(ProcessingJob)
+                    .where(ProcessingJob.id == job_id)
+                    .where(ProcessingJob.status == JobStatus.PENDING)
+                    .values(status=JobStatus.PROCESSING)
+                )
                 await session.commit()
+
+                if claim_result.rowcount == 0:
+                    continue  # Anderer Worker hat den Job uebernommen
+
+                # 3. Vollstaendiges Job-Objekt laden
+                result = await session.execute(
+                    select(ProcessingJob).where(ProcessingJob.id == job_id)
+                )
+                job = result.scalar_one()
                 logger.info("Verarbeite Job %s: %s", job.id, job.original_filename)
 
                 try:

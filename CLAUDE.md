@@ -282,9 +282,11 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `004_notifications_corrections` - Notification, CorrectionMapping Tabellen + ReviewQuestion-Erweiterungen
 - `005_add_filing_scopes` - FilingScope-Tabelle + filing_scope_id auf Documents + Default-Scopes
 - `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
+- `007_add_system_settings` - SystemSetting-Tabelle fuer UI-konfigurierbare Einstellungen
+- `008_add_warranty_reminder_flags` - Separate Reminder-Flags (90d/30d/0d) auf WarrantyInfo
 
 ### Tests
-- 237 Tests gesamt (1 skipped fuer Tesseract)
+- 236 Tests gesamt (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
 
 ## Planungsdokumente

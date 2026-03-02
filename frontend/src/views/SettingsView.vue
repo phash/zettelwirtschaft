@@ -161,17 +161,17 @@ function copyText(text) {
   navigator.clipboard.writeText(text).then(() => notify.success('Kopiert.'))
 }
 
-async function loadHealth() {
-  loading.value = true
+async function loadHealth(isPolling = false) {
+  if (!isPolling) loading.value = true
   try {
     health.value = await getSystemHealth()
     if (health.value.install_path) {
       installPath.value = health.value.install_path
     }
   } catch {
-    notify.error('Systemstatus konnte nicht geladen werden.')
+    if (!isPolling) notify.error('Systemstatus konnte nicht geladen werden.')
   } finally {
-    loading.value = false
+    if (!isPolling) loading.value = false
   }
 }
 
@@ -263,7 +263,7 @@ let healthTimer = null
 onMounted(async () => {
   await Promise.all([loadHealth(), loadBackups(), loadScopes(), loadFolderSettings()])
   // Auto-Polling: Health-Status alle 10 Sekunden aktualisieren
-  healthTimer = setInterval(loadHealth, 10000)
+  healthTimer = setInterval(() => loadHealth(true), 10000)
 })
 
 onUnmounted(() => {
@@ -509,7 +509,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Speicher -->
-      <div class="card">
+      <div v-if="health.statistics" class="card">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">Speicher</h2>
         <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div>

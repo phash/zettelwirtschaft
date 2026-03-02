@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import { uploadDocuments, getJobStatus } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
@@ -103,6 +103,13 @@ const statusColors = {
   FAILED: 'bg-red-100 text-red-700',
   NEEDS_REVIEW: 'bg-orange-100 text-orange-700',
 }
+
+onUnmounted(() => {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+})
 </script>
 
 <template>

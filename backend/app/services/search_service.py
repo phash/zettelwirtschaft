@@ -85,12 +85,22 @@ async def index_document(
 def _sanitize_fts_query(query: str) -> str:
     """Bereinigt eine Suchanfrage fuer FTS5.
 
+    - Entfernt FTS5 Spalten-Filter und Operatoren
     - Behaelt Anfuehrungszeichen fuer Phrase-Suche bei
     - Fuegt * fuer Prefix-Suche an Woerter an (sofern nicht bereits vorhanden)
     - Entfernt gefaehrliche Zeichen
     """
     if not query or not query.strip():
         return ""
+
+    query = query.strip()
+
+    # Remove FTS5 column filters like "ocr_text:" or "title:"
+    query = re.sub(r'\b(title|ocr_text|issuer|summary|tags)\s*:', '', query, flags=re.IGNORECASE)
+    # Remove NEAR(...) patterns (before removing standalone NEAR)
+    query = re.sub(r'NEAR\s*\([^)]*\)', '', query, flags=re.IGNORECASE)
+    # Remove FTS5 boolean operators
+    query = re.sub(r'\b(AND|OR|NOT|NEAR)\b', '', query, flags=re.IGNORECASE)
 
     query = query.strip()
 

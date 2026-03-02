@@ -1,5 +1,6 @@
 """RAG-Service: Retrieval-Augmented Generation Pipeline."""
 
+import asyncio
 import logging
 from collections import OrderedDict
 
@@ -48,7 +49,9 @@ async def ask_question(
 
     # 2. Aehnliche Chunks suchen (mehr holen fuer Scope-Filterung)
     fetch_k = settings.RAG_TOP_K * 3 if filing_scope_id else settings.RAG_TOP_K
-    chunks = search_similar_chunks(query_embedding, settings, top_k=fetch_k)
+    chunks = await asyncio.to_thread(
+        lambda: search_similar_chunks(query_embedding, settings, top_k=fetch_k)
+    )
 
     if not chunks:
         return {
@@ -110,7 +113,7 @@ async def ask_question(
             "Dokumentenausschnitte:\n{context}\n\nFrage: {question}"
         )
 
-    prompt = prompt_template.format(context=context, question=question)
+    prompt = prompt_template.replace("{context}", context).replace("{question}", question)
     answer = await call_llm_text(prompt, settings)
 
     if not answer:

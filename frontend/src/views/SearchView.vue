@@ -125,7 +125,13 @@ async function removeSavedSearch(id) {
 }
 
 function applySavedSearch(search) {
-  const params = JSON.parse(search.query_params)
+  let params
+  try {
+    params = typeof search.query_params === 'string' ? JSON.parse(search.query_params) : search.query_params
+  } catch (e) {
+    console.error('Ungueltige gespeicherte Suche:', e)
+    return
+  }
   query.value = params.q || ''
   filterType.value = params.document_type ? params.document_type.split(',') : []
   filterDateFrom.value = params.date_from || ''
@@ -292,7 +298,7 @@ onMounted(async () => {
           <span class="text-gray-500">{{ total }} Ergebnis{{ total !== 1 ? 'se' : '' }}</span>
           <div class="flex items-center gap-2">
             <span class="text-gray-500">Sortierung:</span>
-            <select v-model="sortBy" class="input !w-auto !py-1" @change="doSearch()">
+            <select v-model="sortBy" class="input !w-auto !py-1" @change="page = 1; doSearch()">
               <option value="relevance">Relevanz</option>
               <option value="date">Datum</option>
               <option value="amount">Betrag</option>
@@ -339,7 +345,7 @@ onMounted(async () => {
                   <span v-if="r.amount != null">{{ formatAmount(r.amount, r.currency) }}</span>
                 </div>
                 <!-- Highlight snippet -->
-                <p v-if="r.highlight" class="mt-2 text-sm text-gray-600 line-clamp-2" v-html="r.highlight"></p>
+                <p v-if="r.highlight" class="mt-2 text-sm text-gray-600 line-clamp-2">{{ r.highlight }}</p>
                 <!-- Tags -->
                 <div v-if="r.tags?.length" class="mt-2 flex flex-wrap gap-1">
                   <span v-for="tag in r.tags" :key="tag" class="badge bg-gray-100 text-gray-600">{{ tag }}</span>

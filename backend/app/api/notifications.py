@@ -17,12 +17,15 @@ router = APIRouter(tags=["notifications"])
 @router.get("/notifications", response_model=list[NotificationResponse])
 async def list_notifications(
     unread_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
     session: AsyncSession = Depends(get_db),
 ):
     """Liste aller Benachrichtigungen."""
-    stmt = select(Notification).order_by(Notification.created_at.desc()).limit(50)
+    stmt = select(Notification).order_by(Notification.created_at.desc())
     if unread_only:
         stmt = stmt.where(Notification.is_read.is_(False))
+    stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     return result.scalars().all()
 

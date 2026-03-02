@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Response
 from fastapi.requests import Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
@@ -71,7 +72,7 @@ async def auth_login(
         )
         return {"success": True}
 
-    return {"success": False, "detail": "Falscher PIN"}
+    return JSONResponse(status_code=401, content={"success": False, "detail": "Falscher PIN"})
 
 
 @router.post("/logout")

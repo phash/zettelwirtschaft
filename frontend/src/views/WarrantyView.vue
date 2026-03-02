@@ -36,8 +36,8 @@ function statusBadge(w) {
 }
 
 function progressPercent(w) {
-  const totalDays = w.warranty_duration_months * 30
-  const elapsed = totalDays - w.days_remaining
+  const totalDays = (w.warranty_duration_months || 1) * 30
+  const elapsed = totalDays - (w.days_remaining || 0)
   return Math.min(100, Math.max(0, (elapsed / totalDays) * 100))
 }
 

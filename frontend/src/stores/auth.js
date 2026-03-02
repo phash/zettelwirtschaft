@@ -13,7 +13,8 @@ export const useAuthStore = defineStore('auth', () => {
       pinEnabled.value = data.pin_enabled
       isAuthenticated.value = data.authenticated
     } catch {
-      pinEnabled.value = false
+      // Bei Netzwerkfehler: PIN-Status beibehalten (nicht deaktivieren)
+      // isAuthenticated bleibt false -> Login-Redirect wird ausgeloest
       isAuthenticated.value = false
     }
   }

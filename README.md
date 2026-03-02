@@ -107,6 +107,49 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.1.0
+- **Umfassender Audit + Bugfix-Release (43 Fixes)**
+- Fix (kritisch): Datei wird erst nach DB-Flush verschoben (verhindert Datenverlust bei DB-Fehler)
+- Fix (kritisch): SQLite-Backup via `sqlite3.backup()` API statt Dateikopie (konsistente Sicherung bei laufenden Schreibvorgaengen)
+- Fix (kritisch): `WarrantyInfo.document` Relationship mit `lazy="selectin"` (verhindert N+1 Queries und MissingGreenlet)
+- Fix (kritisch): Login mit falschem PIN gibt HTTP 401 statt 200 zurueck
+- Fix: Garantie-Erinnerungen fuer 30-Tage und Ablauf-Schwelle (separate Flags pro Schwelle statt einzelnes Boolean)
+- Fix: ChromaDB-Suche blockiert nicht mehr den Event Loop (`asyncio.to_thread`)
+- Fix: Tesseract-OCR laeuft nur noch einmal pro Bild (doppelter Aufruf eliminiert, Performanceverbesserung)
+- Fix: XSS-Risiko bei Suchergebnis-Highlights behoben (`v-html` durch sichere Text-Interpolation ersetzt)
+- Fix: Chat-Eingabe auf Mobilgeraeten nicht mehr hinter BottomNav verborgen
+- Fix: Settings-Seite flasht nicht mehr alle 10 Sekunden beim Health-Polling
+- Fix: Division-durch-Null in Garantie-Fortschrittsbalken und Steuer-Kategoriebalken
+- Fix: Doppelte API-Calls bei Filterwechsel in Dokumentenliste eliminiert
+- Fix: Sortierungswechsel in Suche setzt Seite auf 1 zurueck
+- Fix: Retry in Dashboard startet Polling und aktualisiert Jobansicht
+- Fix: UploadView raeumt Polling-Interval bei Navigation auf (Memory-Leak behoben)
+- Fix: PIN-Schutz bleibt bei Backend-Netzwerkfehler aktiv (sicherer Default)
+- Fix: ReviewQuestionResponse-Schema um 4 fehlende Felder erweitert (question_type, explanation, suggested_answers, priority)
+- Fix: Tag.documents Relationship auf `lazy="noload"` (unnuetzes Laden aller Dokumente pro Tag verhindert)
+- Fix: Atomare Job-Uebernahme im Queue-Worker (optimistic locking statt TOCTOU)
+- Fix: IntegrityError bei parallelen Duplikat-Uploads wird korrekt als ValueError behandelt
+- Fix: FTS5-Operator-Injection verhindert (Spaltenfilter und Boolesche Operatoren werden sanitized)
+- Fix: `float()` bei LLM-Antworten mit try/except abgesichert
+- Fix: HTTP 5xx von Ollama wird jetzt wiederholt (Retry-Logik erweitert)
+- Fix: Prompt-Template-Injection durch OCR-Text verhindert (Ersetzungsreihenfolge korrigiert)
+- Fix: `str.format()` in RAG-Service durch `.replace()` ersetzt (KeyError bei geschweiften Klammern verhindert)
+- Fix: SHA-256 Hash-Berechnung async via `asyncio.to_thread` (blockiert Event Loop nicht mehr)
+- Fix: Backup-Erstellung async (blockiert Event Loop nicht mehr)
+- Fix: Image.open mit Context Manager in OCR (Dateideskriptor-Leak behoben)
+- Fix: SavedSearchResponse.query_params wird als Dict statt JSON-String geliefert
+- Fix: JSON.parse bei gespeicherten Suchen mit try/catch abgesichert
+- Fix: POST /saved-searches gibt HTTP 201 statt 200 zurueck
+- Fix: 404-Catch-All-Route im Frontend-Router (unbekannte URLs leiten zum Dashboard)
+- Fix: Touch-Event-Support fuer Bild-Pan/Zoom in ReviewView (Smartphone-Unterstuetzung)
+- Fix: Review-Skip setzt review_status auf OK statt No-Op
+- Fix: App-Version dynamisch aus VERSION-Datei statt hardcodiert
+- Fix: Notifications-Endpoint mit Paginierung (limit/offset statt hardcodiertem limit 50)
+- Fix: sort_by/sort_order Query-Parameter mit Regex-Validierung
+- Fix: models/__init__.py um SystemSetting und ChatMessage Imports ergaenzt
+- Migration: 008_add_warranty_reminder_flags (separate 90d/30d/0d Reminder-Flags)
+- Tests: 236 Tests (angepasst an neue HTTP-Statuscodes)
+
 ### v1.0.9
 - Feature: Host-Ordner fuer Watch/Export via Docker-Volume-Mount (Windows-Pfade wie `V:\Zettelwirtschaft` werden als Docker-Volume gemountet)
 - Feature: Installationspfad in Settings anzeigen mit "Ordner oeffnen"-Button (kopiert Explorer-Befehl)

@@ -33,12 +33,15 @@ class WarrantyInfo(Base):
     warranty_duration_months: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     retailer: Mapped[str | None] = mapped_column(String(500), nullable=True)
     reminder_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_90d_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_30d_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reminder_0d_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    document: Mapped["Document"] = relationship(back_populates="warranty_info")
+    document: Mapped["Document"] = relationship(back_populates="warranty_info", lazy="selectin")
 
     @property
     def is_expired(self) -> bool:

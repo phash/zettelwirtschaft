@@ -1,6 +1,7 @@
+import json
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SearchResultItem(BaseModel):
@@ -48,5 +49,15 @@ class SavedSearchResponse(BaseModel):
     model_config = {"from_attributes": True}
     id: str
     name: str
-    query_params: str
+    query_params: dict | str
     created_at: datetime
+
+    @field_validator("query_params", mode="before")
+    @classmethod
+    def parse_query_params(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return v
+        return v

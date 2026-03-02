@@ -169,7 +169,16 @@ async def skip_document(
     document_id: str,
     session: AsyncSession = Depends(get_db),
 ):
-    """Dokument uebersprungen (bleibt NEEDS_REVIEW)."""
+    """Dokument ueberspringen - KI-Ergebnisse als korrekt akzeptieren."""
+    result = await session.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+
+    document.review_status = ReviewStatus.OK
+    await session.commit()
     return {"ok": True}
 
 

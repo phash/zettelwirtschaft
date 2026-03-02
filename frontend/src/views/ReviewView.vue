@@ -44,6 +44,24 @@ function onDragMove(e) {
 
 function onDragEnd() { isDragging.value = false }
 
+function onTouchStart(e) {
+  if (e.touches.length === 1) {
+    isDragging.value = true
+    dragStart.value = { x: e.touches[0].clientX - panX.value, y: e.touches[0].clientY - panY.value, panX: panX.value, panY: panY.value }
+  }
+}
+
+function onTouchMove(e) {
+  if (isDragging.value && e.touches.length === 1) {
+    panX.value = e.touches[0].clientX - dragStart.value.x
+    panY.value = e.touches[0].clientY - dragStart.value.y
+  }
+}
+
+function onTouchEnd() {
+  isDragging.value = false
+}
+
 const totalCount = computed(() => documents.value.length)
 
 const questions = computed(() => reviewData.value?.questions || [])
@@ -223,6 +241,9 @@ onMounted(loadReviewDocs)
           @mousemove="onDragMove"
           @mouseup="onDragEnd"
           @mouseleave="onDragEnd"
+          @touchstart.prevent="onTouchStart"
+          @touchmove.prevent="onTouchMove"
+          @touchend="onTouchEnd"
           :style="{ cursor: isDragging ? 'grabbing' : (zoomLevel > 1 ? 'grab' : 'default') }"
         >
           <!-- Zoom controls overlay -->

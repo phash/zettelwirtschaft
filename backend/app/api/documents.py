@@ -125,8 +125,8 @@ async def list_documents(
     tax_relevant: bool | None = None,
     status: str | None = None,
     filing_scope_id: str | None = None,
-    sort_by: str = "created_at",
-    sort_order: str = "desc",
+    sort_by: str = Query(default="created_at", pattern="^(created_at|document_date|title|amount|document_type)$"),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedDocumentsResponse:
     """Listet Dokumente mit Filtern und Paginierung."""

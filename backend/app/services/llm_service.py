@@ -112,6 +112,10 @@ async def call_llm(
                 return None
 
         except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 and attempt < settings.OLLAMA_MAX_RETRIES:
+                logger.warning("Ollama HTTP %d, Retry %d/%d...", e.response.status_code, attempt + 1, settings.OLLAMA_MAX_RETRIES)
+                await asyncio.sleep(2)
+                continue
             logger.error("Ollama HTTP-Fehler: %s", e)
             return None
 
@@ -204,6 +208,10 @@ async def call_llm_text(
                 return None
 
         except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 and attempt < settings.OLLAMA_MAX_RETRIES:
+                logger.warning("Ollama HTTP %d, Retry %d/%d...", e.response.status_code, attempt + 1, settings.OLLAMA_MAX_RETRIES)
+                await asyncio.sleep(2)
+                continue
             logger.error("Ollama HTTP-Fehler: %s", e)
             return None
 

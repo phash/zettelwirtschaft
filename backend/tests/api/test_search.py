@@ -69,7 +69,7 @@ class TestSavedSearchEndpoints:
             "/api/saved-searches",
             json={"name": "Telekomrechnungen", "query_params": {"q": "Telekom"}},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.json()["name"] == "Telekomrechnungen"
 
         list_resp = await client.get("/api/saved-searches")

@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 REMINDER_DAYS = [90, 30, 0]
 
+# Mapping: Tage -> DB-Feld
+REMINDER_FIELD_MAP = {90: "reminder_90d_sent", 30: "reminder_30d_sent", 0: "reminder_0d_sent"}
+
 
 async def check_warranty_reminders(session: AsyncSession) -> int:
     """Prueft alle Garantien und erstellt Benachrichtigungen fuer ablaufende."""
@@ -22,10 +25,13 @@ async def check_warranty_reminders(session: AsyncSession) -> int:
 
     for days in REMINDER_DAYS:
         target_date = today + timedelta(days=days)
+        field_name = REMINDER_FIELD_MAP[days]
+        field = getattr(WarrantyInfo, field_name)
+
         stmt = (
             select(WarrantyInfo)
             .where(WarrantyInfo.warranty_end_date == target_date)
-            .where(WarrantyInfo.reminder_sent.is_(False))
+            .where(field.is_(False))
         )
         result = await session.execute(stmt)
         warranties = result.scalars().all()
@@ -50,7 +56,8 @@ async def check_warranty_reminders(session: AsyncSession) -> int:
                 document_id=w.document_id,
             )
             session.add(notification)
-            w.reminder_sent = True
+            setattr(w, field_name, True)
+            w.reminder_sent = True  # Backward-Kompatibilitaet
             created += 1
 
     if created:

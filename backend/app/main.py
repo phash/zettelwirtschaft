@@ -24,6 +24,16 @@ from app.config import get_settings
 from app.database import async_session_factory, init_db
 
 
+def _read_version() -> str:
+    """Liest Version aus VERSION-Datei oder data/.version."""
+    for path in [Path("VERSION"), Path("data/.version")]:
+        try:
+            return path.read_text().strip()
+        except FileNotFoundError:
+            continue
+    return "dev"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -153,7 +163,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zettelwirtschaft",
     description="Lokales Dokumentenmanagementsystem fuer Privathaushalte",
-    version="1.0.2",
+    version=_read_version(),
     lifespan=lifespan,
 )
 

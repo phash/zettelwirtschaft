@@ -14,6 +14,8 @@ from app.models.notification import Notification, NotificationType
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.models.review_question import ReviewQuestion
 from app.models.saved_search import SavedSearch
+from app.models.system_setting import SystemSetting
+from app.models.chat_message import ChatMessage, MessageRole
 from app.models.warranty_info import WarrantyInfo, WarrantyType
 
 __all__ = [
@@ -35,6 +37,9 @@ __all__ = [
     "SavedSearch",
     "Tag",
     "TaxCategory",
+    "SystemSetting",
+    "ChatMessage",
+    "MessageRole",
     "WarrantyInfo",
     "WarrantyType",
 ]

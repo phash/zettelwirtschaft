@@ -116,7 +116,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)]">
+  <div class="flex flex-col h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)]">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white flex-shrink-0">
       <div class="flex items-center gap-3">

@@ -102,7 +102,7 @@ async def test_login_correct_pin(pin_client):
 async def test_login_wrong_pin(pin_client):
     """Login with wrong PIN fails."""
     resp = await pin_client.post("/api/auth/login", json={"pin": "9999"})
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     data = resp.json()
     assert data["success"] is False
     assert "zw_session" not in resp.cookies

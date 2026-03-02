@@ -63,6 +63,7 @@ async function handleRetry(job) {
     await retryJob(job.id)
     failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
     notify.success(`"${job.original_filename}" wird erneut verarbeitet.`)
+    await loadData()
   } catch {
     notify.error('Wiederholung fehlgeschlagen.')
   }

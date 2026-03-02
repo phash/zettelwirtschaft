@@ -32,9 +32,13 @@ class ReviewQuestionResponse(BaseModel):
     model_config = {"from_attributes": True}
     id: str
     question: str
+    question_type: str | None = None
+    explanation: str | None = None
     answer: str | None = None
     field_affected: str | None = None
+    suggested_answers: str | None = None
     is_answered: bool
+    priority: int = 0
     created_at: datetime
     answered_at: datetime | None = None
 

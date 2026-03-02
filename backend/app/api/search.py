@@ -87,7 +87,7 @@ async def search_suggest(
 # === Saved Searches ===
 
 
-@router.post("/saved-searches", response_model=SavedSearchResponse)
+@router.post("/saved-searches", response_model=SavedSearchResponse, status_code=201)
 async def create_saved_search(
     data: SavedSearchCreate,
     db: AsyncSession = Depends(get_db),

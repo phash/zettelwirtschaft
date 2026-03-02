@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -6,6 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -173,7 +175,7 @@ def _match_filing_scope(
 
 async def check_duplicate(file_path: Path, session: AsyncSession) -> Document | None:
     """Prueft ob eine Datei bereits archiviert wurde (via SHA-256)."""
-    file_hash = _compute_file_hash(file_path)
+    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
     result = await session.execute(
         select(Document).where(Document.file_hash == file_hash)
     )
@@ -202,7 +204,7 @@ async def archive_document(
         ValueError: Bei Duplikat (gleicher SHA-256 Hash).
     """
     # Hash berechnen + Duplikatcheck
-    file_hash = _compute_file_hash(file_path)
+    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
     existing = await session.execute(
         select(Document).where(Document.file_hash == file_hash)
     )
@@ -223,32 +225,18 @@ async def archive_document(
     if filing_scopes:
         scope_id, scope_slug, new_scope_suggestion = _match_filing_scope(analysis, filing_scopes, ocr_text=ocr_text)
 
-    # Archiv-Pfad bestimmen und Datei verschieben
+    # Archiv-Pfad bestimmen (Datei wird erst nach DB-Flush verschoben)
     archive_path = _build_archive_path(
         settings.ARCHIVE_DIR, doc_type.value, doc_date, stored_filename,
         scope_slug=scope_slug,
     )
-    shutil.move(str(file_path), str(archive_path))
-    logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
 
-    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
-    # Pfad aus DB lesen (Fallback auf .env-Wert)
+    # Export-Verzeichnis vorab ermitteln (benoetigt DB-Session)
     try:
         from app.services.settings_service import get_db_setting
         export_dir = await get_db_setting(session, "export_dir", settings.EXPORT_DIR)
     except Exception:
         export_dir = settings.EXPORT_DIR
-
-    if export_dir:
-        try:
-            export_path = _build_archive_path(
-                export_dir, doc_type.value, doc_date, stored_filename,
-                scope_slug=scope_slug,
-            )
-            shutil.copy2(str(archive_path), str(export_path))
-            logger.info("Export-Kopie erstellt: %s", export_path)
-        except Exception:
-            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
 
     # Review-Status bestimmen
     review_status = ReviewStatus.OK
@@ -285,7 +273,27 @@ async def archive_document(
         scanned_at=datetime.now(timezone.utc),
     )
     session.add(document)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise ValueError(f"Duplikat erkannt: Datei mit Hash {file_hash[:12]}... existiert bereits")
+
+    # Datei erst nach erfolgreicher DB-Operation verschieben
+    shutil.move(str(file_path), str(archive_path))
+    logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
+
+    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
+    if export_dir:
+        try:
+            export_path = _build_archive_path(
+                export_dir, doc_type.value, doc_date, stored_filename,
+                scope_slug=scope_slug,
+            )
+            shutil.copy2(str(archive_path), str(export_path))
+            logger.info("Export-Kopie erstellt: %s", export_path)
+        except Exception:
+            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
 
     # Tags erstellen (via junction table to avoid lazy-load issues)
     if analysis.tags:

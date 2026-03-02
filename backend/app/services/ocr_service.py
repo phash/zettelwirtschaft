@@ -40,8 +40,11 @@ def _ocr_image_sync(image, languages: str) -> tuple[str, float]:
         output_type=pytesseract.Output.DICT,
     )
 
-    # Text extrahieren
-    text = pytesseract.image_to_string(processed, lang=languages)
+    # Text aus data extrahieren statt zweitem Tesseract-Aufruf
+    text = " ".join(
+        word for word, conf in zip(data["text"], data["conf"])
+        if int(conf) > 0 and word.strip()
+    )
 
     # Durchschnittliche Konfidenz berechnen (nur Woerter mit conf > 0)
     confidences = [
@@ -130,15 +133,10 @@ def _extract_image_ocr_sync(file_path: Path, settings: Settings) -> OcrResult | 
     from PIL import Image
 
     try:
-        image = Image.open(file_path)
+        with Image.open(file_path) as image:
+            text, confidence = _ocr_image_sync(image, settings.OCR_LANGUAGES)
     except Exception as e:
         logger.error("Bild konnte nicht geoeffnet werden: %s", e)
-        return None
-
-    try:
-        text, confidence = _ocr_image_sync(image, settings.OCR_LANGUAGES)
-    except Exception as e:
-        logger.error("OCR fehlgeschlagen: %s", e)
         return None
 
     if not text:
