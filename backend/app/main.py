@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from app.api.auth import router as auth_router, is_session_valid, SESSION_COOKIE
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
+from app.api.email import router as email_router
 from app.api.filing_scopes import router as filing_scopes_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -119,6 +120,14 @@ async def lifespan(app: FastAPI):
     )
     background_tasks.append(backup_task)
 
+    # E-Mail-Scheduler
+    from app.services.email_scheduler_service import run_email_scheduler
+
+    email_task = asyncio.create_task(
+        run_email_scheduler(async_session_factory, settings)
+    )
+    background_tasks.append(email_task)
+
     # Initiale Vektorisierung (wenn ChromaDB leer)
     async def _initial_vectorize():
         try:
@@ -213,3 +222,4 @@ app.include_router(warranties_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
+app.include_router(email_router, prefix="/api")
