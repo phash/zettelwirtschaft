@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import StatCard from '../components/common/StatCard.vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
-import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob } from '../services/api'
+import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob, getEmailStats } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
 const router = useRouter()
@@ -14,6 +14,7 @@ const processingJobs = ref([])
 const failedJobs = ref([])
 const isDragging = ref(false)
 const queuePaused = ref(false)
+const emailStats = ref(null)
 let pollTimer = null
 
 async function loadData() {
@@ -30,6 +31,16 @@ async function loadData() {
     processingJobs.value = activeJobs.items?.filter(j => ['PENDING', 'PROCESSING'].includes(j.status)) || []
     failedJobs.value = failJobs.items || []
     queuePaused.value = qStatus.paused
+
+    // E-Mail-Stats separat laden (blockiert Dashboard nicht wenn E-Mail nicht konfiguriert)
+    getEmailStats().then(stats => {
+      if (stats && stats.length > 0) {
+        emailStats.value = stats.reduce((acc, s) => ({
+          total: acc.total + s.total_processed,
+          relevant: acc.relevant + s.relevant,
+        }), { total: 0, relevant: 0 })
+      }
+    }).catch(() => { /* E-Mail nicht konfiguriert, ignorieren */ })
 
     if (processingJobs.value.length > 0 && !pollTimer) {
       pollTimer = setInterval(loadData, 3000)
@@ -135,6 +146,7 @@ onMounted(loadData)
       <StatCard label="Diesen Monat" :value="stats.documents_this_month" color="green" />
       <StatCard label="Offene Rueckfragen" :value="stats.pending_reviews" color="orange" />
       <StatCard label="Garantien (30 Tage)" :value="stats.expiring_warranties_30d" color="purple" />
+      <StatCard v-if="emailStats" label="E-Mails importiert" :value="emailStats.relevant" color="indigo" />
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
