@@ -14,6 +14,8 @@ pytesseract==0.3.*
 pdfplumber==0.11.*
 reportlab==4.2.*
 chromadb-client==0.6.*
+cryptography==44.*
+croniter==6.*
 
 # Testing
 pytest==8.*
