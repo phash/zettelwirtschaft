@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     RAG_CHUNK_OVERLAP: int = 150
     RAG_TOP_K: int = 5
 
+    # E-Mail
+    EMAIL_ENCRYPTION_KEY: str = ""
+
     @property
     def allowed_file_types_list(self) -> list[str]:
         return [ft.strip() for ft in self.ALLOWED_FILE_TYPES.split(",")]
