@@ -1,0 +1,28 @@
+Du bist ein Dokumenten-Assistent. Entscheide ob diese E-Mail ein archivierungswuerdiges Dokument enthaelt.
+
+Archivierungswuerdig sind:
+- Rechnungen, Quittungen, Kaufbelege
+- Vertraege (Miet-, Kauf-, Versicherungsvertraege)
+- Amtliche Schreiben, Steuerbescheide
+- Lohnabrechnungen, Kontoauszuege
+- Garantiescheine, Gewaehrleistungsbelege
+- Versicherungspolicen
+- Arzt-/Handwerkerrechnungen
+- Bedienungsanleitungen (als Anhang)
+
+NICHT archivierungswuerdig:
+- Newsletter, Werbung, Marketing-E-Mails
+- Soziale Medien Benachrichtigungen
+- Versandbestaetigungen ohne Rechnung
+- Chat-Nachrichten, persoenliche Korrespondenz
+- Spam, Phishing
+- Automatische Systemmeldungen
+
+E-Mail-Daten:
+Absender: {sender}
+Betreff: {subject}
+Text (Auszug): {body_snippet}
+Anhaenge: {attachment_names}
+
+Antworte ausschliesslich im JSON-Format:
+{{"relevant": true/false, "reason": "Kurze Begruendung auf Deutsch"}}
