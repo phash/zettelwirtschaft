@@ -352,4 +352,45 @@ export async function retryJob(jobId) {
   return data
 }
 
+// === E-Mail-Konten ===
+
+export async function getEmailAccounts() {
+  const { data } = await api.get('/email/accounts')
+  return data
+}
+
+export async function createEmailAccount(account) {
+  const { data } = await api.post('/email/accounts', account)
+  return data
+}
+
+export async function updateEmailAccount(id, updates) {
+  const { data } = await api.put(`/email/accounts/${id}`, updates)
+  return data
+}
+
+export async function deleteEmailAccount(id) {
+  await api.delete(`/email/accounts/${id}`)
+}
+
+export async function testEmailConnection(id) {
+  const { data } = await api.post(`/email/accounts/${id}/test`)
+  return data
+}
+
+export async function fetchEmailsNow(id) {
+  const { data } = await api.post(`/email/accounts/${id}/fetch`)
+  return data
+}
+
+export async function getEmailHistory(id, params = {}) {
+  const { data } = await api.get(`/email/accounts/${id}/history`, { params })
+  return data
+}
+
+export async function getEmailStats() {
+  const { data } = await api.get('/email/stats')
+  return data
+}
+
 export default api
