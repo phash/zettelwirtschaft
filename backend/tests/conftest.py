@@ -22,6 +22,8 @@ import app.models.saved_search  # noqa: F401
 import app.models.notification  # noqa: F401
 import app.models.correction_mapping  # noqa: F401
 import app.models.chat_message  # noqa: F401
+import app.models.email_account  # noqa: F401
+import app.models.processed_email  # noqa: F401
 
 
 @pytest.fixture
