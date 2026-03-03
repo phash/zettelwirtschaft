@@ -35,6 +35,8 @@ zettelwirtschaft/
         notification.py          # Notification + NotificationType Enum
         correction_mapping.py    # CorrectionMapping (Lerneffekt aus Korrekturen)
         chat_message.py          # ChatMessage (RAG-Chat-Verlauf)
+        email_account.py         # EmailAccount + ScheduleType Enum, ProcessedEmail-Import
+        processed_email.py       # ProcessedEmail + EmailStatus Enum
       schemas/
         document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
         filing_scope.py          # FilingScopeCreate, FilingScopeUpdate, FilingScopeResponse
@@ -44,6 +46,7 @@ zettelwirtschaft/
         warranty.py              # WarrantyListItem, WarrantyUpdate, WarrantyStats
         notification.py          # NotificationResponse, NotificationCount
         chat.py                  # ChatRequest, ChatResponse, ChatMessage schemas
+        email.py                 # EmailAccountCreate/Update/Response, EmailTestResult, EmailFetchResult, ProcessedEmailResponse, EmailStatsResponse
       api/
         auth.py                  # PIN-Login, Session-Status, Logout (in-memory Sessions)
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
@@ -57,6 +60,7 @@ zettelwirtschaft/
         review.py                # Erweitertes Rueckfrage-System + Approve + Stats
         system.py                # System-Health + Backup + Wartung + Vektor-Index Rebuild
         chat.py                  # RAG-Chat (POST /api/chat, GET/DELETE /api/chat/history)
+        email.py                 # E-Mail-Konten CRUD + Test + Fetch + History + Stats
       services/
         upload_service.py        # Datei-Upload-Verarbeitung
         file_validation_service.py # Dateityp- und Magic-Byte-Validierung
@@ -74,10 +78,14 @@ zettelwirtschaft/
         embedding_service.py     # Ollama /api/embed mit Retry-Logik
         vectorize_service.py     # Chunking (Satzgrenzen), Vektorisierung bei Archivierung
         rag_service.py           # RAG-Pipeline (Embed -> ChromaDB-Retrieve -> LLM-Generate)
+        crypto_service.py        # Fernet-Verschluesselung fuer E-Mail-Passwoerter
+        email_relevance_service.py # LLM-basierte E-Mail-Relevanzpruefung
+        email_fetch_service.py   # IMAP-Abruf, E-Mail-Parsing, Job-Erstellung
+        email_scheduler_service.py # Background-Task: CRON/IDLE-Scheduling fuer E-Mail-Abruf
       core/
         file_utils.py            # Dateinamen-Sanitizing, Magic-Bytes, UUID-Prefix
-      prompts/                   # LLM-Prompt-Templates (Textdateien, inkl. rag_answer.txt)
-    alembic/                     # DB-Migrationen (001-006)
+      prompts/                   # LLM-Prompt-Templates (Textdateien, inkl. rag_answer.txt, email_relevance.txt)
+    alembic/                     # DB-Migrationen (001-009)
     requirements.txt
     Dockerfile
   frontend/
@@ -85,6 +93,7 @@ zettelwirtschaft/
       components/
         layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
         common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
+        email/                   # EmailAccountForm, EmailAccountList (E-Mail-Konten-Verwaltung)
       views/
         PinLoginView.vue         # PIN-Eingabe bei aktiviertem PIN-Schutz
         DashboardView.vue        # Statistik-Karten, letzte Dokumente, Quick-Upload
@@ -96,7 +105,7 @@ zettelwirtschaft/
         TaxView.vue              # Steuerbelege-Dashboard mit Kategorien + ZIP-Export
         WarrantyView.vue         # Garantie-Dashboard mit Status-Filter + Fortschrittsbalken
         ScanView.vue             # Kamera-Scan mit Aufnahme + Vorschau + Upload
-        SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche
+        SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche + E-Mail-Konten
         ChatView.vue             # RAG-Chat mit Verlauf, Scope-Filter, Beispielfragen
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
@@ -146,10 +155,11 @@ zettelwirtschaft/
 - **RAG-Pipeline:** Dokumente werden bei Archivierung vektorisiert (Chunking mit Satzgrenzen-Erkennung, Metadaten-Chunks). Vektorisierungsfehler blockieren Archivierung nicht (graceful degradation). Retrieval per Cosine-Similarity aus ChromaDB.
 - **call_llm_text():** Freitext-LLM-Antworten ohne JSON-Format (fuer RAG-Antwortgenerierung).
 - **ChromaDB als Vektor-Store:** Separater Docker-Service. Collection pro Ablagebereich. Vektor-Index kann in System-Wartung neu aufgebaut werden.
+- **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
 
 ## Wichtige Datenmodelle
 
-- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON)
+- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON), `email_account_id` (nullable FK). JobSource: UPLOAD, WATCH_FOLDER, EMAIL
 - `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status + filing_scope_id. Relationships: tags, warranty_info, review_questions, filing_scope (alle lazy="selectin")
 - `FilingScope` - Ablagebereiche: name (unique), slug (unique), description, keywords (JSON-Liste), is_default, color (Hex). Slug auto-generiert (Umlaute -> ae/oe/ue/ss)
 - `Tag` / `DocumentTag` - Schlagwort-System (automatisch + manuell), Many-to-Many ueber Junction-Table
@@ -161,6 +171,8 @@ zettelwirtschaft/
 - `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, PROCESSING_DONE, SYSTEM)
 - `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen (auto_apply nach 3x gleicher Korrektur)
 - `ChatMessage` - RAG-Chat-Verlauf (question, answer, sources JSON, scope_filter, created_at)
+- `EmailAccount` - E-Mail-Konten: name, imap_host/port, use_ssl, username, encrypted_password, folder_inbox/processed, schedule_type (CRON/MANUAL/IDLE), cron_expression, is_active, filing_scope_id (FK)
+- `ProcessedEmail` - Verarbeitete E-Mails: email_account_id (FK), message_id (UNIQUE pro Account), subject, sender, received_at, status (RELEVANT/IRRELEVANT/FAILED), processing_job_id (FK)
 
 ## Dokumenttypen (Enum)
 
@@ -174,7 +186,7 @@ BEDIENUNGSANLEITUNG, SONSTIGES
 ## Verarbeitungs-Pipeline
 
 ```
-Dokument-Eingang (Upload oder Watch-Ordner)
+Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
   -> Validierung (Dateityp, Groesse, Magic-Bytes)
   -> Queue-Eintrag (PENDING)
   -> Thumbnail-Generierung (Pillow/pdf2image)
@@ -269,6 +281,7 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - [x] ChromaDB-Pinning - Image auf 0.6.3 gepinnt (Kompatibilitaet mit chromadb-client 0.6.x)
 - [x] Installationspfad - In Settings anzeigen, "Ordner oeffnen"-Button kopiert Explorer-Befehl
 - [x] Settings Auto-Refresh - Health-Status Polling alle 10 Sekunden
+- [x] E-Mail-Anbindung (Issue #18) - IMAP-Polling, LLM-Relevanzpruefung, Fernet-Passwortverschluesselung, CRON/MANUAL/IDLE-Scheduling, E-Mail-Konten-UI in Settings, Dashboard-Stats, Migration 009
 
 ### Architektur-Details: Version-Tracking
 - `VERSION` - Datei im Projekt-Root (vom Installer/Release gelesen)
@@ -284,10 +297,11 @@ Dokument-Eingang (Upload oder Watch-Ordner)
 - `006_add_chat_messages` - ChatMessage-Tabelle fuer RAG-Chat-Verlauf
 - `007_add_system_settings` - SystemSetting-Tabelle fuer UI-konfigurierbare Einstellungen
 - `008_add_warranty_reminder_flags` - Separate Reminder-Flags (90d/30d/0d) auf WarrantyInfo
+- `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
 
 ### Tests
-- 236 Tests gesamt (1 skipped fuer Tesseract)
-- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize), Core-Tests (file_utils)
+- 261+ Tests gesamt (1 skipped fuer Tesseract)
+- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat, email), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize, crypto, email_relevance, email_fetch, email_scheduler), Model-Tests (email_models), Core-Tests (file_utils)
 
 ## Planungsdokumente
 

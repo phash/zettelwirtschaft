@@ -4,8 +4,10 @@ import { getSystemHealth, createBackup, getBackups, optimizeDb, rebuildIndex, re
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
+import EmailAccountList from '../components/email/EmailAccountList.vue'
 
 const notify = useNotificationStore()
+const emailList = ref(null)
 const loading = ref(true)
 const health = ref(null)
 const backups = ref([])
@@ -264,6 +266,8 @@ onMounted(async () => {
   await Promise.all([loadHealth(), loadBackups(), loadScopes(), loadFolderSettings()])
   // Auto-Polling: Health-Status alle 10 Sekunden aktualisieren
   healthTimer = setInterval(() => loadHealth(true), 10000)
+  // E-Mail-Konten laden (nach Mount, da Ref erst dann verfuegbar)
+  emailList.value?.loadAccounts()
 })
 
 onUnmounted(() => {
@@ -442,6 +446,9 @@ onUnmounted(() => {
       @confirm="confirmDeleteScope"
       @cancel="deletingScopeId = null"
     />
+
+    <!-- E-Mail-Konten -->
+    <EmailAccountList :scopes="scopes" ref="emailList" />
 
     <!-- Loading -->
     <div v-if="loading" class="flex items-center justify-center py-16">

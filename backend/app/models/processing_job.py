@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -11,6 +11,7 @@ from app.database import Base
 class JobSource(str, enum.Enum):
     UPLOAD = "UPLOAD"
     WATCH_FOLDER = "WATCH_FOLDER"
+    EMAIL = "EMAIL"
 
 
 class JobStatus(str, enum.Enum):
@@ -46,6 +47,9 @@ class ProcessingJob(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    email_account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("email_accounts.id", ondelete="SET NULL"), nullable=True
+    )
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     analysis_result: Mapped[str | None] = mapped_column(Text, nullable=True)
