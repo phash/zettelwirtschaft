@@ -114,6 +114,11 @@ zettelwirtschaft/
     tailwind.config.js
     nginx.conf                   # SPA-Routing + API-Proxy
     Dockerfile                   # Multi-Stage: Node Build + Nginx
+  e2e/
+    tests/                       # 13 Testdateien (Smoke, Auth, Upload, Documents, Detail, Review, Search, Tax, Warranty, Chat, Settings, Responsive, Scan)
+    helpers/mock.helpers.ts      # Zentrale Mock-Daten + Setup-Funktionen
+    fixtures/test-files/         # Testdateien (PDF, PNG, TIFF)
+    playwright.config.ts         # 2 Projekte: chromium (Desktop) + mobile (Pixel 5)
   docker-compose.yml
   .env.example
   install.bat                    # Windows-Installer Einstiegspunkt (GUI bevorzugt, CLI als Fallback)
@@ -282,6 +287,8 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - [x] Installationspfad - In Settings anzeigen, "Ordner oeffnen"-Button kopiert Explorer-Befehl
 - [x] Settings Auto-Refresh - Health-Status Polling alle 10 Sekunden
 - [x] E-Mail-Anbindung (Issue #18) - IMAP-Polling, LLM-Relevanzpruefung, Fernet-Passwortverschluesselung, CRON/MANUAL/IDLE-Scheduling, E-Mail-Konten-UI in Settings, Dashboard-Stats, Migration 009
+- [x] E2E Test-Suite - Playwright mit TypeScript, 13 Testdateien (~145 Tests), API-Mocking, Desktop + Mobile Projekte, CI-Integration
+- [x] Automatische DB-Migrationen (v1.1.1) - `backend/entrypoint.sh` ruft `migrate.py` vor uvicorn auf; `migrate.py` erkennt Legacy-DBs ohne alembic_version-Tracking und stempelt korrekt, dann `alembic upgrade head`
 
 ### Architektur-Details: Version-Tracking
 - `VERSION` - Datei im Projekt-Root (vom Installer/Release gelesen)
@@ -300,8 +307,17 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
 
 ### Tests
-- 261+ Tests gesamt (1 skipped fuer Tesseract)
+- 261+ Backend-Tests (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat, email), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize, crypto, email_relevance, email_fetch, email_scheduler), Model-Tests (email_models), Core-Tests (file_utils)
+
+### E2E Tests
+- Framework: Playwright mit TypeScript
+- Verzeichnis: `e2e/` (eigenes package.json)
+- 13 Testdateien, ~145 Tests
+- Testdaten: API-Response-Mocking via `page.route()` (kein Backend noetig)
+- Projekte: `chromium` (Desktop) + `mobile` (Pixel 5, ueberspringt Sidebar-Tests)
+- Ausfuehren: `cd e2e && npm test` (benoetigt laufendes Frontend auf Port 8080)
+- CI: Laeuft automatisch in GitHub Actions mit Vite Dev-Server
 
 ## Planungsdokumente
 

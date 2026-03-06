@@ -107,6 +107,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.1.1
+- Fix (kritisch): Datenbankmigrationen laufen jetzt automatisch beim Container-Start (`alembic upgrade head` via `entrypoint.sh`)
+- Fix: Legacy-Installationen ohne `alembic_version`-Tracking werden automatisch erkannt und korrekt gestempelt (betrifft Updates von v1.0.x auf v1.1.x)
+
 ### v1.1.0
 - **Umfassender Audit + Bugfix-Release (43 Fixes)**
 - Fix (kritisch): Datei wird erst nach DB-Flush verschoben (verhindert Datenverlust bei DB-Fehler)
