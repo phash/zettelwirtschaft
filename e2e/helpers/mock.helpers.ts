@@ -9,7 +9,7 @@ export const MOCK_HEALTH = {
   database: 'ok',
   ollama: 'ok',
   chromadb: 'ok',
-  app_version: '1.2.0',
+  app_version: '1.2.1',
   install_path: 'C:\\Users\\test\\AppData\\Local\\Zettelwirtschaft',
 };
 
