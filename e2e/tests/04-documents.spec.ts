@@ -93,7 +93,7 @@ test.describe('Documents List', () => {
     await typeSelect.selectOption('RECHNUNG');
 
     // Click reset
-    const resetBtn = page.getByRole('button', { name: /zuruecksetzen/i });
+    const resetBtn = page.getByRole('button', { name: /zurücksetzen/i });
     await expect(resetBtn).toBeVisible();
     await resetBtn.click();
 

@@ -252,7 +252,7 @@ test.describe('Search', () => {
     const dateFrom = page.locator('input[type="date"]').first();
     await dateFrom.fill('2026-01-01');
 
-    const resetBtn = page.getByRole('button', { name: /zuruecksetzen/i }).first();
+    const resetBtn = page.getByRole('button', { name: /zurücksetzen/i }).first();
     await resetBtn.click();
 
     await expect(dateFrom).toHaveValue('');

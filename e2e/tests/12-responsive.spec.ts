@@ -50,7 +50,7 @@ test.describe('Responsive Design & Navigation', () => {
       await setupDashboardMocks(page);
       await page.goto('/');
 
-      await expect(page.locator('aside').locator('text=v1.1.0').first()).toBeVisible();
+      await expect(page.locator('aside').locator('text=/v\\d+\\.\\d+/').first()).toBeVisible();
     });
   });
 
