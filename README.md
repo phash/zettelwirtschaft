@@ -1,8 +1,8 @@
 # Zettelwirtschaft
 
-Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und Dokumente werden per Scanner oder Smartphone erfasst, automatisch durch KI analysiert, kategorisiert und durchsuchbar archiviert.
+Lokales Dokumentenmanagementsystem für Privathaushalte. Rechnungen, Belege und Dokumente werden per Scanner oder Smartphone erfasst, automatisch durch KI analysiert, kategorisiert und durchsuchbar archiviert.
 
-Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, keine Telemetrie.
+Läuft ausschließlich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, keine Telemetrie.
 
 ## Features
 
@@ -12,10 +12,10 @@ Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 - **Steuerpaket-Export** - Belege nach Steuerkategorien filtern und als ZIP exportieren
 - **Garantie-Tracker** - Ablaufdaten im Blick mit automatischen Erinnerungen
 - **Smartphone-Scan** - Dokumente per Kamera erfassen (PWA)
-- **KI-Assistent (RAG)** - Fragen zu eigenen Dokumenten in natuerlicher Sprache stellen
+- **KI-Assistent (RAG)** - Fragen zu eigenen Dokumenten in natürlicher Sprache stellen
 - **Ablagebereiche** - Dokumente nach Bereichen organisieren (z.B. Privat, Praxis)
-- **Rueckfrage-System** - KI fragt bei unklaren Dokumenten gezielt nach
-- **Steuerrelevanz** - Direkt in der Dokumentenliste sichtbar und per Klick aenderbar
+- **Rückfrage-System** - KI fragt bei unklaren Dokumenten gezielt nach
+- **Steuerrelevanz** - Direkt in der Dokumentenliste sichtbar und per Klick änderbar
 
 ## Installation (Windows)
 
@@ -31,13 +31,15 @@ Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 2. `install.bat` doppelklicken
 3. Den Anweisungen des Installationsassistenten folgen
 
-Der Installer prueft automatisch Docker, konfiguriert Ports und LLM-Modell, und erstellt eine Desktop-Verknuepfung.
+Der Installer prüft automatisch Docker, konfiguriert Ports und LLM-Modell, und erstellt eine Desktop-Verknüpfung.
+
+> **Hinweis:** Windows zeigt beim ersten Start möglicherweise eine SmartScreen-Warnung ("Der Computer wurde durch Windows geschützt"), da der Installer nicht digital signiert ist. Das ist bei Open-Source-Software normal. Zum Fortfahren: **"Weitere Informationen"** klicken → **"Trotzdem ausführen"**. Der vollständige Quellcode ist [auf GitHub](https://github.com/phash/zettelwirtschaft) einsehbar.
 
 ### Bedienung
 
 | Skript | Beschreibung |
 |---|---|
-| `start.bat` | System starten und Browser oeffnen |
+| `start.bat` | System starten und Browser öffnen |
 | `stop.bat` | System stoppen |
 | `update.bat` | System aktualisieren (erstellt vorher ein Backup) |
 | `uninstall.bat` | System deinstallieren |
@@ -66,23 +68,23 @@ Der Installer prueft automatisch Docker, konfiguriert Ports und LLM-Modell, und 
    docker compose exec ollama ollama pull nomic-embed-text
    ```
 
-5. Im Browser oeffnen:
+5. Im Browser öffnen:
    - **Anwendung:** http://localhost:8080
    - **API-Dokumentation:** http://localhost:8000/docs
    - **Health-Check:** http://localhost:8000/api/health
 
 ### Konfiguration
 
-Die Konfiguration erfolgt ueber die `.env`-Datei. Wichtige Einstellungen:
+Die Konfiguration erfolgt über die `.env`-Datei. Wichtige Einstellungen:
 
 | Variable | Default | Beschreibung |
 |---|---|---|
-| `FRONTEND_PORT` | `8080` | Port fuer die Web-Oberflaeche |
-| `OLLAMA_MODEL` | `llama3.2` | LLM-Modell (llama3.2 fuer <=16GB RAM, llama3.1 fuer >16GB) |
+| `FRONTEND_PORT` | `8080` | Port für die Web-Oberfläche |
+| `OLLAMA_MODEL` | `llama3.2` | LLM-Modell (llama3.2 für <=16GB RAM, llama3.1 für >16GB) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama-Server URL |
 | `OCR_LANGUAGES` | `deu+eng` | OCR-Sprachen |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding-Modell fuer RAG-Vektorisierung |
-| `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen fuer RAG-Antworten |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding-Modell für RAG-Vektorisierung |
+| `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen für RAG-Antworten |
 
 ## Verzeichnisstruktur
 
@@ -118,24 +120,24 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 ### v1.1.0
 - **Umfassender Audit + Bugfix-Release (43 Fixes)**
 - Fix (kritisch): Datei wird erst nach DB-Flush verschoben (verhindert Datenverlust bei DB-Fehler)
-- Fix (kritisch): SQLite-Backup via `sqlite3.backup()` API statt Dateikopie (konsistente Sicherung bei laufenden Schreibvorgaengen)
+- Fix (kritisch): SQLite-Backup via `sqlite3.backup()` API statt Dateikopie (konsistente Sicherung bei laufenden Schreibvorgängen)
 - Fix (kritisch): `WarrantyInfo.document` Relationship mit `lazy="selectin"` (verhindert N+1 Queries und MissingGreenlet)
-- Fix (kritisch): Login mit falschem PIN gibt HTTP 401 statt 200 zurueck
-- Fix: Garantie-Erinnerungen fuer 30-Tage und Ablauf-Schwelle (separate Flags pro Schwelle statt einzelnes Boolean)
+- Fix (kritisch): Login mit falschem PIN gibt HTTP 401 statt 200 zurück
+- Fix: Garantie-Erinnerungen für30-Tage und Ablauf-Schwelle (separate Flags pro Schwelle statt einzelnes Boolean)
 - Fix: ChromaDB-Suche blockiert nicht mehr den Event Loop (`asyncio.to_thread`)
-- Fix: Tesseract-OCR laeuft nur noch einmal pro Bild (doppelter Aufruf eliminiert, Performanceverbesserung)
+- Fix: Tesseract-OCR läuft nur noch einmal pro Bild (doppelter Aufruf eliminiert, Performanceverbesserung)
 - Fix: XSS-Risiko bei Suchergebnis-Highlights behoben (`v-html` durch sichere Text-Interpolation ersetzt)
-- Fix: Chat-Eingabe auf Mobilgeraeten nicht mehr hinter BottomNav verborgen
+- Fix: Chat-Eingabe auf Mobilgeräten nicht mehr hinter BottomNav verborgen
 - Fix: Settings-Seite flasht nicht mehr alle 10 Sekunden beim Health-Polling
 - Fix: Division-durch-Null in Garantie-Fortschrittsbalken und Steuer-Kategoriebalken
 - Fix: Doppelte API-Calls bei Filterwechsel in Dokumentenliste eliminiert
-- Fix: Sortierungswechsel in Suche setzt Seite auf 1 zurueck
+- Fix: Sortierungswechsel in Suche setzt Seite auf 1 zurück
 - Fix: Retry in Dashboard startet Polling und aktualisiert Jobansicht
-- Fix: UploadView raeumt Polling-Interval bei Navigation auf (Memory-Leak behoben)
+- Fix: UploadView räumt Polling-Interval bei Navigation auf (Memory-Leak behoben)
 - Fix: PIN-Schutz bleibt bei Backend-Netzwerkfehler aktiv (sicherer Default)
 - Fix: ReviewQuestionResponse-Schema um 4 fehlende Felder erweitert (question_type, explanation, suggested_answers, priority)
-- Fix: Tag.documents Relationship auf `lazy="noload"` (unnuetzes Laden aller Dokumente pro Tag verhindert)
-- Fix: Atomare Job-Uebernahme im Queue-Worker (optimistic locking statt TOCTOU)
+- Fix: Tag.documents Relationship auf `lazy="noload"` (unnützes Laden aller Dokumente pro Tag verhindert)
+- Fix: Atomare Job-Übernahme im Queue-Worker (optimistic locking statt TOCTOU)
 - Fix: IntegrityError bei parallelen Duplikat-Uploads wird korrekt als ValueError behandelt
 - Fix: FTS5-Operator-Injection verhindert (Spaltenfilter und Boolesche Operatoren werden sanitized)
 - Fix: `float()` bei LLM-Antworten mit try/except abgesichert
@@ -147,30 +149,30 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - Fix: Image.open mit Context Manager in OCR (Dateideskriptor-Leak behoben)
 - Fix: SavedSearchResponse.query_params wird als Dict statt JSON-String geliefert
 - Fix: JSON.parse bei gespeicherten Suchen mit try/catch abgesichert
-- Fix: POST /saved-searches gibt HTTP 201 statt 200 zurueck
+- Fix: POST /saved-searches gibt HTTP 201 statt 200 zurück
 - Fix: 404-Catch-All-Route im Frontend-Router (unbekannte URLs leiten zum Dashboard)
-- Fix: Touch-Event-Support fuer Bild-Pan/Zoom in ReviewView (Smartphone-Unterstuetzung)
+- Fix: Touch-Event-Support fürBild-Pan/Zoom in ReviewView (Smartphone-Unterstützung)
 - Fix: Review-Skip setzt review_status auf OK statt No-Op
 - Fix: App-Version dynamisch aus VERSION-Datei statt hardcodiert
 - Fix: Notifications-Endpoint mit Paginierung (limit/offset statt hardcodiertem limit 50)
 - Fix: sort_by/sort_order Query-Parameter mit Regex-Validierung
-- Fix: models/__init__.py um SystemSetting und ChatMessage Imports ergaenzt
+- Fix: models/__init__.py um SystemSetting und ChatMessage Imports ergänzt
 - Migration: 008_add_warranty_reminder_flags (separate 90d/30d/0d Reminder-Flags)
 - Tests: 236 Tests (angepasst an neue HTTP-Statuscodes)
 
 ### v1.0.9
-- Feature: Host-Ordner fuer Watch/Export via Docker-Volume-Mount (Windows-Pfade wie `V:\Zettelwirtschaft` werden als Docker-Volume gemountet)
-- Feature: Installationspfad in Settings anzeigen mit "Ordner oeffnen"-Button (kopiert Explorer-Befehl)
+- Feature: Host-Ordner fürWatch/Export via Docker-Volume-Mount (Windows-Pfade wie `V:\Zettelwirtschaft` werden als Docker-Volume gemountet)
+- Feature: Installationspfad in Settings anzeigen mit "Ordner öffnen"-Button (kopiert Explorer-Befehl)
 - Feature: Settings Auto-Refresh (Health-Status alle 10 Sekunden aktualisiert)
 - Fix: Ablagebereich-Dropdown immer sichtbar + Schnell-Anlegen per "+"-Button (#15)
 - Fix: Fehlgeschlagene Jobs mit Retry-Button, selektierbarer Fehlermeldung und Zeitstempel (#16)
-- Fix: ChromaDB-Image auf 0.6.3 gepinnt (Kompatibilitaet mit chromadb-client 0.6.x)
+- Fix: ChromaDB-Image auf 0.6.3 gepinnt (Kompatibilität mit chromadb-client 0.6.x)
 - Fix: Bessere Fehlermeldungen bei leeren Exceptions im Queue-Worker
 - Tests: 237 Tests (Host-Mount-Settings, Retry-Endpoint)
 
 ### v1.0.8
 - Fix: Dashboard zeigte keine Statistiken (falscher API-Endpunkt `/stats` statt korrektem Pfad)
-- Fix: Installer schrieb Version zirkulaer aus API (las `data/.version`, schrieb sie zurueck) - jetzt direkt aus Installer-Paket
+- Fix: Installer schrieb Version zirkulär aus API (las `data/.version`, schrieb sie zurück) - jetzt direkt aus Installer-Paket
 - Fix: Windows-Pfade (z.B. `V:\Ordner`) in Watch/Export-Ordner werden erkannt und mit Warnung markiert (Docker kann nur Container-Pfade lesen)
 - Fix: ChromaDB-Fehler zeigt jetzt Hilfetext mit Diagnosebefehlen statt nur "HTTP 404"
 - Verbesserung: Ordner-Einstellungen mit Standard-Button und Pfad-Hinweisen
@@ -178,44 +180,44 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ### v1.0.7
 - Fix: Installer-Log zeigte Docker-Fortschrittszeilen hunderte Male (Downloading-Spam durch \r-Output)
-- Fix: Progressbar zeigt jetzt animierten Marquee waehrend Docker-Images geladen werden statt einzufrieren
+- Fix: Progressbar zeigt jetzt animierten Marquee während Docker-Images geladen werden statt einzufrieren
 
 ### v1.0.6
 - Fix: Setup.exe enthielt keine VERSION-Datei - Installer zeigte immer "v1.0.3" als neue Version
-- Fix: Fallback-Version im Installer von "1.0.3" auf "unbekannt" geaendert
+- Fix: Fallback-Version im Installer von "1.0.3" auf "unbekannt" geändert
 
 ### v1.0.5
 - Feature: Installierte Version im Sidebar-Footer und in Einstellungen → System angezeigt
 - Feature: `/api/system/health` liefert jetzt `app_version` aus `data/.version`
-- Fix: Installer schreibt nach Install tatsaechliche Backend-Version (nicht mehr aus VERSION-Datei)
+- Fix: Installer schreibt nach Install tatsächliche Backend-Version (nicht mehr aus VERSION-Datei)
 - Fix: Installer-Erkennung einer bestehenden Installation robuster (version-Datei allein reicht)
 - Fix: Versionsvergleich im Installer - Downgrade wird als Warnung angezeigt
-- Fix: Ollama-Modell-Download wird uebersprungen wenn Modell bereits vorhanden
-- Feature: Dashboard zeigt fehlgeschlagene Jobs mit "Kopieren"-Button fuer Claude Code Fehler-Report
+- Fix: Ollama-Modell-Download wird übersprungen wenn Modell bereits vorhanden
+- Feature: Dashboard zeigt fehlgeschlagene Jobs mit "Kopieren"-Button fürClaude Code Fehler-Report
 - Feature: Dashboard Queue-Pause/Fortsetzen-Button
 - Feature: Dashboard Auto-Polling wenn aktive Jobs vorhanden
-- Feature: ReviewView - Zoom (Mausrad + Buttons), Pan, Download, In-neuem-Tab-oeffnen
+- Feature: ReviewView - Zoom (Mausrad + Buttons), Pan, Download, In-neuem-Tab-öffnen
 
 ### v1.0.4
 - Fix: GUI-Installer - Erkennung bestehender Installation und Migrations-Dialog
 - Fix: GUI-Installer - semantischer Versionsvergleich (Downgrade-Warnung)
 
 ### v1.0.3
-- Fix: GUI-Installer (`install-gui.ps1`) - Absturz beim Klick auf Watch-Ordner-Checkbox behoben (`$btnBrowse` war als lokale Variable nicht im Event-Handler-Scope verfuegbar)
+- Fix: GUI-Installer (`install-gui.ps1`) - Absturz beim Klick auf Watch-Ordner-Checkbox behoben (`$btnBrowse` war als lokale Variable nicht im Event-Handler-Scope verfügbar)
 
 ### v1.0.2
 - Fix: `app`-Namenskonflikt in der `lifespan`-Funktion behoben
 - Feature: Watch-Ordner Startup-Scan, UI-konfigurierbare Ordner, Export-Ordner
 
 ### v1.0.1
-- Fix: Docker Health-Checks auf curl-freie Alternativen umgestellt, ChromaDB Health-Check hinzugefuegt
+- Fix: Docker Health-Checks auf curl-freie Alternativen umgestellt, ChromaDB Health-Check hinzugefügt
 
 ### v1.0.0
-- Erstveroeffentlichung mit vollem Feature-Set (RAG-Assistent, PIN-Schutz, Ablagebereiche, Steuerrelevanz-Checkbox)
+- Erstveröffentlichung mit vollem Feature-Set (RAG-Assistent, PIN-Schutz, Ablagebereiche, Steuerrelevanz-Checkbox)
 
 ## Entwicklung
 
-### Tests ausfuehren
+### Tests ausführen
 
 ```bash
 cd backend
@@ -225,7 +227,7 @@ python -m pytest tests/ -v
 
 ### Releases erstellen
 
-Ein neues Release wird automatisch ueber GitHub Actions erstellt:
+Ein neues Release wird automatisch überGitHub Actions erstellt:
 
 ```bash
 git tag v1.0.0
