@@ -217,7 +217,7 @@ onMounted(async () => {
       <!-- Preview (left, 60%) -->
       <div class="lg:col-span-3">
         <div class="card !p-0 overflow-hidden">
-          <div v-if="isPdf" class="aspect-[3/4] bg-gray-100">
+          <div v-if="isPdf && fileUrl" class="aspect-[3/4] bg-gray-100">
             <iframe :src="fileUrl" class="h-full w-full" title="PDF-Vorschau"></iframe>
           </div>
           <div v-else class="flex items-center justify-center bg-gray-100 p-4">
