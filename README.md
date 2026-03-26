@@ -235,3 +235,9 @@ git push origin v1.0.0
 Dies erzeugt:
 - GitHub Release mit Installer-Archiv (ZIP + tar.gz)
 - Docker Images auf `ghcr.io/phash/zettelwirtschaft/backend` und `frontend`
+
+## Lizenz
+
+Dieses Projekt steht unter der [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+
+Copyright (C) 2026 Manuel Rödig
