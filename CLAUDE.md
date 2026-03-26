@@ -174,6 +174,8 @@ zettelwirtschaft/
 - **call_llm_text():** Freitext-LLM-Antworten ohne JSON-Format (fuer RAG-Antwortgenerierung).
 - **ChromaDB als Vektor-Store:** Separater Docker-Service. Collection pro Ablagebereich. Vektor-Index kann in System-Wartung neu aufgebaut werden.
 - **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
+- **PWA Service Worker Caching:** `navigateFallbackDenylist: [/^\/api\//]` verhindert dass der SW API-Requests mit `index.html` beantwortet. File/Thumbnail-Endpunkte sind `NetworkOnly` (Binaerdaten duerfen nicht gecacht werden, da sonst iframes die App statt das Dokument laden). API-JSON-Responses sind `NetworkFirst` mit 5min Cache.
+- **Lizenz:** AGPL-3.0 (verhindert proprietaere SaaS-Forks).
 
 ## Wichtige Datenmodelle
 > Read `memory/data-models.md` before working on models or migrations.
@@ -304,6 +306,9 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - [x] E-Mail-Anbindung (Issue #18) - IMAP-Polling, LLM-Relevanzpruefung, Fernet-Passwortverschluesselung, CRON/MANUAL/IDLE-Scheduling, E-Mail-Konten-UI in Settings, Dashboard-Stats, Migration 009
 - [x] E2E Test-Suite - Playwright mit TypeScript, 13 Testdateien (~145 Tests), API-Mocking, Desktop + Mobile Projekte, CI-Integration
 - [x] Automatische DB-Migrationen (v1.1.1) - `backend/entrypoint.sh` ruft `migrate.py` vor uvicorn auf; `migrate.py` erkennt Legacy-DBs ohne alembic_version-Tracking und stempelt korrekt, dann `alembic upgrade head`
+- [x] ReviewView Kontext (v1.2.0) - Kontext-Cards pro Rueckfrage (betroffenes Feld + KI-Wert), Highlighting im Erkannte-Daten-Block, Umlaute im gesamten Frontend
+- [x] PWA Service Worker Fix (v1.2.1) - `navigateFallbackDenylist` fuer `/api/`, `NetworkOnly` fuer File/Thumbnail-Endpunkte
+- [x] AGPL-3.0 Lizenz - Open-Source-Lizenz hinzugefuegt
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.

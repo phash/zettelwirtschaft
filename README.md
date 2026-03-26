@@ -109,6 +109,13 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.2.1
+- Fix: PDF-Vorschau in Dokumentendetails zeigte die App statt das Dokument (Service Worker fing `/api/.../file` Requests ab und lieferte `index.html` als Fallback)
+- Fix: `navigateFallbackDenylist` für `/api/` in PWA-Konfiguration
+- Fix: Datei- und Thumbnail-Endpunkte auf `NetworkOnly` (keine SW-Cache-Interferenz)
+- AGPL-3.0 Lizenz hinzugefügt
+- SmartScreen-Hinweis in Installationsanleitung
+
 ### v1.2.0
 - **ReviewView: Kontext für KI-Rückfragen** — Kontext-Cards unter jeder Rückfrage zeigen betroffenes Feld und erkannten KI-Wert an. Erkannte-Daten-Block hebt das betroffene Feld der aktiven Frage visuell hervor (amber Highlighting).
 - **Umlaute im gesamten Frontend** — Alle sichtbaren UI-Texte von ASCII-Ersetzungen (ue/oe/ae) auf echte deutsche Umlaute (ü/ö/ä) umgestellt. Betrifft ReviewView, Sidebar, Dashboard, DocumentDetail, Documents, Search, Chat, Settings, Tax und E2E-Tests.
