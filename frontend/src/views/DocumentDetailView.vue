@@ -355,7 +355,7 @@ onMounted(async () => {
 
         <!-- Review questions -->
         <div v-if="doc.review_questions?.length" class="card">
-          <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider mb-3">Rueckfragen</h2>
+          <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider mb-3">Rückfragen</h2>
           <div class="space-y-4">
             <div v-for="q in doc.review_questions" :key="q.id">
               <p class="text-sm font-medium text-gray-700">{{ q.question }}</p>

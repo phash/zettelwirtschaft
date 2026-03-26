@@ -18,7 +18,7 @@ test.describe('Responsive Design & Navigation', () => {
       await setupDashboardMocks(page);
       await page.goto('/');
 
-      const navItems = ['Dashboard', 'Dokumente', 'Upload', 'Scan', 'pruefen', 'Suche', 'Assistent', 'Steuer', 'Garantien', 'System'];
+      const navItems = ['Dashboard', 'Dokumente', 'Upload', 'Scan', 'prüfen', 'Suche', 'Assistent', 'Steuer', 'Garantien', 'System'];
       for (const item of navItems) {
         const navLink = page.locator('aside a').filter({ hasText: new RegExp(item, 'i') }).first();
         await expect(navLink).toBeVisible();

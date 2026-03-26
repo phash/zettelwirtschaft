@@ -215,7 +215,7 @@ onMounted(async () => {
             />
             <span class="text-sm text-gray-600">Nur steuerrelevante</span>
           </label>
-          <button @click="clearFilters" class="btn-secondary !py-1.5 text-xs ml-auto">Zuruecksetzen</button>
+          <button @click="clearFilters" class="btn-secondary !py-1.5 text-xs ml-auto">Zurücksetzen</button>
         </div>
       </div>
     </div>

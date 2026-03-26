@@ -103,7 +103,7 @@ test.describe('Review System', () => {
 
     await page.goto('/pruefen');
 
-    const skipBtn = page.getByRole('button', { name: /ueberspringen/i }).first();
+    const skipBtn = page.getByRole('button', { name: /überspringen/i }).first();
     await skipBtn.click();
 
     await page.waitForTimeout(500);
@@ -130,7 +130,7 @@ test.describe('Review System', () => {
 
     await page.goto('/pruefen');
 
-    const confirmBtn = page.getByRole('button', { name: /bestaetigen/i }).first();
+    const confirmBtn = page.getByRole('button', { name: /bestätigen/i }).first();
     await expect(confirmBtn).toBeVisible();
   });
 
@@ -159,7 +159,7 @@ test.describe('Review System', () => {
 
     await page.goto('/pruefen');
 
-    const confirmBtn = page.getByRole('button', { name: /bestaetigen/i }).first();
+    const confirmBtn = page.getByRole('button', { name: /bestätigen/i }).first();
     await confirmBtn.click();
 
     await page.waitForTimeout(500);
@@ -172,7 +172,7 @@ test.describe('Review System', () => {
     );
 
     await page.goto('/pruefen');
-    await expect(page.locator('text=geprueft').first()).toBeVisible();
+    await expect(page.locator('text=geprüft').first()).toBeVisible();
   });
 
   test('Details link navigates to document detail', async ({ page }) => {

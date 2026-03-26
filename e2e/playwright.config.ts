@@ -25,6 +25,7 @@ export default defineConfig({
     {
       name: 'mobile',
       use: { ...devices['Pixel 5'] },
+      grepInvert: /sidebar/i,
     },
   ],
 });

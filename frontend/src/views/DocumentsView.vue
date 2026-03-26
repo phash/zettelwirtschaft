@@ -93,7 +93,7 @@ async function toggleTax(doc) {
     await updateDocument(doc.id, { tax_relevant: doc.tax_relevant })
   } catch {
     doc.tax_relevant = prev
-    notify.error('Steuerrelevanz konnte nicht geaendert werden.')
+    notify.error('Steuerrelevanz konnte nicht geändert werden.')
   }
 }
 
@@ -163,7 +163,7 @@ onMounted(async () => {
           />
           <label for="taxFilter" class="text-sm text-gray-600">Steuerrelevant</label>
         </div>
-        <button @click="clearFilters" class="btn-secondary !py-1.5 text-xs">Zuruecksetzen</button>
+        <button @click="clearFilters" class="btn-secondary !py-1.5 text-xs">Zurücksetzen</button>
       </div>
     </div>
 

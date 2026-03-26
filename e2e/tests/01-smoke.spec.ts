@@ -2,11 +2,13 @@ import { test, expect } from '@playwright/test';
 import { setupDashboardMocks, MOCK_HEALTH } from '../helpers/mock.helpers';
 
 test.describe('Smoke Tests', () => {
-  test('App loads and shows dashboard', async ({ page }) => {
+  test('App loads and shows dashboard', async ({ page, isMobile }) => {
     await setupDashboardMocks(page);
     await page.goto('/');
     await expect(page).toHaveTitle(/Zettelwirtschaft/);
-    await expect(page.locator('text=Dashboard').first()).toBeVisible();
+    if (!isMobile) {
+      await expect(page.locator('text=Dashboard').first()).toBeVisible();
+    }
   });
 
   test('Health endpoint is mocked and app loads', async ({ page }) => {
@@ -41,7 +43,8 @@ test.describe('Smoke Tests', () => {
     await expect(page).toHaveURL('/');
   });
 
-  test('Version number is displayed', async ({ page }) => {
+  test('Version number is displayed', async ({ page, isMobile }) => {
+    test.skip(!!isMobile, 'Version only shown in sidebar on desktop');
     await setupDashboardMocks(page);
     await page.goto('/');
     await expect(page.locator(`text=v${MOCK_HEALTH.app_version}`).first()).toBeVisible();

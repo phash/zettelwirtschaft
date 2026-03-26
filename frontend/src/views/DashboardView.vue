@@ -65,7 +65,7 @@ async function toggleQueue() {
       notify.success('Verarbeitung pausiert.')
     }
   } catch {
-    notify.error('Queue-Status konnte nicht geaendert werden.')
+    notify.error('Queue-Status konnte nicht geändert werden.')
   }
 }
 
@@ -86,10 +86,10 @@ function copyForClaude(job) {
     '',
     `**Datei:** ${job.original_filename}`,
     `**Status:** ${job.status}`,
-    `**Fehler:** ${job.error_message || 'Keine Fehlermeldung verfuegbar'}`,
+    `**Fehler:** ${job.error_message || 'Keine Fehlermeldung verfügbar'}`,
     `**Zeitpunkt:** ${new Date(job.updated_at || job.created_at).toLocaleString('de-DE')}`,
     '',
-    '**Zur Diagnose bitte in der Konsole ausfuehren:**',
+    '**Zur Diagnose bitte in der Konsole ausführen:**',
     '```',
     'docker compose logs backend --tail=100',
     'docker compose logs ollama --tail=50',
@@ -144,7 +144,7 @@ onMounted(loadData)
     <div v-if="stats" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatCard label="Gesamt Dokumente" :value="stats.total_documents" color="blue" />
       <StatCard label="Diesen Monat" :value="stats.documents_this_month" color="green" />
-      <StatCard label="Offene Rueckfragen" :value="stats.pending_reviews" color="orange" />
+      <StatCard label="Offene Rückfragen" :value="stats.pending_reviews" color="orange" />
       <StatCard label="Garantien (30 Tage)" :value="stats.expiring_warranties_30d" color="purple" />
       <StatCard v-if="emailStats" label="E-Mails importiert" :value="emailStats.relevant" color="indigo" />
     </div>
@@ -262,7 +262,7 @@ onMounted(loadData)
                 </div>
               </div>
               <div class="mt-2 rounded bg-red-100 p-2 text-xs text-red-700 font-mono break-all select-all cursor-text">
-                {{ job.error_message || 'Keine Fehlermeldung verfuegbar. Bitte "Kopieren" nutzen und Logs pruefen.' }}
+                {{ job.error_message || 'Keine Fehlermeldung verfügbar. Bitte "Kopieren" nutzen und Logs prüfen.' }}
               </div>
             </div>
           </div>

@@ -13,8 +13,8 @@ const selectedScopeId = ref(null)
 const messagesContainer = ref(null)
 
 const exampleQuestions = [
-  'Wie viel haben wir dieses Jahr fuer Versicherungen ausgegeben?',
-  'Wann laeuft die Garantie fuer die Waschmaschine ab?',
+  'Wie viel haben wir dieses Jahr für Versicherungen ausgegeben?',
+  'Wann läuft die Garantie für die Waschmaschine ab?',
   'Welche Handwerkerrechnungen hatten wir letztes Jahr?',
   'Was steht in meinem letzten Steuerbescheid?',
 ]
@@ -68,7 +68,7 @@ async function sendQuestion(text = null) {
     })
   } catch (e) {
     const errorMsg = e.response?.status === 503
-      ? 'Der KI-Assistent ist derzeit nicht verfuegbar. Pruefe ob Ollama und ChromaDB laufen.'
+      ? 'Der KI-Assistent ist derzeit nicht verfügbar. Prüfe ob Ollama und ChromaDB laufen.'
       : 'Fehler bei der Verarbeitung. Bitte versuche es erneut.'
     messages.value.push({
       id: 'temp-error-' + Date.now(),
@@ -157,7 +157,7 @@ onMounted(async () => {
         </div>
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Frag deine Dokumente</h2>
         <p class="text-sm text-gray-500 mb-6 max-w-md">
-          Stelle natuerlichsprachige Fragen zu deinen archivierten Dokumenten. Der KI-Assistent durchsucht relevante Dokumente und gibt dir eine Antwort.
+          Stelle natürlichsprachige Fragen zu deinen archivierten Dokumenten. Der KI-Assistent durchsucht relevante Dokumente und gibt dir eine Antwort.
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
           <button

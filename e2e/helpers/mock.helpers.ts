@@ -925,6 +925,52 @@ export async function setupSettingsMocks(page: Page) {
   );
 }
 
+/** Set up scan page mocks (camera mock via addInitScript + upload endpoint) */
+export async function setupScanMocks(page: Page) {
+  await setupBaseMocks(page);
+  await page.route('**/api/documents/upload', (route) =>
+    route.fulfill({ json: MOCK_UPLOAD_RESPONSE })
+  );
+  await page.route('**/api/documents?*', (route) =>
+    route.fulfill({ json: MOCK_DOCUMENTS })
+  );
+  await page.route('**/api/documents', (route) => {
+    if (route.request().method() === 'GET' && !route.request().url().includes('/documents/')) {
+      return route.fulfill({ json: MOCK_DOCUMENTS });
+    }
+    return route.continue();
+  });
+}
+
+/** Mock camera API via addInitScript (must be called before page.goto) */
+export async function mockCameraAPI(page: Page) {
+  await page.addInitScript(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#888888';
+      ctx.fillRect(0, 0, 640, 480);
+    }
+    const stream = canvas.captureStream();
+    navigator.mediaDevices.getUserMedia = async () => stream;
+    navigator.mediaDevices.enumerateDevices = async () => [
+      { deviceId: 'cam1', kind: 'videoinput', label: 'Front Camera', groupId: 'g1', toJSON() { return {}; } } as MediaDeviceInfo,
+    ];
+  });
+}
+
+/** Mock camera API to simulate permission denied */
+export async function mockCameraPermissionDenied(page: Page) {
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      throw new DOMException('Permission denied', 'NotAllowedError');
+    };
+    navigator.mediaDevices.enumerateDevices = async () => [];
+  });
+}
+
 /** Set up notification mocks */
 export async function setupNotificationMocks(page: Page) {
   await setupBaseMocks(page);

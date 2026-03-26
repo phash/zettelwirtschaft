@@ -9,7 +9,7 @@ const navItems = [
   { path: '/dokumente', label: 'Dokumente', icon: 'folder' },
   { path: '/upload', label: 'Upload', icon: 'upload' },
   { path: '/scan', label: 'Scan', icon: 'camera' },
-  { path: '/pruefen', label: 'Zu pruefen', icon: 'check-circle' },
+  { path: '/pruefen', label: 'Zu prüfen', icon: 'check-circle' },
   { path: '/suche', label: 'Suche', icon: 'search' },
   { path: '/assistent', label: 'KI-Assistent', icon: 'chat' },
   { path: '/steuer', label: 'Steuer', icon: 'calculator' },

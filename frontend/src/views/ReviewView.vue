@@ -81,7 +81,7 @@ async function loadReviewDocs() {
       await loadCurrentDoc()
     }
   } catch {
-    notify.error('Rueckfragen konnten nicht geladen werden.')
+    notify.error('Rückfragen konnten nicht geladen werden.')
   } finally {
     loading.value = false
   }
@@ -117,27 +117,27 @@ async function submitAnswer(question) {
     notify.success('Antwort gespeichert.')
 
     if (result.all_answered) {
-      // Alle beantwortet - Bestaetigung anbieten
+      // Alle beantwortet - Bestätigung anbieten
       notify.success('Alle Fragen beantwortet!')
     } else {
-      // Naechste unbeantwortete Frage
+      // Nächste unbeantwortete Frage
       const nextOpen = questions.value.findIndex((q, i) => i > currentQuestionIdx.value && !q.is_answered)
       if (nextOpen >= 0) {
         currentQuestionIdx.value = nextOpen
       }
     }
   } catch {
-    notify.error('Fehler beim Speichern.')
+    notify.error('Fehler beim Speichern der Antwort.')
   }
 }
 
 async function doApprove() {
   try {
     await approveReview(currentDoc.value.id)
-    notify.success('Dokument bestaetigt.')
+    notify.success('Dokument bestätigt.')
     await nextDocument()
   } catch {
-    notify.error('Fehler beim Bestaetigen.')
+    notify.error('Fehler beim Bestätigen.')
   }
 }
 
@@ -169,7 +169,37 @@ const questionTypeLabels = {
   classification: 'Klassifikation',
   extraction: 'Extraktion',
   context: 'Kontext',
-  confirmation: 'Bestaetigung',
+  confirmation: 'Bestätigung',
+}
+
+const fieldLabels = {
+  title: 'Titel',
+  document_type: 'Dokumenttyp',
+  document_date: 'Datum',
+  amount: 'Betrag',
+  currency: 'Währung',
+  issuer: 'Aussteller',
+  recipient: 'Empfänger',
+  reference_number: 'Referenznummer',
+  summary: 'Zusammenfassung',
+  tax_relevant: 'Steuerrelevant',
+  tax_category: 'Steuerkategorie',
+  filing_scope: 'Ablagebereich',
+}
+
+function fieldValue(fieldName) {
+  if (!reviewData.value?.confident_fields || !fieldName) return null
+  const cf = reviewData.value.confident_fields
+  if (fieldName === 'amount' && cf.amount != null) {
+    return `${cf.amount} ${cf.currency || '€'}`
+  }
+  return cf[fieldName] || null
+}
+
+function isFieldHighlighted(fieldKey) {
+  const q = currentQuestion.value
+  if (!q || q.is_answered) return false
+  return q.field_affected === fieldKey
 }
 
 function questionTypeBadge(type) {
@@ -188,7 +218,7 @@ onMounted(loadReviewDocs)
 <template>
   <div class="space-y-6">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold text-gray-900">Zu pruefen</h1>
+      <h1 class="text-2xl font-bold text-gray-900">Zu prüfen</h1>
       <span v-if="totalCount > 0" class="text-sm text-gray-500">
         {{ currentIndex + 1 }} von {{ totalCount }} Dokumenten
       </span>
@@ -204,8 +234,8 @@ onMounted(loadReviewDocs)
       <svg class="mx-auto h-16 w-16 text-green-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <p class="mt-4 text-lg font-medium text-gray-600">Alles geprueft!</p>
-      <p class="mt-1 text-sm text-gray-400">Keine Dokumente mit offenen Rueckfragen.</p>
+      <p class="mt-4 text-lg font-medium text-gray-600">Alles geprüft!</p>
+      <p class="mt-1 text-sm text-gray-400">Keine Dokumente mit offenen Rückfragen.</p>
     </div>
 
     <!-- Review content -->
@@ -222,7 +252,7 @@ onMounted(loadReviewDocs)
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
           </a>
-          <a :href="fileUrl" target="_blank" rel="noopener" title="In neuem Tab oeffnen"
+          <a :href="fileUrl" target="_blank" rel="noopener" title="In neuem Tab öffnen"
             class="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -250,8 +280,8 @@ onMounted(loadReviewDocs)
           <div class="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-lg bg-white/90 shadow-md px-2 py-1">
             <button @click="zoomOut" title="Verkleinern" class="rounded p-0.5 text-gray-600 hover:bg-gray-100 text-base leading-none font-medium w-6 h-6 flex items-center justify-center">−</button>
             <span class="text-xs text-gray-600 w-10 text-center">{{ Math.round(zoomLevel * 100) }}%</span>
-            <button @click="zoomIn" title="Vergroessern" class="rounded p-0.5 text-gray-600 hover:bg-gray-100 text-base leading-none font-medium w-6 h-6 flex items-center justify-center">+</button>
-            <button v-if="zoomLevel !== 1 || panX !== 0 || panY !== 0" @click="resetZoom" title="Zuruecksetzen"
+            <button @click="zoomIn" title="Vergrößern" class="rounded p-0.5 text-gray-600 hover:bg-gray-100 text-base leading-none font-medium w-6 h-6 flex items-center justify-center">+</button>
+            <button v-if="zoomLevel !== 1 || panX !== 0 || panY !== 0" @click="resetZoom" title="Zurücksetzen"
               class="ml-1 rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-100">1:1</button>
           </div>
           <div class="flex h-full w-full items-center justify-center">
@@ -278,23 +308,33 @@ onMounted(loadReviewDocs)
         <div v-if="reviewData?.confident_fields" class="card !p-4 bg-gray-50">
           <h3 class="text-xs font-semibold text-gray-500 uppercase mb-2">Erkannte Daten</h3>
           <div class="grid grid-cols-2 gap-2 text-sm">
-            <div v-if="reviewData.confident_fields.document_type">
+            <div v-if="reviewData.confident_fields.title"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('title') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
+              <span class="text-gray-500">Titel:</span>
+              <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.title }}</span>
+            </div>
+            <div v-if="reviewData.confident_fields.document_type"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('document_type') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
               <span class="text-gray-500">Typ:</span>
               <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.document_type }}</span>
             </div>
-            <div v-if="reviewData.confident_fields.issuer">
+            <div v-if="reviewData.confident_fields.issuer"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('issuer') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
               <span class="text-gray-500">Aussteller:</span>
               <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.issuer }}</span>
             </div>
-            <div v-if="reviewData.confident_fields.document_date">
+            <div v-if="reviewData.confident_fields.document_date"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('document_date') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
               <span class="text-gray-500">Datum:</span>
               <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.document_date }}</span>
             </div>
-            <div v-if="reviewData.confident_fields.amount != null">
+            <div v-if="reviewData.confident_fields.amount != null"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('amount') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
               <span class="text-gray-500">Betrag:</span>
               <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.amount }} {{ reviewData.confident_fields.currency }}</span>
             </div>
-            <div v-if="reviewData.confident_fields.filing_scope">
+            <div v-if="reviewData.confident_fields.filing_scope"
+              :class="['rounded-md px-2 py-1 transition-colors', isFieldHighlighted('filing_scope') ? 'bg-amber-100 ring-1 ring-amber-300' : '']">
               <span class="text-gray-500">Bereich:</span>
               <span class="ml-1 text-gray-700">{{ reviewData.confident_fields.filing_scope }}</span>
             </div>
@@ -313,7 +353,7 @@ onMounted(loadReviewDocs)
 
         <!-- Fragen-Cards -->
         <div class="card">
-          <h2 class="text-lg font-semibold text-gray-900 mb-4">Rueckfragen der KI</h2>
+          <h2 class="text-lg font-semibold text-gray-900 mb-4">Rückfragen der KI</h2>
           <div class="space-y-6">
             <div v-for="(q, idx) in questions" :key="q.id" :class="idx === currentQuestionIdx ? '' : 'opacity-60'">
               <div class="flex items-start gap-2 mb-2">
@@ -324,6 +364,20 @@ onMounted(loadReviewDocs)
               </div>
               <p class="text-sm font-medium text-gray-700 mb-1">{{ q.question }}</p>
               <p v-if="q.explanation" class="text-xs text-gray-400 mb-2">{{ q.explanation }}</p>
+
+              <!-- Kontext-Card: betroffenes Feld + erkannter Wert -->
+              <div v-if="q.field_affected && fieldValue(q.field_affected) && !q.is_answered"
+                class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 mb-2">
+                <div class="flex items-center gap-2 text-xs">
+                  <svg class="h-3.5 w-3.5 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span class="text-amber-700">
+                    <span class="font-medium">{{ fieldLabels[q.field_affected] || q.field_affected }}:</span>
+                    <span class="ml-1">{{ fieldValue(q.field_affected) }}</span>
+                  </span>
+                </div>
+              </div>
 
               <!-- Beantwortet -->
               <div v-if="q.is_answered" class="rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700">
@@ -368,7 +422,7 @@ onMounted(loadReviewDocs)
 
         <!-- Aktionen -->
         <div class="flex justify-between">
-          <button @click="skipDocument" class="btn-secondary">Ueberspringen</button>
+          <button @click="skipDocument" class="btn-secondary">Überspringen</button>
           <div class="flex gap-2">
             <router-link :to="`/dokumente/${currentDoc.id}`" class="btn-secondary">Details</router-link>
             <button
@@ -376,7 +430,7 @@ onMounted(loadReviewDocs)
               @click="doApprove"
               class="btn-primary"
             >
-              Bestaetigen
+              Bestätigen
             </button>
           </div>
         </div>

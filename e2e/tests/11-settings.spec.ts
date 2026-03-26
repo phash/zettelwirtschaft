@@ -21,7 +21,8 @@ test.describe('Settings', () => {
 
   test('Shows app version', async ({ page }) => {
     await page.goto('/einstellungen');
-    await expect(page.locator(`text=v${MOCK_SYSTEM_HEALTH.app_version}`).first()).toBeVisible();
+    // Look for version in the main content area (not sidebar)
+    await expect(page.locator('main').locator(`text=v${MOCK_SYSTEM_HEALTH.app_version}`).first()).toBeVisible();
   });
 
   test('Shows component statuses', async ({ page }) => {

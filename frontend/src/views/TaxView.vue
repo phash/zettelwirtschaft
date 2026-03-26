@@ -124,7 +124,7 @@ onMounted(async () => {
       <div class="space-y-3">
         <h2 class="text-lg font-semibold text-gray-900">Kategorien</h2>
         <div v-if="summary.categories.length === 0" class="card text-center py-12">
-          <p class="text-gray-500">Keine steuerrelevanten Belege fuer {{ selectedYear }}.</p>
+          <p class="text-gray-500">Keine steuerrelevanten Belege für {{ selectedYear }}.</p>
           <p class="text-sm text-gray-400 mt-1">Markieren Sie Dokumente als steuerrelevant in der Dokumentenansicht.</p>
         </div>
         <div v-else class="grid gap-3">

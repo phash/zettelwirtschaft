@@ -285,7 +285,7 @@ onUnmounted(() => {
       <div>
         <p class="text-sm font-semibold text-amber-800">Neustart erforderlich</p>
         <p class="text-xs text-amber-700 mt-1">
-          Die Host-Ordner wurden geaendert. Bitte das System stoppen und neu starten
+          Die Host-Ordner wurden geändert. Bitte das System stoppen und neu starten
           (<code class="bg-amber-100 px-1 rounded">stop.bat</code> &rarr; <code class="bg-amber-100 px-1 rounded">start.bat</code>),
           damit die Ordner im Container eingebunden werden.
         </p>
@@ -306,14 +306,14 @@ onUnmounted(() => {
         <div class="rounded-lg bg-blue-50 border border-blue-200 p-3 flex items-start gap-2">
           <svg class="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           <p class="text-xs text-blue-700">
-            <strong>Tipp:</strong> Ordner im Windows-Explorer mit <strong>Rechtsklick</strong> &rarr; <strong>Als Pfad kopieren</strong> auswaehlen, dann hier einfuegen (Strg+V). Anfuehrungszeichen werden automatisch entfernt.
+            <strong>Tipp:</strong> Ordner im Windows-Explorer mit <strong>Rechtsklick</strong> &rarr; <strong>Als Pfad kopieren</strong> auswählen, dann hier einfügen (Strg+V). Anführungszeichen werden automatisch entfernt.
           </p>
         </div>
 
         <!-- Watch-Ordner: Host-Pfad -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Eingangsordner (Watch-Ordner)</label>
-          <p class="text-xs text-gray-500 mb-2">Windows-Ordner, der automatisch ueberwacht wird. Neue Dateien werden eingelesen.</p>
+          <p class="text-xs text-gray-500 mb-2">Windows-Ordner, der automatisch überwacht wird. Neue Dateien werden eingelesen.</p>
           <div class="relative">
             <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 pointer-events-none">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
@@ -330,8 +330,8 @@ onUnmounted(() => {
 
         <!-- Export-Ordner: Host-Pfad -->
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner fuer verarbeitete Dokumente</label>
-          <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusaetzlich in diesen Windows-Ordner kopiert. Leer lassen zum Deaktivieren.</p>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Zielordner für verarbeitete Dokumente</label>
+          <p class="text-xs text-gray-500 mb-2">Verarbeitete Dokumente werden zusätzlich in diesen Windows-Ordner kopiert. Leer lassen zum Deaktivieren.</p>
           <div class="relative">
             <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 pointer-events-none">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
@@ -346,7 +346,7 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <!-- Container-Pfade (nur anzeigen wenn kein Host-Pfad gesetzt, als Fallback fuer fortgeschrittene User) -->
+        <!-- Container-Pfade (nur anzeigen wenn kein Host-Pfad gesetzt, als Fallback für fortgeschrittene User) -->
         <details v-if="!folderSettings.watch_dir_host && !folderSettings.export_dir_host" class="text-xs">
           <summary class="text-gray-400 cursor-pointer hover:text-gray-600">Erweitert: Container-Pfade manuell setzen</summary>
           <div class="mt-2 space-y-3 pl-2 border-l-2 border-gray-200">
@@ -366,7 +366,7 @@ onUnmounted(() => {
             {{ savingFolders ? 'Speichere...' : 'Speichern' }}
           </button>
           <button v-if="folderSettings.watch_dir_host || folderSettings.export_dir_host" @click="resetHostPaths" class="btn-secondary text-sm">
-            Auf Standard zuruecksetzen
+            Auf Standard zurücksetzen
           </button>
         </div>
       </div>
@@ -410,15 +410,15 @@ onUnmounted(() => {
         </h3>
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">Name</label>
-          <input v-model="scopeForm.name" class="input" placeholder="z.B. Praxis Dr. Mueller" />
+          <input v-model="scopeForm.name" class="input" placeholder="z.B. Praxis Dr. Müller" />
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-500 mb-1">Beschreibung</label>
           <input v-model="scopeForm.description" class="input" placeholder="Optional" />
         </div>
         <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Schluesselwoerter (kommagetrennt)</label>
-          <input v-model="scopeForm.keywords" class="input" placeholder="z.B. KBV, Kassenaerztliche, Praxis" />
+          <label class="block text-xs font-medium text-gray-500 mb-1">Schlüsselwörter (kommagetrennt)</label>
+          <input v-model="scopeForm.keywords" class="input" placeholder="z.B. KBV, Kassenärztliche, Praxis" />
         </div>
         <div class="flex items-center gap-4">
           <div class="flex items-center gap-2">
@@ -473,7 +473,7 @@ onUnmounted(() => {
           <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
           <span>Installationsordner:</span>
           <code class="bg-gray-100 px-1.5 py-0.5 rounded font-mono text-gray-600 select-all">{{ installPath }}</code>
-          <button @click="copyText('explorer.exe &quot;' + installPath + '&quot;')" class="text-primary-600 hover:text-primary-700 underline" title="Explorer-Befehl kopieren">Ordner oeffnen</button>
+          <button @click="copyText('explorer.exe &quot;' + installPath + '&quot;')" class="text-primary-600 hover:text-primary-700 underline" title="Explorer-Befehl kopieren">Ordner öffnen</button>
         </div>
       </div>
 
@@ -498,17 +498,17 @@ onUnmounted(() => {
             <!-- ChromaDB Fehler-Hilfe -->
             <div v-if="name === 'chromadb' && comp.status !== 'ok'" class="ml-5 rounded-lg bg-red-50 border border-red-100 p-3 text-xs text-red-700 space-y-2">
               <p class="font-medium">ChromaDB ist nicht erreichbar. Der KI-Assistent (RAG) ist dadurch deaktiviert.</p>
-              <p>Moegliche Ursachen und Loesungen:</p>
+              <p>Mögliche Ursachen und Lösungen:</p>
               <ul class="list-disc list-inside space-y-1 text-red-600">
                 <li>ChromaDB-Container ist nicht gestartet → <code class="bg-red-100 px-1 rounded">docker compose up -d chromadb</code></li>
-                <li>Port-Konflikt → <code class="bg-red-100 px-1 rounded">docker compose ps</code> pruefen</li>
+                <li>Port-Konflikt → <code class="bg-red-100 px-1 rounded">docker compose ps</code> prüfen</li>
                 <li>Neustart: <code class="bg-red-100 px-1 rounded">docker compose restart chromadb</code></li>
               </ul>
               <button
                 @click="copyChromaError(comp)"
                 class="mt-1 flex items-center gap-1 text-xs text-red-600 hover:text-red-800 underline"
               >
-                Fehler fuer Issue-Report kopieren
+                Fehler für Issue-Report kopieren
               </button>
             </div>
           </div>

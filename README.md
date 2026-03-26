@@ -107,6 +107,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.2.0
+- **ReviewView: Kontext für KI-Rückfragen** — Kontext-Cards unter jeder Rückfrage zeigen betroffenes Feld und erkannten KI-Wert an. Erkannte-Daten-Block hebt das betroffene Feld der aktiven Frage visuell hervor (amber Highlighting).
+- **Umlaute im gesamten Frontend** — Alle sichtbaren UI-Texte von ASCII-Ersetzungen (ue/oe/ae) auf echte deutsche Umlaute (ü/ö/ä) umgestellt. Betrifft ReviewView, Sidebar, Dashboard, DocumentDetail, Documents, Search, Chat, Settings, Tax und E2E-Tests.
+
 ### v1.1.1
 - Fix (kritisch): Datenbankmigrationen laufen jetzt automatisch beim Container-Start (`alembic upgrade head` via `entrypoint.sh`)
 - Fix: Legacy-Installationen ohne `alembic_version`-Tracking werden automatisch erkannt und korrekt gestempelt (betrifft Updates von v1.0.x auf v1.1.x)

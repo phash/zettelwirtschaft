@@ -4,6 +4,18 @@
 
 Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und Dokumente werden per Scanner oder Smartphone erfasst, automatisch durch KI (Ollama/lokales LLM) analysiert, kategorisiert und durchsuchbar archiviert. Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, keine Telemetrie.
 
+## Memory Files — Read Before Working on a Topic
+
+| File | Read when working on… |
+|---|---|
+| [`memory/backend-patterns.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/backend-patterns.md) | Python/FastAPI, SQLAlchemy, OCR pipeline, LLM calls, API endpoints, tests |
+| [`memory/data-models.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/data-models.md) | DB models, migrations, enums, archive structure, version tracking |
+| [`memory/frontend-patterns.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/frontend-patterns.md) | Vue.js components, views, TailwindCSS, API client, PWA |
+| [`memory/release-deployment.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/release-deployment.md) | Releases, Docker, Windows installer, CI/CD, known deployment bugs |
+| [`memory/e2e-tests.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/e2e-tests.md) | Playwright E2E tests, mocking strategy, CI setup |
+
+---
+
 ## Technologie-Stack
 
 - **Backend:** Python 3.12+ / FastAPI
@@ -137,6 +149,7 @@ zettelwirtschaft/
 ```
 
 ## Architektur-Entscheidungen
+> Read `memory/backend-patterns.md` + `memory/data-models.md` before working on backend/architecture topics.
 
 - **Kein externer Message-Broker:** Verarbeitungs-Queue ist datenbankbasiert (SQLite). Kein Redis/RabbitMQ noetig.
 - **Optionaler PIN-Schutz:** `PIN_ENABLED=true` + `PIN_CODE=xxxx` in `.env`. Sessions in-memory (dict), kein DB-Schema. Middleware in `main.py` prueft Cookie, Whitelist: `/api/health`, `/api/auth/*`. Frontend: Router-Guard + 401-Interceptor redirecten zu `/pin`.
@@ -163,6 +176,7 @@ zettelwirtschaft/
 - **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
 
 ## Wichtige Datenmodelle
+> Read `memory/data-models.md` before working on models or migrations.
 
 - `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON), `email_account_id` (nullable FK). JobSource: UPLOAD, WATCH_FOLDER, EMAIL
 - `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status + filing_scope_id. Relationships: tags, warranty_info, review_questions, filing_scope (alle lazy="selectin")
@@ -214,6 +228,7 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 ```
 
 ## Konventionen
+> Read `memory/backend-patterns.md` (backend) and `memory/frontend-patterns.md` (frontend) before writing code.
 
 ### Backend (Python)
 - Async wo sinnvoll (FastAPI async endpoints, httpx fuer Ollama)
@@ -291,6 +306,7 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - [x] Automatische DB-Migrationen (v1.1.1) - `backend/entrypoint.sh` ruft `migrate.py` vor uvicorn auf; `migrate.py` erkennt Legacy-DBs ohne alembic_version-Tracking und stempelt korrekt, dann `alembic upgrade head`
 
 ### Architektur-Details: Version-Tracking
+> Read `memory/release-deployment.md` before working on releases, installer, or Docker.
 - `VERSION` - Datei im Projekt-Root (vom Installer/Release gelesen)
 - `data/.version` - Geschrieben vom Installer nach erfolgreichem Deploy; gelesen vom Backend (via `/api/system/health → app_version`); via `./data:/app/data` Volume im Container sichtbar
 - Frontend: Vite `define.__APP_VERSION__` bettet Version zur Build-Zeit ein (liest `../VERSION`)
@@ -307,7 +323,9 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
 
 ### Tests
-- 261+ Backend-Tests (1 skipped fuer Tesseract)
+> Read `memory/e2e-tests.md` before writing or running E2E tests.
+
+- 268 Backend-Tests (1 skipped fuer Tesseract)
 - Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat, email), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize, crypto, email_relevance, email_fetch, email_scheduler), Model-Tests (email_models), Core-Tests (file_utils)
 
 ### E2E Tests
