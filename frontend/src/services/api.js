@@ -352,6 +352,11 @@ export async function retryJob(jobId) {
   return data
 }
 
+export async function reanalyzeDocument(documentId) {
+  const { data } = await api.post(`/review/documents/${documentId}/reanalyze`)
+  return data
+}
+
 // === E-Mail-Konten ===
 
 export async function getEmailAccounts() {

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
-import { getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, skipReview } from '../services/api'
+import { getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, skipReview, reanalyzeDocument } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 
 const notify = useNotificationStore()
@@ -160,6 +160,36 @@ async function skipDocument() {
   }
   await nextDocument()
 }
+
+const reanalyzing = ref(false)
+
+async function doReanalyze() {
+  reanalyzing.value = true
+  try {
+    const result = await reanalyzeDocument(currentDoc.value.id)
+    if (result.needs_review) {
+      notify.success('Analyse wiederholt — bitte neue Rückfragen prüfen.')
+      await loadCurrentDoc()
+    } else {
+      notify.success('Analyse erfolgreich — Dokument automatisch bestätigt.')
+      await nextDocument()
+    }
+  } catch (e) {
+    const msg = e.response?.status === 503
+      ? 'LLM nicht erreichbar. Bitte später erneut versuchen.'
+      : 'Fehler bei der Re-Analyse.'
+    notify.error(msg)
+  } finally {
+    reanalyzing.value = false
+  }
+}
+
+const needsReanalysis = computed(() => {
+  if (!questions.value.length) return false
+  return questions.value.some(q =>
+    !q.is_answered && q.question?.includes('LLM nicht erreichbar')
+  )
+})
 
 const fileUrl = computed(() =>
   currentDoc.value ? `/api/documents/${currentDoc.value.id}/file` : ''
@@ -349,6 +379,22 @@ onMounted(loadReviewDocs)
           <span class="text-xs text-gray-500 whitespace-nowrap">
             {{ questions.filter(q => q.is_answered).length }}/{{ questions.length }}
           </span>
+        </div>
+
+        <!-- Re-Analyse Hinweis -->
+        <div v-if="needsReanalysis" class="rounded-lg bg-blue-50 border border-blue-200 p-4">
+          <div class="flex items-start gap-3">
+            <svg class="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <div class="flex-1">
+              <p class="text-sm font-medium text-blue-800">Die KI-Analyse war beim ersten Versuch nicht verfügbar.</p>
+              <p class="text-xs text-blue-600 mt-1">Klicke auf „Erneut analysieren", um die automatische Erkennung mit dem vorhandenen OCR-Text zu wiederholen.</p>
+            </div>
+            <button @click="doReanalyze" :disabled="reanalyzing" class="btn-primary text-sm whitespace-nowrap">
+              {{ reanalyzing ? 'Analysiere...' : 'Erneut analysieren' }}
+            </button>
+          </div>
         </div>
 
         <!-- Fragen-Cards -->

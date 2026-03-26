@@ -1,5 +1,6 @@
 """Erweitertes Rueckfrage-System API."""
 
+import json
 import logging
 from datetime import datetime
 
@@ -7,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.database import get_db
-from app.models.document import Document, DocumentStatus, ReviewStatus
+from app.models.document import Document, DocumentStatus, DocumentType, ReviewStatus
 from app.models.filing_scope import FilingScope
 from app.models.review_question import ReviewQuestion
 from app.models.correction_mapping import CorrectionMapping
@@ -180,6 +182,110 @@ async def skip_document(
     document.review_status = ReviewStatus.OK
     await session.commit()
     return {"ok": True}
+
+
+@router.post("/review/documents/{document_id}/reanalyze")
+async def reanalyze_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Fuehrt die LLM-Analyse erneut durch (z.B. wenn Ollama beim ersten Mal nicht erreichbar war)."""
+    result = await session.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Dokument nicht gefunden")
+
+    if not doc.ocr_text or not doc.ocr_text.strip():
+        raise HTTPException(400, "Kein OCR-Text vorhanden, Re-Analyse nicht moeglich")
+
+    # LLM-Analyse mit vorhandenem OCR-Text
+    from app.services.analysis_service import _truncate_text, _try_combined_analysis, _try_sequential_analysis
+
+    # Filing Scopes laden
+    scope_result = await session.execute(select(FilingScope))
+    scopes = scope_result.scalars().all()
+    filing_scopes = []
+    for s in scopes:
+        keywords = []
+        try:
+            keywords = json.loads(s.keywords) if s.keywords else []
+        except (json.JSONDecodeError, TypeError):
+            pass
+        filing_scopes.append({
+            "id": s.id, "name": s.name, "slug": s.slug,
+            "keywords": keywords, "is_default": s.is_default,
+        })
+
+    truncated_text = _truncate_text(doc.ocr_text)
+
+    # Kombinierte Analyse versuchen
+    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes)
+    if not analysis:
+        analysis = await _try_sequential_analysis(truncated_text, settings)
+
+    if not analysis:
+        raise HTTPException(503, "LLM nicht erreichbar. Bitte spaeter erneut versuchen.")
+
+    # Dokument aktualisieren
+    if analysis.document_type:
+        try:
+            doc.document_type = DocumentType(analysis.document_type)
+        except ValueError:
+            pass
+    if analysis.title:
+        doc.title = analysis.title
+    if analysis.issuer:
+        doc.issuer = analysis.issuer
+    if analysis.document_date:
+        doc.document_date = analysis.document_date
+    if analysis.amount is not None:
+        doc.amount = analysis.amount
+    if analysis.currency:
+        doc.currency = analysis.currency
+    if analysis.summary:
+        doc.summary = analysis.summary
+    if analysis.tax_relevant is not None:
+        doc.tax_relevant = analysis.tax_relevant
+    doc.ai_confidence = analysis.confidence
+
+    # Alte Review-Fragen loeschen und ggf. neue erstellen
+    old_questions = [q for q in doc.review_questions if not q.is_answered]
+    for q in old_questions:
+        await session.delete(q)
+
+    if analysis.needs_review and analysis.review_questions:
+        for q_data in analysis.review_questions:
+            if isinstance(q_data, str):
+                q = ReviewQuestion(document_id=doc.id, question=q_data)
+            else:
+                q = ReviewQuestion(
+                    document_id=doc.id,
+                    question=q_data.get("question", str(q_data)),
+                    field_affected=q_data.get("field_affected"),
+                    question_type=q_data.get("question_type"),
+                    explanation=q_data.get("explanation"),
+                    suggested_answers=q_data.get("suggested_answers"),
+                    priority=q_data.get("priority", 0),
+                )
+            session.add(q)
+        doc.review_status = ReviewStatus.NEEDS_REVIEW
+    else:
+        doc.review_status = ReviewStatus.REVIEWED
+
+    await session.commit()
+    logger.info("Re-Analyse fuer Dokument %s erfolgreich: Typ=%s, Konfidenz=%.0f%%",
+                doc.id, doc.document_type, analysis.confidence * 100)
+
+    return {
+        "ok": True,
+        "document_type": str(doc.document_type),
+        "title": doc.title,
+        "confidence": analysis.confidence,
+        "needs_review": analysis.needs_review,
+    }
 
 
 @router.get("/review/stats")
