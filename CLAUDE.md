@@ -309,6 +309,7 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - [x] ReviewView Kontext (v1.2.0) - Kontext-Cards pro Rueckfrage (betroffenes Feld + KI-Wert), Highlighting im Erkannte-Daten-Block, Umlaute im gesamten Frontend
 - [x] PWA Service Worker Fix (v1.2.1) - `navigateFallbackDenylist` fuer `/api/`, `NetworkOnly` fuer File/Thumbnail-Endpunkte
 - [x] AGPL-3.0 Lizenz - Open-Source-Lizenz hinzugefuegt
+- [x] Re-Analyse bei LLM-Ausfall (v1.2.2) - `POST /review/documents/{id}/reanalyze` fuehrt LLM-Analyse erneut durch mit vorhandenem OCR-Text, Frontend-Button bei "LLM nicht erreichbar"-Rueckfrage
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.

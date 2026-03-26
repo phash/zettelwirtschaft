@@ -109,6 +109,11 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.2.2
+- Feature: „Erneut analysieren"-Button bei fehlgeschlagener LLM-Analyse (z.B. wenn Ollama beim Dokumentimport nicht erreichbar war)
+- Neuer Endpunkt `POST /api/review/documents/{id}/reanalyze` — führt LLM-Analyse mit vorhandenem OCR-Text erneut durch
+- Fix: `entrypoint.sh` CRLF-Zeilenenden korrigiert (lokaler Docker-Build schlug fehl)
+
 ### v1.2.1
 - Fix: PDF-Vorschau in Dokumentendetails zeigte die App statt das Dokument (Service Worker fing `/api/.../file` Requests ab und lieferte `index.html` als Fallback)
 - Fix: `navigateFallbackDenylist` für `/api/` in PWA-Konfiguration
