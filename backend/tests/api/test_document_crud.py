@@ -184,38 +184,4 @@ class TestDashboardStats:
         assert data["pending_reviews"] == 1
 
 
-class TestReviewEndpoints:
-    async def test_list_review_documents(self, client, db_session: AsyncSession):
-        await _create_test_document(
-            db_session,
-            file_hash="h1",
-            review_status=ReviewStatus.NEEDS_REVIEW,
-        )
-        await _create_test_document(
-            db_session, file_hash="h2", review_status=ReviewStatus.OK
-        )
-        await db_session.commit()
-
-        resp = await client.get("/api/documents/review/pending")
-        assert resp.status_code == 200
-        assert len(resp.json()) == 1
-
-    async def test_answer_review_question(self, client, db_session: AsyncSession):
-        doc = await _create_test_document(
-            db_session,
-            review_status=ReviewStatus.NEEDS_REVIEW,
-        )
-        q = ReviewQuestion(
-            document_id=doc.id,
-            question="Ist der Betrag korrekt?",
-        )
-        db_session.add(q)
-        await db_session.flush()
-        await db_session.commit()
-
-        resp = await client.post(
-            f"/api/documents/{doc.id}/review/{q.id}",
-            json={"answer": "Ja, 119 EUR ist korrekt"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["is_answered"] is True
+    # Review-Endpoints wurden nach api/review.py verschoben (siehe test_review.py)

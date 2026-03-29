@@ -29,7 +29,7 @@ test.describe('Scan View', () => {
     await expect(page.locator('text=Kamerazugriff nicht moeglich')).toBeVisible({ timeout: 10000 });
 
     // File upload button should be available as fallback
-    await expect(page.locator('text=Datei waehlen')).toBeVisible();
+    await expect(page.locator('text=Datei wählen')).toBeVisible();
   });
 
   test('Camera switch button is visible when camera active', async ({ page }) => {
@@ -80,7 +80,7 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei waehlen')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
 
     // Select a file via the hidden file input
     const fileInput = page.locator('input[type="file"]');
@@ -98,7 +98,7 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei waehlen')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
 
     // Select a file
     const fileInput = page.locator('input[type="file"]');
@@ -118,7 +118,7 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei waehlen')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
 
     const fileInput = page.locator('input[type="file"]');
     await fileInput.setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));

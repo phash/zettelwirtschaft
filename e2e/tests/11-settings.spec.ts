@@ -109,13 +109,13 @@ test.describe('Settings', () => {
     await page.goto('/einstellungen');
 
     // Find delete link for non-default scope
-    const deleteLinks = page.locator('a:has-text("Loeschen"), button:has-text("Loeschen")');
+    const deleteLinks = page.locator('a:has-text("Löschen"), button:has-text("Löschen")');
     const count = await deleteLinks.count();
     if (count > 0) {
       await deleteLinks.first().click();
 
       // Confirm dialog
-      const confirmBtn = page.getByRole('button', { name: /loeschen/i }).last();
+      const confirmBtn = page.getByRole('button', { name: /löschen/i }).last();
       if (await confirmBtn.isVisible()) {
         await confirmBtn.click();
       }
@@ -266,7 +266,7 @@ test.describe('Settings', () => {
     );
 
     await page.goto('/einstellungen');
-    await expect(page.locator('text=eingeschraenkt').first()).toBeVisible();
+    await expect(page.locator('text=eingeschränkt').first()).toBeVisible();
   });
 
   // --- Auto-refresh ---

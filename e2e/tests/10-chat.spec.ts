@@ -146,7 +146,7 @@ test.describe('KI-Assistent (Chat)', () => {
 
     await page.goto('/assistent');
 
-    const clearBtn = page.getByRole('button', { name: /verlauf.*loeschen|loeschen/i }).first();
+    const clearBtn = page.getByRole('button', { name: /verlauf.*löschen|löschen/i }).first();
     if (await clearBtn.isVisible()) {
       await clearBtn.click();
       await page.waitForTimeout(500);

@@ -128,11 +128,11 @@ test.describe('Document Detail', () => {
     await page.goto(`/dokumente/${MOCK_DOCUMENT_DETAIL.id}`);
 
     // Click delete button
-    const deleteBtn = page.getByRole('button', { name: /loeschen/i }).first();
+    const deleteBtn = page.getByRole('button', { name: /löschen/i }).first();
     await deleteBtn.click();
 
     // Confirm dialog should appear
-    const confirmBtn = page.getByRole('button', { name: /loeschen/i }).nth(1);
+    const confirmBtn = page.getByRole('button', { name: /löschen/i }).nth(1);
     await confirmBtn.click();
 
     await page.waitForTimeout(500);
