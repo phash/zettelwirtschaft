@@ -26,7 +26,7 @@ test.describe('Scan View', () => {
     await page.goto('/scan');
 
     // Error message should be shown
-    await expect(page.locator('text=Kamerazugriff nicht moeglich')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Kamerazugriff nicht möglich')).toBeVisible({ timeout: 10000 });
 
     // File upload button should be available as fallback
     await expect(page.locator('text=Datei wählen')).toBeVisible();

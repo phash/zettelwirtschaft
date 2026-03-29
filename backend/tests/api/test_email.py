@@ -1,6 +1,15 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
+TEST_ENCRYPTION_KEY = "dGVzdGtleTE2Ynl0ZXNrZXk9"
+
+
+def _mock_settings_with_key():
+    """Erstellt Mock-Settings mit gesetztem EMAIL_ENCRYPTION_KEY."""
+    from app.config import Settings
+    s = Settings(EMAIL_ENCRYPTION_KEY=TEST_ENCRYPTION_KEY)
+    return s
+
 
 @pytest.mark.asyncio
 async def test_list_accounts_empty(client):
@@ -10,8 +19,20 @@ async def test_list_accounts_empty(client):
 
 
 @pytest.mark.asyncio
+async def test_create_account_requires_encryption_key(client):
+    """Ohne EMAIL_ENCRYPTION_KEY gibt create_account 503 zurueck."""
+    resp = await client.post("/api/email/accounts", json={
+        "name": "Test",
+        "imap_host": "imap.test.com",
+        "username": "user@test.com",
+        "password": "pw",
+    })
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_create_account(client):
-    with patch("app.api.email.generate_encryption_key", return_value="dGVzdGtleTE2Ynl0ZXNrZXk9") as mock_gen, \
+    with patch("app.api.email.get_settings", return_value=_mock_settings_with_key()), \
          patch("app.api.email.encrypt_password", return_value="encrypted_pw"):
         resp = await client.post("/api/email/accounts", json={
             "name": "Gmail Privat",
@@ -31,7 +52,7 @@ async def test_create_account(client):
 
 @pytest.mark.asyncio
 async def test_create_and_list_accounts(client):
-    with patch("app.api.email.generate_encryption_key", return_value="dGVzdGtleTE2Ynl0ZXNrZXk9"), \
+    with patch("app.api.email.get_settings", return_value=_mock_settings_with_key()), \
          patch("app.api.email.encrypt_password", return_value="enc"):
         await client.post("/api/email/accounts", json={
             "name": "Test",
@@ -46,7 +67,7 @@ async def test_create_and_list_accounts(client):
 
 @pytest.mark.asyncio
 async def test_delete_account(client):
-    with patch("app.api.email.generate_encryption_key", return_value="dGVzdGtleTE2Ynl0ZXNrZXk9"), \
+    with patch("app.api.email.get_settings", return_value=_mock_settings_with_key()), \
          patch("app.api.email.encrypt_password", return_value="enc"):
         create_resp = await client.post("/api/email/accounts", json={
             "name": "ToDelete",
@@ -64,7 +85,7 @@ async def test_delete_account(client):
 
 @pytest.mark.asyncio
 async def test_test_connection(client):
-    with patch("app.api.email.generate_encryption_key", return_value="dGVzdGtleTE2Ynl0ZXNrZXk9"), \
+    with patch("app.api.email.get_settings", return_value=_mock_settings_with_key()), \
          patch("app.api.email.encrypt_password", return_value="enc"):
         create_resp = await client.post("/api/email/accounts", json={
             "name": "Test",
@@ -82,7 +103,7 @@ async def test_test_connection(client):
 
 @pytest.mark.asyncio
 async def test_manual_fetch(client):
-    with patch("app.api.email.generate_encryption_key", return_value="dGVzdGtleTE2Ynl0ZXNrZXk9"), \
+    with patch("app.api.email.get_settings", return_value=_mock_settings_with_key()), \
          patch("app.api.email.encrypt_password", return_value="enc"):
         create_resp = await client.post("/api/email/accounts", json={
             "name": "Test",

@@ -106,6 +106,11 @@ zettelwirtschaft/
         layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
         common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
         email/                   # EmailAccountForm, EmailAccountList (E-Mail-Konten-Verwaltung)
+        settings/                # SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings
+      constants/
+        documentTypes.js         # DocumentType Enum -> Label Mapping
+      utils/
+        formatters.js            # formatDate, formatCurrency Utilities
       views/
         PinLoginView.vue         # PIN-Eingabe bei aktiviertem PIN-Schutz
         DashboardView.vue        # Statistik-Karten, letzte Dokumente, Quick-Upload
@@ -176,6 +181,16 @@ zettelwirtschaft/
 - **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
 - **PWA Service Worker Caching:** `navigateFallbackDenylist: [/^\/api\//]` verhindert dass der SW API-Requests mit `index.html` beantwortet. File/Thumbnail-Endpunkte sind `NetworkOnly` (Binaerdaten duerfen nicht gecacht werden, da sonst iframes die App statt das Dokument laden). API-JSON-Responses sind `NetworkFirst` mit 5min Cache.
 - **Lizenz:** AGPL-3.0 (verhindert proprietaere SaaS-Forks).
+- **PIN Rate-Limiting:** In-Memory Per-IP Tracking (5 Versuche, 30s Lockout). `secrets.compare_digest` fuer constant-time Vergleich. `X-Real-IP` Header von Nginx.
+- **CORS:** Explizite Origins + LAN-Regex (`192.168.*`, `10.*`, `172.16-31.*`) statt `["*"]`.
+- **Nginx Security-Headers:** CSP, X-Frame-Options SAMEORIGIN, X-Content-Type-Options nosniff, server_tokens off.
+- **Backup-Sicherheit:** `.env` wird nicht mehr in Backup-ZIPs aufgenommen (enthaelt Secrets). Path-Traversal-Schutz bei Backup-Download via `resolve()` + `is_relative_to()`.
+- **E-Mail-Encryption-Key:** `EMAIL_ENCRYPTION_KEY` muss in `.env` gesetzt sein. Leerer Key -> HTTP 503 bei Account-Erstellung (keine stille Key-Generierung).
+- **IMAP async:** Alle blockierenden IMAP-Operationen in `asyncio.to_thread()` gewrappt.
+- **LLM-Service Deduplizierung:** `call_llm()` und `call_llm_text()` nutzen shared `_call_ollama()` Helper.
+- **Archive copy+delete:** Dateien werden kopiert und erst nach erfolgreichem DB-Commit geloescht (statt move, das nicht rollback-sicher ist).
+- **SettingsView Sub-Components:** Aufgeteilt in SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings.
+- **Frontend Shared Utilities:** `constants/documentTypes.js` (Enum -> Label Mapping), `utils/formatters.js` (formatDate, formatCurrency).
 
 ## Wichtige Datenmodelle
 > Read `memory/data-models.md` before working on models or migrations.
@@ -310,6 +325,12 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - [x] PWA Service Worker Fix (v1.2.1) - `navigateFallbackDenylist` fuer `/api/`, `NetworkOnly` fuer File/Thumbnail-Endpunkte
 - [x] AGPL-3.0 Lizenz - Open-Source-Lizenz hinzugefuegt
 - [x] Re-Analyse bei LLM-Ausfall (v1.2.2) - `POST /review/documents/{id}/reanalyze` fuehrt LLM-Analyse erneut durch mit vorhandenem OCR-Text, Frontend-Button bei "LLM nicht erreichbar"-Rueckfrage
+- [x] Code-Review + Security-Haertung (post-v1.2.2) - 47 von 55 Findings behoben (8 bewusst offen: Pagination/DELETE-Inkonsistenz, SVG-Duplizierung, aria-labels, reanalyze-Duplizierung, Dockerfile-Packages). Details in `CODE_REVIEW_FINDINGS.md`
+  - Security: .env aus Backups entfernt, Path-Traversal-Schutz, PIN Rate-Limiting (5 Versuche/30s), constant-time PIN-Vergleich, CORS eingeschraenkt, Nginx Security-Headers (CSP, X-Frame-Options), SQL ORDER BY Whitelist, E-Mail-Anhaenge Magic-Byte-Validierung, IMAP in asyncio.to_thread
+  - Backend: FK-Typ-Fix Migration 010, Performance-Indizes Migration 011, LLM-Service dedupliziert (_call_ollama), Double-Commits entfernt, datetime.utcnow() -> datetime.now(timezone.utc), Pydantic AnswerRequest statt dict, Dead Code entfernt
+  - Frontend: SettingsView in 5 Sub-Components, shared documentTypes.js + formatters.js, Route-Param-Watch Fix, Dashboard-Polling Guard, Umlaute korrigiert, Notification Outside-Click, dynamischer Seitentitel, ScanView HTTPS-Erkennung
+  - Docker: ChromaDB HTTP-Healthcheck, Ollama service_healthy Dependency, init_db() entfernt (nur Alembic), .dockerignore fuer Backend + Frontend
+  - E-Mail-Security: EMAIL_ENCRYPTION_KEY leer -> HTTP 503 statt stiller Key-Generierung
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.
@@ -327,6 +348,8 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - `007_add_system_settings` - SystemSetting-Tabelle fuer UI-konfigurierbare Einstellungen
 - `008_add_warranty_reminder_flags` - Separate Reminder-Flags (90d/30d/0d) auf WarrantyInfo
 - `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
+- `010_fix_email_filing_scope_fk_type` - FK-Typ-Fix EmailAccount.filing_scope_id Integer -> String(36)
+- `011_add_performance_indexes` - Indizes auf Notification.is_read, ProcessingJob.created_at/status, ReviewQuestion.is_answered
 
 ### Tests
 > Read `memory/e2e-tests.md` before writing or running E2E tests.
