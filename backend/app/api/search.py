@@ -17,7 +17,7 @@ from app.schemas.search import (
 )
 from app.services.search_service import search_documents, suggest
 
-logger = logging.getLogger("zettelwirtschaft.api.search")
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,8 +37,8 @@ async def search(
     tags: str | None = None,
     status: str | None = None,
     filing_scope_id: str | None = None,
-    sort_by: str = "relevance",
-    sort_order: str = "desc",
+    sort_by: str = Query("relevance", pattern="^(relevance|date|amount|title|created_at)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     db: AsyncSession = Depends(get_db),

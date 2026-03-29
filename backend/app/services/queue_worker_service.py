@@ -13,7 +13,7 @@ from app.services.analysis_service import analyze_document
 from app.services.archive_service import archive_document
 from app.services.thumbnail_service import generate_thumbnail
 
-logger = logging.getLogger("zettelwirtschaft.queue_worker")
+logger = logging.getLogger(__name__)
 
 # Globales Pause-Flag (in-memory, resets on restart)
 _queue_paused: bool = False
@@ -50,15 +50,9 @@ async def _process_job(
     scope_records = scope_result.scalars().all()
     filing_scopes = []
     for s in scope_records:
-        keywords = []
-        if s.keywords:
-            try:
-                keywords = json.loads(s.keywords)
-            except (json.JSONDecodeError, TypeError):
-                keywords = []
         filing_scopes.append({
             "id": s.id, "name": s.name, "slug": s.slug,
-            "keywords": keywords, "is_default": s.is_default,
+            "keywords": s.parsed_keywords, "is_default": s.is_default,
         })
 
     # Thumbnail generieren
@@ -119,6 +113,13 @@ async def _process_job(
         logger.warning("Job %s: %s", job.id, e)
 
     await session.commit()
+
+    # Quelldatei nach erfolgreichem Commit loeschen (archive_service kopiert statt move)
+    try:
+        if file_path.exists():
+            file_path.unlink()
+    except OSError:
+        logger.warning("Quelldatei konnte nicht geloescht werden: %s", file_path)
 
 
 async def run_queue_worker(

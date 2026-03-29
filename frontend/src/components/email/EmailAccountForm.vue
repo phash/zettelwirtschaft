@@ -81,9 +81,9 @@ function handleSubmit() {
       </div>
       <div>
         <label class="block text-xs font-medium text-gray-500 mb-1">
-          {{ isEdit ? 'Neues Passwort (leer = unveraendert)' : 'Passwort / App-Passwort' }}
+          {{ isEdit ? 'Neues Passwort (leer = unverändert)' : 'Passwort / App-Passwort' }}
         </label>
-        <input v-model="form.password" type="password" class="input" :placeholder="isEdit ? 'Nur bei Aenderung eingeben' : 'App-Passwort eingeben'" />
+        <input v-model="form.password" type="password" class="input" :placeholder="isEdit ? 'Nur bei Änderung eingeben' : 'App-Passwort eingeben'" />
       </div>
     </div>
 
@@ -128,7 +128,7 @@ function handleSubmit() {
     <div v-if="form.schedule_type === 'CRON'">
       <label class="block text-xs font-medium text-gray-500 mb-1">CRON-Ausdruck</label>
       <input v-model="form.cron_expression" class="input font-mono" placeholder="*/15 * * * *" />
-      <p class="text-xs text-gray-400 mt-1">Beispiele: <code class="bg-gray-100 px-1 rounded">*/15 * * * *</code> (alle 15 Min.), <code class="bg-gray-100 px-1 rounded">0 */2 * * *</code> (alle 2 Std.), <code class="bg-gray-100 px-1 rounded">0 8 * * *</code> (taeglich 8 Uhr)</p>
+      <p class="text-xs text-gray-400 mt-1">Beispiele: <code class="bg-gray-100 px-1 rounded">*/15 * * * *</code> (alle 15 Min.), <code class="bg-gray-100 px-1 rounded">0 */2 * * *</code> (alle 2 Std.), <code class="bg-gray-100 px-1 rounded">0 8 * * *</code> (täglich 8 Uhr)</p>
     </div>
 
     <!-- Filing Scope -->
@@ -138,12 +138,12 @@ function handleSubmit() {
         <option :value="null">Automatisch zuordnen</option>
         <option v-for="scope in scopes" :key="scope.id" :value="scope.id">{{ scope.name }}</option>
       </select>
-      <p class="text-xs text-gray-400 mt-1">Alle Dokumente aus diesem Konto werden dem gewaehlten Bereich zugeordnet.</p>
+      <p class="text-xs text-gray-400 mt-1">Alle Dokumente aus diesem Konto werden dem gewählten Bereich zugeordnet.</p>
     </div>
 
     <div class="flex gap-2 pt-2">
       <button @click="handleSubmit" class="btn-primary text-sm">
-        {{ isEdit ? 'Speichern' : 'Konto hinzufuegen' }}
+        {{ isEdit ? 'Speichern' : 'Konto hinzufügen' }}
       </button>
       <button @click="$emit('cancel')" class="btn-secondary text-sm">Abbrechen</button>
     </div>

@@ -51,7 +51,6 @@ async def mark_read(
     if not n:
         raise HTTPException(404, "Benachrichtigung nicht gefunden")
     n.is_read = True
-    await session.commit()
     return {"ok": True}
 
 
@@ -61,5 +60,4 @@ async def mark_all_read(session: AsyncSession = Depends(get_db)):
     await session.execute(
         update(Notification).where(Notification.is_read.is_(False)).values(is_read=True)
     )
-    await session.commit()
     return {"ok": True}

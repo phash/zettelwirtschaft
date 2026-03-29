@@ -4,7 +4,7 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger("zettelwirtschaft.search")
+logger = logging.getLogger(__name__)
 
 
 async def ensure_fts_table(session: AsyncSession) -> None:
@@ -23,13 +23,13 @@ async def ensure_fts_table(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def rebuild_fts_index(session: AsyncSession) -> None:
+async def rebuild_fts_index(session: AsyncSession) -> int:
     """Baut den FTS-Index komplett neu auf aus der documents-Tabelle."""
     await ensure_fts_table(session)
     # Clear existing index
     await session.execute(text("DELETE FROM documents_fts"))
     # Rebuild from documents table
-    await session.execute(text("""
+    result = await session.execute(text("""
         INSERT INTO documents_fts(doc_id, title, ocr_text, issuer, summary, tags)
         SELECT
             d.id,
@@ -46,8 +46,10 @@ async def rebuild_fts_index(session: AsyncSession) -> None:
         FROM documents d
         WHERE d.status != 'DELETED'
     """))
+    count = result.rowcount
     await session.commit()
-    logger.info("FTS-Index neu aufgebaut")
+    logger.info("FTS-Index neu aufgebaut (%d Dokumente)", count)
+    return count
 
 
 async def index_document(
@@ -358,14 +360,6 @@ async def _compute_facets(
         row[0]: row[1] for row in issuer_result.fetchall() if row[0]
     }
 
-    scope_sql = f"""
-        SELECT fs.name, COUNT(*) as cnt
-        {base_query} AND d.filing_scope_id IS NOT NULL
-        {'AND' if 'JOIN' not in base_query.upper() or 'filing_scopes' not in base_query else 'AND'}
-        1=1
-        GROUP BY d.filing_scope_id
-    """
-    # Simpler approach: join filing_scopes
     scope_sql = f"""
         SELECT fs.name, COUNT(*) as cnt
         FROM documents d

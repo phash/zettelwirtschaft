@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.config import Settings
 
-logger = logging.getLogger("zettelwirtschaft.ocr")
+logger = logging.getLogger(__name__)
 
 
 @dataclass

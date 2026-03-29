@@ -9,7 +9,7 @@ from app.models.processing_job import JobStatus, ProcessingJob
 from app.schemas.processing_job import JobStatusResponse, PaginatedJobsResponse
 from app.services.queue_worker_service import is_queue_paused, pause_queue, resume_queue
 
-logger = logging.getLogger("zettelwirtschaft.api.jobs")
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -87,6 +87,5 @@ async def retry_job(job_id: str, db: AsyncSession = Depends(get_db)) -> dict:
     job.status = JobStatus.PENDING
     job.error_message = None
     job.retry_count = 0
-    await db.commit()
     logger.info("Job %s auf PENDING zurueckgesetzt", job_id)
     return {"message": "Job wird erneut verarbeitet", "job_id": job_id}

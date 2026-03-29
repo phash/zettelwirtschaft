@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +14,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # In-memory session store: token -> expiry
 _sessions: dict[str, datetime] = {}
 
+# Rate limiting: IP -> (fail_count, lockout_until)
+_login_attempts: dict[str, tuple[int, datetime | None]] = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_SECONDS = 30
+
 SESSION_COOKIE = "zw_session"
 
 
@@ -25,6 +31,13 @@ def _cleanup_expired() -> None:
     expired = [k for k, v in _sessions.items() if v <= now]
     for k in expired:
         del _sessions[k]
+    # Login-Attempts aufraeumen: abgelaufene Lockouts entfernen
+    stale = [
+        ip for ip, (count, lockout) in _login_attempts.items()
+        if lockout and lockout <= now
+    ]
+    for ip in stale:
+        del _login_attempts[ip]
 
 
 def is_session_valid(token: str | None) -> bool:
@@ -52,16 +65,29 @@ async def auth_status(request: Request, settings: Settings = Depends(get_setting
 
 @router.post("/login")
 async def auth_login(
-    body: PinRequest, response: Response, settings: Settings = Depends(get_settings)
+    body: PinRequest, request: Request, response: Response, settings: Settings = Depends(get_settings)
 ):
     if not settings.PIN_ENABLED:
         return {"success": True}
 
-    if body.pin == settings.PIN_CODE:
-        token = uuid.uuid4().hex
-        expiry = datetime.now(timezone.utc) + timedelta(
-            minutes=settings.PIN_SESSION_TIMEOUT_MINUTES
+    _cleanup_expired()
+
+    # Rate Limiting
+    client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
+    now = datetime.now(timezone.utc)
+    fail_count, lockout_until = _login_attempts.get(client_ip, (0, None))
+    if lockout_until and now < lockout_until:
+        remaining = int((lockout_until - now).total_seconds())
+        return JSONResponse(
+            status_code=429,
+            content={"success": False, "detail": f"Zu viele Fehlversuche. Bitte {remaining}s warten."},
         )
+
+    if secrets.compare_digest(body.pin, settings.PIN_CODE):
+        # Erfolg: Attempts zuruecksetzen
+        _login_attempts.pop(client_ip, None)
+        token = uuid.uuid4().hex
+        expiry = now + timedelta(minutes=settings.PIN_SESSION_TIMEOUT_MINUTES)
         _sessions[token] = expiry
         response.set_cookie(
             key=SESSION_COOKIE,
@@ -72,6 +98,10 @@ async def auth_login(
         )
         return {"success": True}
 
+    # Fehlversuch zaehlen
+    fail_count += 1
+    lockout = now + timedelta(seconds=LOCKOUT_SECONDS) if fail_count >= MAX_LOGIN_ATTEMPTS else None
+    _login_attempts[client_ip] = (fail_count, lockout)
     return JSONResponse(status_code=401, content={"success": False, "detail": "Falscher PIN"})
 
 

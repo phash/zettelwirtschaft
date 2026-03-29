@@ -18,18 +18,12 @@ router = APIRouter(tags=["filing-scopes"])
 
 def _scope_to_response(scope: FilingScope) -> dict:
     """Konvertiert FilingScope zu Response-Dict mit geparsten Keywords."""
-    keywords = []
-    if scope.keywords:
-        try:
-            keywords = json.loads(scope.keywords)
-        except (json.JSONDecodeError, TypeError):
-            keywords = []
     return {
         "id": scope.id,
         "name": scope.name,
         "slug": scope.slug,
         "description": scope.description,
-        "keywords": keywords,
+        "keywords": scope.parsed_keywords,
         "is_default": scope.is_default,
         "color": scope.color,
         "created_at": scope.created_at,
@@ -70,9 +64,6 @@ async def create_filing_scope(
 
     # Wenn neuer Scope Default sein soll, andere zuruecksetzen
     if data.is_default:
-        await session.execute(
-            select(FilingScope)  # dummy, we use update below
-        )
         from sqlalchemy import update
         await session.execute(
             update(FilingScope).values(is_default=False)

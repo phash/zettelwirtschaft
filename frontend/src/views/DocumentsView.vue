@@ -5,6 +5,8 @@ import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
 import { getDocuments, getFilingScopes, updateDocument } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { documentTypes, typeLabels } from '../constants/documentTypes'
+import { formatDate, formatAmount } from '../utils/formatters'
 
 const router = useRouter()
 const notify = useNotificationStore()
@@ -24,14 +26,6 @@ const filterScope = ref('')
 const sortBy = ref('created_at')
 const sortOrder = ref('desc')
 const filingScopes = ref([])
-
-const documentTypes = [
-  'RECHNUNG', 'QUITTUNG', 'KAUFVERTRAG', 'GARANTIESCHEIN',
-  'VERSICHERUNGSPOLICE', 'KONTOAUSZUG', 'LOHNABRECHNUNG',
-  'STEUERBESCHEID', 'MIETVERTRAG', 'HANDWERKER_RECHNUNG',
-  'ARZTRECHNUNG', 'REZEPT', 'AMTLICHES_SCHREIBEN',
-  'BEDIENUNGSANLEITUNG', 'SONSTIGES',
-]
 
 async function loadDocuments() {
   loading.value = true
@@ -74,16 +68,6 @@ function clearFilters() {
   filterTaxRelevant.value = null
   filterScope.value = ''
   page.value = 1
-}
-
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
-}
-
-function formatAmount(amount, currency) {
-  if (amount == null) return '-'
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(amount)
 }
 
 async function toggleTax(doc) {
@@ -135,7 +119,7 @@ onMounted(async () => {
           <label class="block text-xs font-medium text-gray-500 mb-1">Typ</label>
           <select v-model="filterType" class="input !py-1.5">
             <option value="">Alle Typen</option>
-            <option v-for="t in documentTypes" :key="t" :value="t">{{ t }}</option>
+            <option v-for="t in documentTypes" :key="t" :value="t">{{ typeLabels[t] || t }}</option>
           </select>
         </div>
         <div>

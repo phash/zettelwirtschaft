@@ -93,7 +93,7 @@ const statusLabels = {
   PROCESSING: 'Wird verarbeitet...',
   COMPLETED: 'Fertig',
   FAILED: 'Fehlgeschlagen',
-  NEEDS_REVIEW: 'Pruefung noetig',
+  NEEDS_REVIEW: 'Prüfung nötig',
 }
 
 const statusColors = {
@@ -135,7 +135,7 @@ onUnmounted(() => {
         Dateien hierher ziehen
       </p>
       <p class="mt-1 text-sm text-gray-400">
-        oder klicken zum Auswaehlen
+        oder klicken zum Auswählen
       </p>
       <p class="mt-4 text-xs text-gray-400">
         PDF, JPG, JPEG, PNG, TIFF, BMP &middot; Max. 50 MB

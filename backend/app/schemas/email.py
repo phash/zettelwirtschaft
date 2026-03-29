@@ -16,7 +16,7 @@ class EmailAccountCreate(BaseModel):
     folder_processed: str = Field(default="Zettelwirtschaft/Verarbeitet", max_length=500)
     schedule_type: str = Field(default="MANUAL")
     cron_expression: str | None = None
-    filing_scope_id: int | None = None
+    filing_scope_id: str | None = None
 
 
 class EmailAccountUpdate(BaseModel):
@@ -31,7 +31,7 @@ class EmailAccountUpdate(BaseModel):
     schedule_type: str | None = None
     cron_expression: str | None = None
     is_active: bool | None = None
-    filing_scope_id: int | None = None
+    filing_scope_id: str | None = None
 
 
 class EmailAccountResponse(BaseModel):
@@ -48,7 +48,7 @@ class EmailAccountResponse(BaseModel):
     is_active: bool
     last_checked_at: datetime | None
     last_error: str | None
-    filing_scope_id: int | None
+    filing_scope_id: str | None
     created_at: datetime
     updated_at: datetime
 

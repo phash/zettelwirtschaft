@@ -48,14 +48,6 @@ export async function deleteDocument(id) {
   return data
 }
 
-export async function getDocumentFileUrl(id) {
-  return `/api/documents/${id}/file`
-}
-
-export async function getThumbnailUrl(id) {
-  return `/api/documents/${id}/thumbnail`
-}
-
 // === Upload ===
 
 export async function uploadDocuments(files, onProgress) {

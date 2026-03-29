@@ -3,6 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { getTaxSummary, getTaxYears, exportTaxPackage, getTaxValidation, getFilingScopes } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
+import { formatAmount } from '../utils/formatters'
 
 const notify = useNotificationStore()
 const loading = ref(true)
@@ -50,10 +51,6 @@ async function doExport() {
   } finally {
     exporting.value = false
   }
-}
-
-function formatAmount(amount) {
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(amount)
 }
 
 watch([selectedYear, selectedScope], loadSummary)

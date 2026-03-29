@@ -9,7 +9,7 @@ services:
       - .env
     depends_on:
       ollama:
-        condition: service_started
+        condition: service_healthy
       chromadb:
         condition: service_healthy
     restart: unless-stopped
@@ -38,7 +38,7 @@ services:
       - chromadb-data:/chroma/chroma
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "grep -q '00000000:1F40' /proc/net/tcp"]
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8000/api/v2/heartbeat || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

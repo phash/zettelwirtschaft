@@ -47,11 +47,26 @@ class ReviewQuestionAnswer(BaseModel):
     answer: str
 
 
-def _extract_scope_name(data):
-    """Extrahiert filing_scope_name aus ORM-Relationship."""
-    if hasattr(data, "filing_scope") and data.filing_scope is not None:
-        return data.filing_scope.name
-    return None
+def _resolve_scope_name(cls, data):
+    """Model-Validator: extrahiert filing_scope_name aus ORM-Relationship."""
+    if hasattr(data, "__dict__") and hasattr(data, "filing_scope") and data.filing_scope is not None:
+        scope_name = data.filing_scope.name
+
+        class _OrmProxy:
+            """Proxy um ORM-Objekt mit zusaetzlichem Attribut zu wrappen."""
+            __slots__ = ("_obj", "_filing_scope_name")
+
+            def __init__(self, obj, name):
+                object.__setattr__(self, "_obj", obj)
+                object.__setattr__(self, "_filing_scope_name", name)
+
+            def __getattr__(self, name):
+                if name == "filing_scope_name":
+                    return object.__getattribute__(self, "_filing_scope_name")
+                return getattr(object.__getattribute__(self, "_obj"), name)
+
+        return _OrmProxy(data, scope_name)
+    return data
 
 
 class DocumentResponse(BaseModel):
@@ -59,7 +74,6 @@ class DocumentResponse(BaseModel):
     id: str
     original_filename: str
     stored_filename: str
-    file_path: str
     thumbnail_path: str | None = None
     file_type: str
     file_size_bytes: int
@@ -90,23 +104,7 @@ class DocumentResponse(BaseModel):
     warranty_info: WarrantyInfoResponse | None = None
     review_questions: list[ReviewQuestionResponse] = []
 
-    @model_validator(mode="before")
-    @classmethod
-    def resolve_filing_scope(cls, data):
-        if hasattr(data, "__dict__"):  # ORM object
-            scope_name = _extract_scope_name(data)
-            if scope_name:
-                # Wrap in a dict-like proxy
-                class _Proxy:
-                    def __init__(self, obj, extra):
-                        self._obj = obj
-                        self._extra = extra
-                    def __getattr__(self, name):
-                        if name in self._extra:
-                            return self._extra[name]
-                        return getattr(self._obj, name)
-                return _Proxy(data, {"filing_scope_name": scope_name})
-        return data
+    resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
 
 
 class DocumentListItem(BaseModel):
@@ -131,22 +129,7 @@ class DocumentListItem(BaseModel):
     thumbnail_path: str | None = None
     tags: list[TagResponse] = []
 
-    @model_validator(mode="before")
-    @classmethod
-    def resolve_filing_scope(cls, data):
-        if hasattr(data, "__dict__"):  # ORM object
-            scope_name = _extract_scope_name(data)
-            if scope_name:
-                class _Proxy:
-                    def __init__(self, obj, extra):
-                        self._obj = obj
-                        self._extra = extra
-                    def __getattr__(self, name):
-                        if name in self._extra:
-                            return self._extra[name]
-                        return getattr(self._obj, name)
-                return _Proxy(data, {"filing_scope_name": scope_name})
-        return data
+    resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
 
 
 class PaginatedDocumentsResponse(BaseModel):

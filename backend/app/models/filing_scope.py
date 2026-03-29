@@ -12,7 +12,6 @@ def generate_slug(name: str) -> str:
     """Erzeugt einen URL-freundlichen Slug aus einem Namen."""
     slug = name.lower()
     replacements = {
-        "ae": "ae", "oe": "oe", "ue": "ue", "ss": "ss",
         "\u00e4": "ae", "\u00f6": "oe", "\u00fc": "ue", "\u00df": "ss",
     }
     for char, repl in replacements.items():
@@ -38,3 +37,13 @@ class FilingScope(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    @property
+    def parsed_keywords(self) -> list[str]:
+        if not self.keywords:
+            return []
+        try:
+            import json
+            return json.loads(self.keywords)
+        except (json.JSONDecodeError, TypeError):
+            return []

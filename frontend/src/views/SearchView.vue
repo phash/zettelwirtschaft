@@ -5,6 +5,8 @@ import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
 import { searchDocuments, createSavedSearch, getSavedSearches, deleteSavedSearch, getFilingScopes } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { typeLabels } from '../constants/documentTypes'
+import { formatDate, formatAmount } from '../utils/formatters'
 
 const route = useRoute()
 const router = useRouter()
@@ -120,7 +122,7 @@ async function removeSavedSearch(id) {
     await deleteSavedSearch(id)
     savedSearches.value = savedSearches.value.filter(s => s.id !== id)
   } catch {
-    notify.error('Konnte nicht geloescht werden.')
+    notify.error('Konnte nicht gelöscht werden.')
   }
 }
 
@@ -138,16 +140,6 @@ function applySavedSearch(search) {
   filterDateTo.value = params.date_to || ''
   page.value = 1
   doSearch()
-}
-
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
-}
-
-function formatAmount(amount, currency) {
-  if (amount == null) return '-'
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(amount)
 }
 
 watch(page, doSearch)
@@ -238,7 +230,7 @@ onMounted(async () => {
                 @change="toggleTypeFilter(type)"
                 class="rounded border-gray-300"
               />
-              <span class="flex-1 text-gray-700">{{ type }}</span>
+              <span class="flex-1 text-gray-700">{{ typeLabels[type] || type }}</span>
               <span class="text-gray-400">{{ count }}</span>
             </label>
           </div>

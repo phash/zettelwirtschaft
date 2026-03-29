@@ -9,7 +9,7 @@ from app.core.file_utils import generate_stored_filename, get_file_extension
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.services.file_validation_service import validate_file
 
-logger = logging.getLogger("zettelwirtschaft.upload")
+logger = logging.getLogger(__name__)
 
 
 async def process_upload(

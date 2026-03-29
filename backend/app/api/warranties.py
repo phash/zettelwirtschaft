@@ -4,7 +4,7 @@ import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -57,21 +57,26 @@ async def list_warranties(
 @router.get("/warranties/stats", response_model=WarrantyStats)
 async def warranty_stats(session: AsyncSession = Depends(get_db)):
     """Garantie-Statistiken."""
-    result = await session.execute(select(WarrantyInfo))
-    all_warranties = result.scalars().all()
-
     today = date.today()
     threshold = today + timedelta(days=90)
 
-    active = sum(1 for w in all_warranties if w.warranty_end_date > today)
-    expiring = sum(1 for w in all_warranties if today < w.warranty_end_date <= threshold)
-    expired = sum(1 for w in all_warranties if w.warranty_end_date <= today)
+    result = await session.execute(
+        select(
+            func.count().label("total"),
+            func.sum(case((WarrantyInfo.warranty_end_date > today, 1), else_=0)).label("active"),
+            func.sum(case((
+                WarrantyInfo.warranty_end_date.between(today, threshold), 1
+            ), else_=0)).label("expiring"),
+            func.sum(case((WarrantyInfo.warranty_end_date <= today, 1), else_=0)).label("expired"),
+        ).select_from(WarrantyInfo)
+    )
+    row = result.one()
 
     return WarrantyStats(
-        total=len(all_warranties),
-        active=active,
-        expiring_soon=expiring,
-        expired=expired,
+        total=row.total or 0,
+        active=row.active or 0,
+        expiring_soon=row.expiring or 0,
+        expired=row.expired or 0,
     )
 
 
@@ -92,7 +97,7 @@ async def update_warranty(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(warranty, field, value)
 
-    await session.commit()
+    await session.flush()
     await session.refresh(warranty)
 
     item = WarrantyListItem.model_validate(warranty)

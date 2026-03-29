@@ -85,16 +85,28 @@ function hideSuggestions() {
   setTimeout(() => { showSuggestions.value = false }, 200)
 }
 
+function onDocumentClick(e) {
+  // Notification-Dropdown schliessen bei Klick ausserhalb
+  if (showNotifications.value) {
+    const dropdown = document.querySelector('[data-notif-dropdown]')
+    if (dropdown && !dropdown.contains(e.target)) {
+      showNotifications.value = false
+    }
+  }
+}
+
 onMounted(() => {
   checkBackend()
   healthInterval = setInterval(checkBackend, 30000)
   loadNotifCount()
   notifInterval = setInterval(loadNotifCount, 60000)
+  document.addEventListener('click', onDocumentClick)
 })
 
 onUnmounted(() => {
   clearInterval(healthInterval)
   clearInterval(notifInterval)
+  document.removeEventListener('click', onDocumentClick)
 })
 </script>
 
@@ -139,8 +151,8 @@ onUnmounted(() => {
     <!-- Notifications + Status -->
     <div class="flex items-center gap-3">
       <!-- Notification bell -->
-      <div class="relative">
-        <button @click="toggleNotifications" class="relative p-1 text-gray-400 hover:text-gray-600">
+      <div class="relative" data-notif-dropdown>
+        <button @click="toggleNotifications" class="relative p-1 text-gray-400 hover:text-gray-600" aria-label="Benachrichtigungen">
           <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
           </svg>

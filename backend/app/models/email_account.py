@@ -34,8 +34,8 @@ class EmailAccount(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    filing_scope_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("filing_scopes.id", ondelete="SET NULL"), nullable=True
+    filing_scope_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("filing_scopes.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

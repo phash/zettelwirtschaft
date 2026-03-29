@@ -184,7 +184,7 @@ async def create_tax_export_zip(
                     writer.writerow({k: row[k] for k in writer.fieldnames})
                 zf.writestr(
                     f"{prefix}/{folder}/uebersicht.csv",
-                    csv_buf.getvalue().encode("utf-8-sig").decode("utf-8-sig"),
+                    csv_buf.getvalue().encode("utf-8-sig"),
                 )
 
         # Gesamt-CSV

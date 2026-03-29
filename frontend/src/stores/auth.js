@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+// Raw axios statt api.js um Zirkulaere Abhaengigkeit zu vermeiden:
+// api.js 401-Interceptor importiert auth store → auth store darf nicht api.js importieren
 import axios from 'axios'
 
 export const useAuthStore = defineStore('auth', () => {

@@ -279,8 +279,8 @@ async def archive_document(
         await session.rollback()
         raise ValueError(f"Duplikat erkannt: Datei mit Hash {file_hash[:12]}... existiert bereits")
 
-    # Datei erst nach erfolgreicher DB-Operation verschieben
-    shutil.move(str(file_path), str(archive_path))
+    # Datei kopieren (statt move) — Originaldatei bleibt erhalten bis Transaction committed
+    shutil.copy2(str(file_path), str(archive_path))
     logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
 
     # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)

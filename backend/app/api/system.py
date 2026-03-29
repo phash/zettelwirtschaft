@@ -262,6 +262,9 @@ async def download_backup(
     from pathlib import Path
     backup_dir = Path(settings.ARCHIVE_DIR).parent / "backups"
     file_path = backup_dir / filename
+    # Path-Traversal-Schutz
+    if not file_path.resolve().is_relative_to(backup_dir.resolve()):
+        raise HTTPException(400, "Ungültiger Dateiname")
     if not file_path.exists() or not file_path.name.startswith("backup_"):
         raise HTTPException(404, "Backup nicht gefunden")
     return FileResponse(file_path, filename=filename, media_type="application/zip")

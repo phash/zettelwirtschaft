@@ -1,9 +1,9 @@
 <script setup>
 defineProps({
   show: Boolean,
-  title: { type: String, default: 'Bestaetigung' },
+  title: { type: String, default: 'Bestätigung' },
   message: String,
-  confirmText: { type: String, default: 'Bestaetigen' },
+  confirmText: { type: String, default: 'Bestätigen' },
   cancelText: { type: String, default: 'Abbrechen' },
   danger: { type: Boolean, default: false },
 })

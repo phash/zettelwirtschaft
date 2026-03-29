@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { getWarranties, getWarrantyStats } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
+import { formatDate } from '../utils/formatters'
 
 const router = useRouter()
 const notify = useNotificationStore()
@@ -39,11 +40,6 @@ function progressPercent(w) {
   const totalDays = (w.warranty_duration_months || 1) * 30
   const elapsed = totalDays - (w.days_remaining || 0)
   return Math.min(100, Math.max(0, (elapsed / totalDays) * 100))
-}
-
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
 }
 
 function goToDocument(docId) {

@@ -19,6 +19,17 @@ const cameraError = ref('')
 
 async function startCamera() {
   cameraError.value = ''
+
+  if (!window.isSecureContext) {
+    cameraError.value = 'Kamerazugriff erfordert HTTPS oder localhost. Bitte über https:// oder http://localhost aufrufen.'
+    return
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    cameraError.value = 'Kamera wird in diesem Browser nicht unterstützt.'
+    return
+  }
+
   try {
     const constraints = {
       video: {
@@ -34,7 +45,7 @@ async function startCamera() {
       videoRef.value.srcObject = stream.value
     }
   } catch (err) {
-    cameraError.value = 'Kamerazugriff nicht moeglich. Bitte Berechtigung erteilen.'
+    cameraError.value = 'Kamerazugriff nicht möglich. Bitte Berechtigung erteilen.'
     console.error('Camera error:', err)
   }
 }
@@ -121,7 +132,7 @@ onMounted(() => {
   if (navigator.mediaDevices?.getUserMedia) {
     startCamera()
   } else {
-    cameraError.value = 'Kamera wird in diesem Browser nicht unterstuetzt.'
+    cameraError.value = 'Kamera wird in diesem Browser nicht unterstützt.'
   }
 })
 
@@ -170,7 +181,7 @@ onUnmounted(() => {
         <div class="mt-4 flex gap-3">
           <button @click="startCamera" class="btn-primary">Kamera starten</button>
           <label class="btn-secondary cursor-pointer">
-            Datei waehlen
+            Datei wählen
             <input type="file" accept="image/*,application/pdf" multiple class="hidden" @change="handleFileSelect" />
           </label>
         </div>

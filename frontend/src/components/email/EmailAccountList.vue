@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import EmailAccountForm from './EmailAccountForm.vue'
 import { getEmailAccounts, createEmailAccount, updateEmailAccount, deleteEmailAccount, testEmailConnection, fetchEmailsNow, getEmailHistory } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
+import { formatDateTime } from '../../utils/formatters'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
 
 const props = defineProps({
@@ -44,7 +45,7 @@ async function handleSave(data) {
       notify.success('Konto aktualisiert.')
     } else {
       await createEmailAccount(data)
-      notify.success('Konto hinzugefuegt.')
+      notify.success('Konto hinzugefügt.')
     }
     showForm.value = false
     editingAccount.value = null
@@ -57,11 +58,11 @@ async function handleSave(data) {
 async function handleDelete() {
   try {
     await deleteEmailAccount(deletingId.value)
-    notify.success('Konto geloescht.')
+    notify.success('Konto gelöscht.')
     deletingId.value = null
     await loadAccounts()
   } catch (e) {
-    notify.error(e.response?.data?.detail || 'Loeschen fehlgeschlagen.')
+    notify.error(e.response?.data?.detail || 'Löschen fehlgeschlagen.')
     deletingId.value = null
   }
 }
@@ -114,10 +115,6 @@ async function toggleHistory(accountId) {
   }
 }
 
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('de-DE')
-}
 
 function statusBadgeClass(status) {
   if (status === 'RELEVANT') return 'bg-green-100 text-green-700'
@@ -154,7 +151,7 @@ defineExpose({ loadAccounts })
               <span class="badge bg-blue-50 text-blue-600 text-xs">{{ acc.schedule_type === 'CRON' ? 'Zeitgesteuert' : acc.schedule_type === 'IDLE' ? 'Automatisch' : 'Manuell' }}</span>
             </div>
             <p class="text-xs text-gray-500 mt-1">{{ acc.username }} @ {{ acc.imap_host }}:{{ acc.imap_port }}</p>
-            <p v-if="acc.last_checked_at" class="text-xs text-gray-400 mt-0.5">Letzter Abruf: {{ formatDate(acc.last_checked_at) }}</p>
+            <p v-if="acc.last_checked_at" class="text-xs text-gray-400 mt-0.5">Letzter Abruf: {{ formatDateTime(acc.last_checked_at) }}</p>
             <p v-if="acc.last_error" class="text-xs text-red-500 mt-0.5">Fehler: {{ acc.last_error }}</p>
           </div>
           <div class="flex gap-1 flex-shrink-0">
@@ -165,10 +162,10 @@ defineExpose({ loadAccounts })
               {{ fetchingId === acc.id ? 'Rufe ab...' : 'Jetzt abrufen' }}
             </button>
             <button @click="toggleHistory(acc.id)" class="btn-secondary text-xs px-2 py-1">
-              {{ historyAccountId === acc.id ? 'Verlauf schliessen' : 'Verlauf' }}
+              {{ historyAccountId === acc.id ? 'Verlauf schließen' : 'Verlauf' }}
             </button>
             <button @click="startEdit(acc)" class="text-xs text-primary-600 hover:text-primary-700 px-2 py-1">Bearbeiten</button>
-            <button @click="deletingId = acc.id" class="text-xs text-red-500 hover:text-red-700 px-2 py-1">Loeschen</button>
+            <button @click="deletingId = acc.id" class="text-xs text-red-500 hover:text-red-700 px-2 py-1">Löschen</button>
           </div>
         </div>
 
@@ -179,7 +176,7 @@ defineExpose({ loadAccounts })
               <span :class="['badge', statusBadgeClass(item.status)]">{{ statusLabel(item.status) }}</span>
               <span class="flex-1 truncate text-gray-700">{{ item.subject || '(kein Betreff)' }}</span>
               <span class="text-gray-400 flex-shrink-0">{{ item.sender }}</span>
-              <span class="text-gray-400 flex-shrink-0">{{ formatDate(item.created_at) }}</span>
+              <span class="text-gray-400 flex-shrink-0">{{ formatDateTime(item.created_at) }}</span>
             </div>
           </div>
         </div>
@@ -189,7 +186,7 @@ defineExpose({ loadAccounts })
       </div>
 
       <div v-if="accounts.length === 0 && !showForm" class="text-sm text-gray-400 text-center py-4">
-        Keine E-Mail-Konten konfiguriert. Fuegen Sie ein Konto hinzu, um E-Mails automatisch zu verarbeiten.
+        Keine E-Mail-Konten konfiguriert. Fügen Sie ein Konto hinzu, um E-Mails automatisch zu verarbeiten.
       </div>
     </div>
 
@@ -205,9 +202,9 @@ defineExpose({ loadAccounts })
 
     <ConfirmDialog
       :show="!!deletingId"
-      title="E-Mail-Konto loeschen"
-      message="Soll dieses E-Mail-Konto wirklich geloescht werden? Bereits importierte Dokumente bleiben erhalten."
-      confirm-text="Loeschen"
+      title="E-Mail-Konto löschen"
+      message="Soll dieses E-Mail-Konto wirklich gelöscht werden? Bereits importierte Dokumente bleiben erhalten."
+      confirm-text="Löschen"
       :danger="true"
       @confirm="handleDelete"
       @cancel="deletingId = null"

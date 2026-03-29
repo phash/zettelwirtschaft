@@ -1,10 +1,10 @@
 """Erweitertes Rueckfrage-System API."""
 
-import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,14 +100,18 @@ async def review_document_detail(
     }
 
 
+class AnswerRequest(BaseModel):
+    answer: str
+
+
 @router.post("/review/questions/{question_id}/answer")
 async def answer_question(
     question_id: str,
-    body: dict,
+    body: AnswerRequest,
     session: AsyncSession = Depends(get_db),
 ):
     """Beantwortet eine Rueckfrage und aktualisiert ggf. das Dokument."""
-    answer = body.get("answer", "").strip()
+    answer = body.answer.strip()
     if not answer:
         raise HTTPException(400, "Antwort darf nicht leer sein")
 
@@ -121,7 +125,7 @@ async def answer_question(
     # Frage beantworten
     question.answer = answer
     question.is_answered = True
-    question.answered_at = datetime.utcnow()
+    question.answered_at = datetime.now(timezone.utc)
 
     # Auto-Update des betroffenen Feldes
     if question.field_affected:
@@ -131,8 +135,6 @@ async def answer_question(
         doc = doc_result.scalar_one_or_none()
         if doc:
             await _update_field_from_answer(doc, question.field_affected, answer, session)
-
-    await session.commit()
 
     # Pruefen ob alle Fragen beantwortet
     all_q_result = await session.execute(
@@ -161,7 +163,6 @@ async def approve_document(
         raise HTTPException(404, "Dokument nicht gefunden")
 
     doc.review_status = ReviewStatus.REVIEWED
-    await session.commit()
 
     return {"ok": True, "review_status": ReviewStatus.REVIEWED}
 
@@ -180,7 +181,6 @@ async def skip_document(
         raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
 
     document.review_status = ReviewStatus.OK
-    await session.commit()
     return {"ok": True}
 
 
@@ -209,14 +209,9 @@ async def reanalyze_document(
     scopes = scope_result.scalars().all()
     filing_scopes = []
     for s in scopes:
-        keywords = []
-        try:
-            keywords = json.loads(s.keywords) if s.keywords else []
-        except (json.JSONDecodeError, TypeError):
-            pass
         filing_scopes.append({
             "id": s.id, "name": s.name, "slug": s.slug,
-            "keywords": keywords, "is_default": s.is_default,
+            "keywords": s.parsed_keywords, "is_default": s.is_default,
         })
 
     truncated_text = _truncate_text(doc.ocr_text)
@@ -275,7 +270,6 @@ async def reanalyze_document(
     else:
         doc.review_status = ReviewStatus.REVIEWED
 
-    await session.commit()
     logger.info("Re-Analyse fuer Dokument %s erfolgreich: Typ=%s, Konfidenz=%.0f%%",
                 doc.id, doc.document_type, analysis.confidence * 100)
 

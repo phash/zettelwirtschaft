@@ -11,7 +11,7 @@ const typeClasses = {
 </script>
 
 <template>
-  <div class="fixed bottom-4 right-4 z-50 space-y-2">
+  <div class="fixed bottom-20 right-4 z-50 space-y-2 lg:bottom-4">
     <transition-group name="toast">
       <div
         v-for="n in store.notifications"

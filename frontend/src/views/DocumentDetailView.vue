@@ -1,10 +1,12 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
 import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, getFilingScopes, createFilingScope } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { documentTypes, typeLabels } from '../constants/documentTypes'
+import { formatDate, formatBytes } from '../utils/formatters'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,14 +21,6 @@ const filingScopes = ref([])
 
 // Editable fields
 const editForm = ref({})
-
-const documentTypes = [
-  'RECHNUNG', 'QUITTUNG', 'KAUFVERTRAG', 'GARANTIESCHEIN',
-  'VERSICHERUNGSPOLICE', 'KONTOAUSZUG', 'LOHNABRECHNUNG',
-  'STEUERBESCHEID', 'MIETVERTRAG', 'HANDWERKER_RECHNUNG',
-  'ARZTRECHNUNG', 'REZEPT', 'AMTLICHES_SCHREIBEN',
-  'BEDIENUNGSANLEITUNG', 'SONSTIGES',
-]
 
 const taxCategories = [
   { value: 'Werbungskosten', label: 'Werbungskosten' },
@@ -92,12 +86,12 @@ async function saveChanges() {
       }
     }
     if (Object.keys(updates).length === 0) {
-      notify.info('Keine Aenderungen.')
+      notify.info('Keine Änderungen.')
       return
     }
     doc.value = await updateDocument(doc.value.id, updates)
     resetForm()
-    notify.success('Aenderungen gespeichert.')
+    notify.success('Änderungen gespeichert.')
   } catch {
     notify.error('Speichern fehlgeschlagen.')
   } finally {
@@ -108,10 +102,10 @@ async function saveChanges() {
 async function handleDelete() {
   try {
     await deleteDocument(doc.value.id)
-    notify.success('Dokument geloescht.')
+    notify.success('Dokument gelöscht.')
     router.push('/dokumente')
   } catch {
-    notify.error('Loeschen fehlgeschlagen.')
+    notify.error('Löschen fehlgeschlagen.')
   }
   showDeleteDialog.value = false
 }
@@ -123,7 +117,7 @@ async function handleAddTag() {
     doc.value = await addTag(doc.value.id, name)
     newTag.value = ''
   } catch {
-    notify.error('Tag konnte nicht hinzugefuegt werden.')
+    notify.error('Tag konnte nicht hinzugefügt werden.')
   }
 }
 
@@ -174,16 +168,9 @@ async function submitAnswer(question) {
   }
 }
 
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
-}
-
-function formatFileSize(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / 1048576).toFixed(1) + ' MB'
-}
+watch(() => route.params.id, () => {
+  loadDocument()
+})
 
 onMounted(async () => {
   try { filingScopes.value = await getFilingScopes() } catch {}
@@ -208,7 +195,7 @@ onMounted(async () => {
       </div>
       <div class="flex gap-2">
         <a :href="fileUrl" download class="btn-secondary">Herunterladen</a>
-        <button @click="showDeleteDialog = true" class="btn-danger">Loeschen</button>
+        <button @click="showDeleteDialog = true" class="btn-danger">Löschen</button>
       </div>
     </div>
 
@@ -225,7 +212,7 @@ onMounted(async () => {
           </div>
         </div>
         <p class="mt-2 text-xs text-gray-400">
-          {{ doc.original_filename }} &middot; {{ formatFileSize(doc.file_size_bytes) }}
+          {{ doc.original_filename }} &middot; {{ formatBytes(doc.file_size_bytes) }}
         </p>
       </div>
 
@@ -243,7 +230,7 @@ onMounted(async () => {
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-1">Dokumenttyp</label>
             <select v-model="editForm.document_type" class="input">
-              <option v-for="t in documentTypes" :key="t" :value="t">{{ t }}</option>
+              <option v-for="t in documentTypes" :key="t" :value="t">{{ typeLabels[t] || t }}</option>
             </select>
           </div>
 
@@ -379,9 +366,9 @@ onMounted(async () => {
 
     <ConfirmDialog
       :show="showDeleteDialog"
-      title="Dokument loeschen"
-      message="Soll dieses Dokument wirklich geloescht werden? Es kann spaeter wiederhergestellt werden."
-      confirm-text="Loeschen"
+      title="Dokument löschen"
+      message="Soll dieses Dokument wirklich gelöscht werden? Es kann später wiederhergestellt werden."
+      confirm-text="Löschen"
       :danger="true"
       @confirm="handleDelete"
       @cancel="showDeleteDialog = false"

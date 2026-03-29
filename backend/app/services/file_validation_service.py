@@ -4,7 +4,7 @@ from pathlib import Path
 from app.config import Settings
 from app.core.file_utils import get_file_extension, validate_magic_bytes
 
-logger = logging.getLogger("zettelwirtschaft.validation")
+logger = logging.getLogger(__name__)
 
 
 class FileValidationError(Exception):

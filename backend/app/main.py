@@ -60,9 +60,7 @@ async def lifespan(app: FastAPI):
         Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
         logger.info("Export-Verzeichnis bereit: %s", settings.EXPORT_DIR)
 
-    # Datenbank initialisieren
-    await init_db()
-    logger.info("Datenbank initialisiert")
+    # DB-Schema wird von entrypoint.sh via migrate.py + Alembic verwaltet
 
     # FTS5-Index sicherstellen
     from app.services.search_service import ensure_fts_table
@@ -202,9 +200,17 @@ class PinAuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(PinAuthMiddleware)
 
+# CORS: LAN-Zugriff erlauben (Home-Netzwerk, kein Cloud)
+_settings = get_settings()
+_cors_origins = [
+    f"http://localhost:{_settings.FRONTEND_PORT}" if hasattr(_settings, 'FRONTEND_PORT') else "http://localhost:8080",
+    "http://localhost:8080",
+    "http://localhost:8000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

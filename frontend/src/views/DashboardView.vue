@@ -5,6 +5,7 @@ import StatCard from '../components/common/StatCard.vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob, getEmailStats } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { formatDate } from '../utils/formatters'
 
 const router = useRouter()
 const notify = useNotificationStore()
@@ -15,9 +16,12 @@ const failedJobs = ref([])
 const isDragging = ref(false)
 const queuePaused = ref(false)
 const emailStats = ref(null)
+const loadingData = ref(false)
 let pollTimer = null
 
 async function loadData() {
+  if (loadingData.value) return
+  loadingData.value = true
   try {
     const [s, docs, activeJobs, failJobs, qStatus] = await Promise.all([
       getDashboardStats(),
@@ -50,6 +54,8 @@ async function loadData() {
     }
   } catch {
     notify.error('Dashboard-Daten konnten nicht geladen werden.')
+  } finally {
+    loadingData.value = false
   }
 }
 
@@ -96,9 +102,9 @@ function copyForClaude(job) {
     'docker compose ps',
     '```',
     '',
-    '**Moegliche Ursachen:**',
+    '**Mögliche Ursachen:**',
     '- Ollama nicht erreichbar oder Modell nicht geladen',
-    '- OCR-Fehler bei beschaedigter Datei',
+    '- OCR-Fehler bei beschädigter Datei',
     '- Speicherplatz voll',
   ].join('\n')
   navigator.clipboard.writeText(text).then(() => notify.success('Fehlerinfo kopiert.'))
@@ -126,11 +132,6 @@ async function handleDrop(e) {
   } catch {
     notify.error('Fehler beim Upload.')
   }
-}
-
-function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
 }
 
 onMounted(loadData)

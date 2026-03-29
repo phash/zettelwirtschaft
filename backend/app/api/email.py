@@ -40,9 +40,11 @@ async def create_account(
 ):
     key = settings.EMAIL_ENCRYPTION_KEY
     if not key:
-        key = generate_encryption_key()
-        logger.warning("EMAIL_ENCRYPTION_KEY nicht gesetzt - temporaerer Schluessel generiert. "
-                       "Bitte in .env setzen: EMAIL_ENCRYPTION_KEY=%s", key)
+        raise HTTPException(
+            503,
+            "EMAIL_ENCRYPTION_KEY ist nicht konfiguriert. "
+            "Bitte in .env setzen, bevor E-Mail-Konten angelegt werden.",
+        )
 
     account = EmailAccount(
         name=data.name,
@@ -78,6 +80,8 @@ async def update_account(
     for field, value in data.model_dump(exclude_unset=True).items():
         if field == "password" and value:
             key = settings.EMAIL_ENCRYPTION_KEY
+            if not key:
+                raise HTTPException(503, "EMAIL_ENCRYPTION_KEY ist nicht konfiguriert.")
             account.encrypted_password = encrypt_password(value, key)
         elif field == "schedule_type" and value:
             account.schedule_type = ScheduleType(value)
@@ -149,37 +153,35 @@ async def get_history(
 
 @router.get("/stats", response_model=list[EmailStatsResponse])
 async def get_stats(db: AsyncSession = Depends(get_db)):
-    accounts = await db.execute(select(EmailAccount).order_by(EmailAccount.name))
-    stats = []
-    for account in accounts.scalars().all():
-        total = await db.execute(
-            select(func.count()).where(ProcessedEmail.email_account_id == account.id)
+    from sqlalchemy import case
+
+    # Single query: all accounts with aggregated email stats
+    stmt = (
+        select(
+            EmailAccount.id,
+            EmailAccount.name,
+            EmailAccount.last_checked_at,
+            func.count(ProcessedEmail.id).label("total"),
+            func.sum(case((ProcessedEmail.status == EmailStatus.RELEVANT, 1), else_=0)).label("relevant"),
+            func.sum(case((ProcessedEmail.status == EmailStatus.IRRELEVANT, 1), else_=0)).label("irrelevant"),
+            func.sum(case((ProcessedEmail.status == EmailStatus.FAILED, 1), else_=0)).label("failed"),
         )
-        relevant = await db.execute(
-            select(func.count()).where(
-                ProcessedEmail.email_account_id == account.id,
-                ProcessedEmail.status == EmailStatus.RELEVANT,
-            )
+        .outerjoin(ProcessedEmail, ProcessedEmail.email_account_id == EmailAccount.id)
+        .group_by(EmailAccount.id)
+        .order_by(EmailAccount.name)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    return [
+        EmailStatsResponse(
+            account_id=row.id,
+            account_name=row.name,
+            total_processed=row.total or 0,
+            relevant=row.relevant or 0,
+            irrelevant=row.irrelevant or 0,
+            failed=row.failed or 0,
+            last_checked_at=row.last_checked_at,
         )
-        irrelevant = await db.execute(
-            select(func.count()).where(
-                ProcessedEmail.email_account_id == account.id,
-                ProcessedEmail.status == EmailStatus.IRRELEVANT,
-            )
-        )
-        failed = await db.execute(
-            select(func.count()).where(
-                ProcessedEmail.email_account_id == account.id,
-                ProcessedEmail.status == EmailStatus.FAILED,
-            )
-        )
-        stats.append(EmailStatsResponse(
-            account_id=account.id,
-            account_name=account.name,
-            total_processed=total.scalar() or 0,
-            relevant=relevant.scalar() or 0,
-            irrelevant=irrelevant.scalar() or 0,
-            failed=failed.scalar() or 0,
-            last_checked_at=account.last_checked_at,
-        ))
-    return stats
+        for row in rows
+    ]

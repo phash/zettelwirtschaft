@@ -51,10 +51,7 @@ def create_backup(settings: Settings, include_documents: bool = False) -> str:
                 if backup_db.exists():
                     backup_db.unlink()
 
-        # .env Konfiguration
-        env_file = Path(".env")
-        if env_file.exists():
-            zf.write(env_file, "config/.env")
+        # .env wird NICHT ins Backup aufgenommen (enthaelt Secrets wie PIN_CODE, EMAIL_ENCRYPTION_KEY)
 
         # Dokumente (optional, bei Full-Backup)
         if include_documents:

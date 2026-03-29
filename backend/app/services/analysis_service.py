@@ -42,7 +42,7 @@ class AnalysisResult:
     document_type: str = "SONSTIGES"
     confidence: float = 0.0
     title: str | None = None
-    sender: str | None = None
+    sender: str | None = None  # LLM-Feld "sender" → wird als "issuer" auf Document gemappt
     recipient: str | None = None
     document_date: str | None = None
     amount: float | None = None

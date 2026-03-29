@@ -87,9 +87,9 @@ async function doClearHistory() {
   try {
     await clearChatHistory()
     messages.value = []
-    notify.success('Chatverlauf geloescht.')
+    notify.success('Chatverlauf gelöscht.')
   } catch {
-    notify.error('Loeschen fehlgeschlagen.')
+    notify.error('Löschen fehlgeschlagen.')
   }
 }
 
@@ -137,7 +137,7 @@ onMounted(async () => {
         @click="doClearHistory"
         class="text-sm text-gray-400 hover:text-red-500 transition-colors"
       >
-        Verlauf loeschen
+        Verlauf löschen
       </button>
     </div>
 
