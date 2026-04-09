@@ -116,7 +116,8 @@ class TestUpdateFilingScope:
         })
         assert resp.status_code == 200
         assert resp.json()["name"] == "Neu"
-        assert resp.json()["slug"] == "neu"
+        # Slug bleibt stabil bei Rename (Archiv-Dateipfade haengen davon ab)
+        assert resp.json()["slug"] == "alt"
 
     async def test_update_keywords(self, client):
         create_resp = await client.post("/api/filing-scopes", json={

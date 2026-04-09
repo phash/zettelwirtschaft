@@ -87,7 +87,8 @@ class TestArchiveDocument:
             ocr_result=_make_ocr_result(), analysis_result=_make_analysis_result(),
             settings=test_settings, session=db_session,
         )
-        assert not sample_pdf.exists()
+        # Quelldatei bleibt erhalten (copy+delete-Strategie, Loeschung erst nach Commit)
+        assert sample_pdf.exists()
         assert Path(doc.file_path).exists()
         assert "RECHNUNG" in doc.file_path
 

@@ -8,7 +8,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.document import Document
+from app.models.document import Document, DocumentStatus
 from app.models.warranty_info import WarrantyInfo
 from app.schemas.warranty import WarrantyListItem, WarrantyStats, WarrantyUpdate
 
@@ -23,11 +23,10 @@ def _days_remaining(end_date: date) -> int:
 @router.get("/warranties", response_model=list[WarrantyListItem])
 async def list_warranties(
     status: str | None = Query(None, description="active|expiring|expired"),
-    sort_by: str = Query("warranty_end_date", description="Sort field"),
     session: AsyncSession = Depends(get_db),
 ):
     """Liste aller Garantien."""
-    stmt = select(WarrantyInfo).join(Document)
+    stmt = select(WarrantyInfo).join(Document).where(Document.status != DocumentStatus.DELETED)
     today = date.today()
 
     if status == "active":

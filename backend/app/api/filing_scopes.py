@@ -103,7 +103,7 @@ async def update_filing_scope(
         if existing.scalar_one_or_none():
             raise HTTPException(409, f"Name '{data.name}' existiert bereits")
         scope.name = data.name
-        scope.slug = generate_slug(data.name)
+        # Slug bleibt stabil - Aenderung wuerde Archiv-Dateipfade brechen
 
     if data.description is not None:
         scope.description = data.description

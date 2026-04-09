@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.services.llm_service import call_llm, check_ollama_available, load_prompt_template
+from app.services.llm_service import call_llm, call_llm_text, check_ollama_available, load_prompt_template
 
 
 class TestLoadPromptTemplate:
@@ -181,3 +181,83 @@ class TestCheckOllamaAvailable:
 
             result = await check_ollama_available(test_settings)
             assert result is False
+
+
+class TestCallLlmText:
+    async def test_call_llm_text_success(self, test_settings: Settings):
+        """Erfolgreicher Freitext-LLM-Aufruf gibt Antwort zurueck."""
+        mock_response = _make_response(200, {
+            "model": "llama3.2",
+            "message": {
+                "role": "assistant",
+                "content": "Das Dokument ist eine Rechnung der Firma Muster GmbH ueber 119 EUR.",
+            },
+        })
+
+        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            result = await call_llm_text("Beschreibe dieses Dokument", test_settings)
+
+            assert result is not None
+            assert "Rechnung" in result
+            assert "Firma Muster GmbH" in result
+
+    async def test_call_llm_text_with_system_prompt(self, test_settings: Settings):
+        """System-Prompt wird in der Anfrage mitgesendet."""
+        mock_response = _make_response(200, {
+            "model": "llama3.2",
+            "message": {
+                "role": "assistant",
+                "content": "Antwort mit System-Prompt.",
+            },
+        })
+
+        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await call_llm_text(
+                "User prompt",
+                test_settings,
+                system_prompt="Du bist ein hilfreicher Assistent.",
+            )
+
+            call_args = mock_client.post.call_args
+            payload = call_args.kwargs.get("json") or call_args[1].get("json")
+            messages = payload["messages"]
+            assert len(messages) == 2
+            assert messages[0]["role"] == "system"
+            assert messages[0]["content"] == "Du bist ein hilfreicher Assistent."
+            assert messages[1]["role"] == "user"
+            assert messages[1]["content"] == "User prompt"
+
+    async def test_call_llm_text_no_json_format(self, test_settings: Settings):
+        """Freitext-Aufruf sendet KEIN format:json im Payload."""
+        mock_response = _make_response(200, {
+            "model": "llama3.2",
+            "message": {
+                "role": "assistant",
+                "content": "Freitext-Antwort ohne JSON.",
+            },
+        })
+
+        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await call_llm_text("Beschreibe das Dokument", test_settings)
+
+            call_args = mock_client.post.call_args
+            payload = call_args.kwargs.get("json") or call_args[1].get("json")
+            assert "format" not in payload, "call_llm_text darf kein 'format' im Payload senden"

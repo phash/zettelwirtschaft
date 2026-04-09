@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -216,6 +216,15 @@ async def update_document(
         )
         db.add(audit)
 
+    fts_fields = {"title", "issuer", "summary"}
+    if changes and fts_fields & set(changes.keys()):
+        tags_str = " ".join(t.name for t in document.tags) if document.tags else ""
+        await db.execute(text("DELETE FROM documents_fts WHERE doc_id = :doc_id"), {"doc_id": document_id})
+        await db.execute(
+            text("INSERT INTO documents_fts(doc_id, title, ocr_text, issuer, summary, tags) VALUES (:doc_id, :title, :ocr_text, :issuer, :summary, :tags)"),
+            {"doc_id": document_id, "title": document.title or "", "ocr_text": document.ocr_text or "", "issuer": document.issuer or "", "summary": document.summary or "", "tags": tags_str},
+        )
+
     return DocumentResponse.model_validate(document)
 
 
@@ -238,6 +247,17 @@ async def delete_document(
         action=AuditAction.DELETED,
     )
     db.add(audit)
+
+    # FTS-Index bereinigen
+    await db.execute(text("DELETE FROM documents_fts WHERE doc_id = :doc_id"), {"doc_id": document_id})
+
+    # Vektoren asynchron loeschen (non-blocking)
+    try:
+        from app.services.vectorize_service import delete_document_vectors
+        settings = get_settings()
+        await delete_document_vectors(document_id, settings)
+    except Exception:
+        logger.warning("Vektoren konnten nicht geloescht werden fuer %s", document_id)
 
     return {"message": "Dokument geloescht", "id": document_id}
 
