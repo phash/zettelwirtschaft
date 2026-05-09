@@ -118,21 +118,28 @@ class TestAskQuestion:
         db_session.add(doc2)
         await db_session.flush()
 
-        chunks = [
-            {"id": "doc-scope1_0", "doc_id": "doc-scope1", "text": "Privat text", "distance": 0.1, "metadata": {}},
-            {"id": "doc-scope2_0", "doc_id": "doc-scope2", "text": "Praxis text", "distance": 0.2, "metadata": {}},
-        ]
+        # Nach H-13-Fix delegiert rag_service den Scope-Filter an ChromaDB
+        # (search_similar_chunks(filing_scope_id=...)). Der Mock gibt entsprechend
+        # nur den passenden Chunk zurueck — wenn ein anderer Scope gefiltert wird,
+        # liefert ChromaDB nichts.
+        def fake_search(query_embedding, settings, top_k=None, filing_scope_id=None):
+            if filing_scope_id == "scope-privat":
+                return [{"id": "doc-scope1_0", "doc_id": "doc-scope1", "text": "Privat text", "distance": 0.1, "metadata": {"filing_scope_id": "scope-privat"}}]
+            return [{"id": "doc-scope2_0", "doc_id": "doc-scope2", "text": "Praxis text", "distance": 0.2, "metadata": {"filing_scope_id": "scope-praxis"}}]
 
         with patch("app.services.rag_service.embed_text", new_callable=AsyncMock) as mock_embed:
             mock_embed.return_value = [0.1, 0.2]
-            with patch("app.services.rag_service.search_similar_chunks") as mock_search:
-                mock_search.return_value = chunks
+            with patch("app.services.rag_service.search_similar_chunks", side_effect=fake_search) as mock_search:
                 with patch("app.services.rag_service.call_llm_text", new_callable=AsyncMock) as mock_llm:
                     mock_llm.return_value = "Antwort basierend auf Privat-Dok."
                     result = await ask_question(
                         "Test?", test_settings, db_session,
                         filing_scope_id="scope-privat",
                     )
+                    # search_similar_chunks muss mit dem korrekten Scope-Filter
+                    # aufgerufen worden sein (das ist der eigentliche H-13-Fix).
+                    call_kwargs = mock_search.call_args.kwargs
+                    assert call_kwargs.get("filing_scope_id") == "scope-privat"
                     assert len(result["sources"]) == 1
                     assert result["sources"][0]["document_id"] == "doc-scope1"
 

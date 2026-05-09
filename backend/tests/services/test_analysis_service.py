@@ -275,7 +275,7 @@ class TestAnalyzeDocument:
         # danach geben sequentielle Aufrufe gueltige Ergebnisse
         call_count = 0
 
-        async def mock_call_llm(prompt, settings, system_prompt=None):
+        async def mock_call_llm(prompt, settings, system_prompt=None, schema=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -313,3 +313,75 @@ class TestAnalyzeDocument:
         assert analysis.document_type == "RECHNUNG"
         assert analysis.title == "Eine Rechnung"
         assert analysis.needs_review is True  # Sequentiell setzt immer needs_review
+
+
+class TestFewShotCorrections:
+    """Few-Shot-Pipeline aus CorrectionMappings."""
+
+    def test_format_empty_returns_empty(self):
+        from app.services.analysis_service import _format_correction_examples
+        assert _format_correction_examples(None) == ""
+        assert _format_correction_examples([]) == ""
+
+    def test_format_includes_field_and_count(self):
+        from app.services.analysis_service import _format_correction_examples
+        out = _format_correction_examples([
+            {"field": "sender", "original": "BSH GmbH", "corrected": "Bosch", "count": 5},
+        ])
+        assert "sender" in out
+        assert "BSH GmbH" in out
+        assert "Bosch" in out
+        assert "5x" in out
+
+    @pytest.mark.asyncio
+    async def test_load_examples_returns_empty_for_none_session(self):
+        from app.services.analysis_service import _load_correction_examples
+        result = await _load_correction_examples(None)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_combined_analysis_passes_corrections(self, test_settings):
+        """Stellt sicher dass corrections im Prompt landen."""
+        from app.services.analysis_service import _try_combined_analysis
+
+        captured_prompt = {}
+
+        async def fake_call_llm(prompt, settings, system_prompt=None, schema=None):
+            captured_prompt["text"] = prompt
+            return '{"document_type": "RECHNUNG", "confidence": 0.9, "needs_review": false}'
+
+        corrections = [{"field": "sender", "original": "X", "corrected": "Y", "count": 3}]
+        with patch("app.services.analysis_service.call_llm", side_effect=fake_call_llm):
+            result = await _try_combined_analysis("Test OCR", test_settings, corrections=corrections)
+
+        assert result is not None
+        assert result.document_type == "RECHNUNG"
+        # Korrekturen muessen im Prompt enthalten sein
+        assert "sender" in captured_prompt["text"]
+        assert "Y" in captured_prompt["text"]
+
+
+class TestHybridSearch:
+    """RRF-Logik in rag_service."""
+
+    def test_rrf_boosts_chunks_in_fts_results(self):
+        from app.services.rag_service import _apply_rrf
+        chunks = [
+            {"doc_id": "doc-A", "text": "a"},  # vec_rank=0
+            {"doc_id": "doc-B", "text": "b"},  # vec_rank=1
+            {"doc_id": "doc-C", "text": "c"},  # vec_rank=2
+        ]
+        # FTS5 reiht doc-C ganz oben — sollte trotz schlechtem vec_rank profitieren
+        result = _apply_rrf(chunks, fts_doc_ids=["doc-C"], target_k=3)
+        assert len(result) == 3
+        # doc-A ist immer noch vorne (1/60 + 0 vs 1/62 + 1/60),
+        # aber doc-C ueberholt doc-B durch FTS-Boost
+        c_idx = next(i for i, c in enumerate(result) if c["doc_id"] == "doc-C")
+        b_idx = next(i for i, c in enumerate(result) if c["doc_id"] == "doc-B")
+        assert c_idx < b_idx
+
+    def test_rrf_without_fts_ids_passes_through(self):
+        from app.services.rag_service import _apply_rrf
+        chunks = [{"doc_id": "doc-A", "text": "a"}, {"doc_id": "doc-B", "text": "b"}]
+        result = _apply_rrf(chunks, fts_doc_ids=[], target_k=10)
+        assert result == chunks  # unveraendert
