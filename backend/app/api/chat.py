@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,8 +73,8 @@ async def chat(
 
 @router.get("/chat/history", response_model=ChatHistoryResponse)
 async def chat_history(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db),
 ):
     """Gibt den Chatverlauf zurueck."""

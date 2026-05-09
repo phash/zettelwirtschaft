@@ -14,14 +14,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index("ix_notifications_is_read", "notifications", ["is_read"])
-    op.create_index("ix_processing_jobs_created_at", "processing_jobs", ["created_at"])
-    op.create_index("ix_review_questions_is_answered", "review_questions", ["is_answered"])
-    op.create_index("ix_processing_jobs_status", "processing_jobs", ["status"])
+    # Idempotent — der Migrationsstand kann je nach DB-Historie leicht abweichen,
+    # die Indizes existieren ggf. bereits aus init_db oder einer manuellen Migration.
+    op.execute("CREATE INDEX IF NOT EXISTS ix_notifications_is_read ON notifications (is_read)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_processing_jobs_created_at ON processing_jobs (created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_review_questions_is_answered ON review_questions (is_answered)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_processing_jobs_status ON processing_jobs (status)")
 
 
 def downgrade() -> None:
-    op.drop_index("ix_processing_jobs_status")
-    op.drop_index("ix_review_questions_is_answered")
-    op.drop_index("ix_processing_jobs_created_at")
-    op.drop_index("ix_notifications_is_read")
+    op.execute("DROP INDEX IF EXISTS ix_processing_jobs_status")
+    op.execute("DROP INDEX IF EXISTS ix_review_questions_is_answered")
+    op.execute("DROP INDEX IF EXISTS ix_processing_jobs_created_at")
+    op.execute("DROP INDEX IF EXISTS ix_notifications_is_read")

@@ -606,8 +606,16 @@ function Phase-Config {
     $env += "LOG_LEVEL=INFO`n"
     $env += "`n# ChromaDB (RAG / KI-Assistent)`n"
     $env += "CHROMADB_HOST=chromadb`n"
+    $env += "EMBEDDING_MODEL=bge-m3`n"
+    # Fernet-Schluessel fuer E-Mail-Passwoerter automatisch generieren
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $emailKeyBytes = New-Object byte[] 32
+    $rng.GetBytes($emailKeyBytes)
+    $emailKey = [Convert]::ToBase64String($emailKeyBytes).Replace('+','-').Replace('/','_')
+    $env += "`n# E-Mail-Verschluesselung (automatisch generiert, nicht aendern!)`n"
+    $env += "EMAIL_ENCRYPTION_KEY=$emailKey`n"
     [System.IO.File]::WriteAllText($envPath, $env)
-    Log "  .env erstellt"
+    Log "  .env erstellt (mit EMAIL_ENCRYPTION_KEY)"
 
     # data-Verzeichnisse anlegen
     @("data", "data\uploads", "data\archive") | ForEach-Object {
