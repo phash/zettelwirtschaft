@@ -33,6 +33,12 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    # NEW-006: kein zusaetzliches Privileg ausser CHOWN (Modell-Cache).
+    # Wenn dies Probleme macht, drop einzelne Caps statt aller.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -50,6 +56,9 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    # NEW-006: Defense-in-Depth — Rust-Service braucht keine Caps.
+    cap_drop:
+      - ALL
     healthcheck:
       # chromadb/chroma:1.x ist Rust-basiert, hat weder curl noch python im Image —
       # bash-builtin TCP-Probe ist die portabelste Variante.
