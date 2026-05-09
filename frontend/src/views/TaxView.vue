@@ -71,11 +71,13 @@ onMounted(async () => {
           <option value="">Alle Bereiche</option>
           <option v-for="s in filingScopes" :key="s.id" :value="s.id">{{ s.name }}</option>
         </select>
-        <select v-model="selectedYear" class="input !w-auto">
+        <select v-if="years.length" v-model="selectedYear" class="input !w-auto">
           <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
           <option v-if="!years.includes(selectedYear)" :value="selectedYear">{{ selectedYear }}</option>
         </select>
+        <span v-else class="text-sm text-gray-500 italic">Noch keine Steuerbelege</span>
         <button
+          v-if="years.length"
           @click="doExport"
           :disabled="exporting || !summary?.total_documents"
           class="btn-primary"

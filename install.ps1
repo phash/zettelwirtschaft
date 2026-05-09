@@ -214,11 +214,11 @@ if ($enableWatch -eq "j") {
 
 # LLM-Modell basierend auf RAM
 if ($totalRAM -gt 16) {
-    $defaultModel = "llama3.1"
-    Write-Info "RAM > 16 GB: Empfehle llama3.1 (bessere Qualitaet)."
+    $defaultModel = "qwen2.5:7b-instruct"
+    Write-Info "RAM > 16 GB: Empfehle qwen2.5:7b-instruct (bessere JSON-Treue + deutsche Belege)."
 } else {
     $defaultModel = "llama3.2"
-    Write-Info "RAM <= 16 GB: Empfehle llama3.2 (ressourcenschonend)."
+    Write-Info "RAM <= 16 GB: Empfehle llama3.2 (ressourcenschonend, fallback fuer 8 GB)."
 }
 $modelInput = Read-Host "  LLM-Modell (Standard: $defaultModel)"
 if ([string]::IsNullOrWhiteSpace($modelInput)) { $model = $defaultModel } else { $model = $modelInput }
@@ -277,10 +277,14 @@ if ($watchDir) {
     $envContent += "`nWATCH_DIR=./data/watch"
 }
 
+# PIN-Schutz immer explizit setzen — sonst zeigt das Backend bei jedem
+# Startup eine Sicherheitswarnung, weil PIN_ENABLED implizit fehlt.
+$envContent += "`n`n# PIN-Schutz"
 if ($pinEnabled) {
-    $envContent += "`n`n# PIN-Schutz"
     $envContent += "`nPIN_ENABLED=true"
     $envContent += "`nPIN_CODE=$pinCode"
+} else {
+    $envContent += "`nPIN_ENABLED=false"
 }
 
 # EMAIL_ENCRYPTION_KEY automatisch generieren (Fernet: 32 zufaellige Bytes urlsafe-base64)

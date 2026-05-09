@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     EXPORT_DIR: str = ""  # Leer = deaktiviert; absoluter Pfad zu einem externen Zielordner
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2"
+    OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
     OLLAMA_TIMEOUT: int = 300
     OLLAMA_MAX_RETRIES: int = 2
 
@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 150
     RAG_TOP_K: int = 5
+    # Optionaler LLM-basierter Re-Ranker zwischen Hybrid-Retrieval und Antwort-
+    # Generation. Standardmaessig aus, weil ein zusaetzlicher LLM-Call die
+    # Latenz pro Frage verdoppelt — fuer Genauigkeits-fokussierte Setups
+    # (groessere Dokumentmenge, wichtig dass die richtigen Chunks angefuehrt
+    # werden) lohnt es sich.
+    RAG_USE_RERANKER: bool = False
+    # Verifier-Pass: bei niedriger Konfidenz im Erstdurchlauf wird die
+    # extrahierte JSON-Antwort vom LLM nochmal validiert.
+    LLM_USE_VERIFIER: bool = False
+    LLM_VERIFIER_THRESHOLD: float = 0.5
 
     # E-Mail
     EMAIL_ENCRYPTION_KEY: str = ""

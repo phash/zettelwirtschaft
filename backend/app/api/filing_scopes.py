@@ -140,7 +140,7 @@ async def update_filing_scope(
     return _scope_to_response(scope)
 
 
-@router.delete("/filing-scopes/{scope_id}")
+@router.delete("/filing-scopes/{scope_id}", status_code=204)
 async def delete_filing_scope(
     scope_id: str,
     session: AsyncSession = Depends(get_db),
@@ -229,4 +229,6 @@ async def delete_filing_scope(
     except Exception:
         logger.warning("Konnte alten Scope-Ordner nicht entfernen: %s", old_prefix)
 
-    return {"message": f"Ablagebereich '{scope.name}' geloescht ({len(docs)} Dokumente verschoben)"}
+    # 204 No Content — Anzahl verschobener Dokumente steht im Server-Log.
+    from fastapi import Response
+    return Response(status_code=204)

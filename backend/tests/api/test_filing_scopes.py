@@ -180,7 +180,7 @@ class TestDeleteFilingScope:
         scope_id = create_resp.json()["id"]
 
         resp = await client.delete(f"/api/filing-scopes/{scope_id}")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
 
         scopes = (await client.get("/api/filing-scopes")).json()
         assert not any(s["id"] == scope_id for s in scopes)

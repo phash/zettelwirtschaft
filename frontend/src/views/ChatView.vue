@@ -40,6 +40,18 @@ async function loadScopes() {
   }
 }
 
+// AbortController fuer laufende Frage — User kann via "Abbrechen"-Button
+// (L-36) den Request stornieren. Pro Frage neu erstellt, beim Abbruch oder
+// Erfolg auf null zurueckgesetzt.
+let activeController = null
+
+function cancelQuestion() {
+  if (activeController) {
+    activeController.abort()
+    activeController = null
+  }
+}
+
 async function sendQuestion(text = null) {
   const q = text || question.value.trim()
   if (!q || loading.value) return
@@ -57,8 +69,9 @@ async function sendQuestion(text = null) {
   await scrollToBottom()
 
   loading.value = true
+  activeController = new AbortController()
   try {
-    const result = await askQuestion(q, selectedScopeId.value)
+    const result = await askQuestion(q, selectedScopeId.value, activeController.signal)
     messages.value.push({
       id: 'temp-assistant-' + Date.now(),
       role: 'assistant',
@@ -67,9 +80,14 @@ async function sendQuestion(text = null) {
       created_at: new Date().toISOString(),
     })
   } catch (e) {
-    const errorMsg = e.response?.status === 503
-      ? 'Der KI-Assistent ist derzeit nicht verfügbar. Prüfe ob Ollama und ChromaDB laufen.'
-      : 'Fehler bei der Verarbeitung. Bitte versuche es erneut.'
+    let errorMsg
+    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
+      errorMsg = 'Anfrage abgebrochen.'
+    } else if (e.response?.status === 503) {
+      errorMsg = 'Der KI-Assistent ist derzeit nicht verfügbar. Prüfe ob Ollama und ChromaDB laufen.'
+    } else {
+      errorMsg = 'Fehler bei der Verarbeitung. Bitte versuche es erneut.'
+    }
     messages.value.push({
       id: 'temp-error-' + Date.now(),
       role: 'assistant',
@@ -79,6 +97,7 @@ async function sendQuestion(text = null) {
     })
   } finally {
     loading.value = false
+    activeController = null
     await scrollToBottom()
   }
 }
@@ -239,12 +258,26 @@ onMounted(async () => {
           maxlength="2000"
         />
         <button
+          v-if="!loading"
           type="submit"
-          :disabled="!question.trim() || loading"
+          :disabled="!question.trim()"
           class="btn-primary !px-4 flex-shrink-0"
+          aria-label="Frage abschicken"
         >
           <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+          </svg>
+        </button>
+        <button
+          v-else
+          type="button"
+          @click="cancelQuestion"
+          class="btn-secondary !px-4 flex-shrink-0"
+          aria-label="Anfrage abbrechen"
+          title="Anfrage abbrechen"
+        >
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       </form>

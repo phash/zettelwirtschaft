@@ -13,6 +13,12 @@ services:
       chromadb:
         condition: service_healthy
     restart: unless-stopped
+    # Defense-in-Depth: keine zusaetzlichen Privilegien, alle Capabilities weg.
+    # appuser laeuft sowieso als non-root (siehe backend/Dockerfile).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -25,6 +31,14 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # NEW-006: kein zusaetzliches Privileg ausser CHOWN (Modell-Cache).
+    # Wenn dies Probleme macht, drop einzelne Caps statt aller.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -33,12 +47,22 @@ services:
       start_period: 10s
 
   chromadb:
-    image: chromadb/chroma:0.6.3
+    # 1.x ist Rust-Rewrite mit deutlich besserer Performance. Volume-Format
+    # ist bei Major-Bump nicht abwaerts-kompatibel — Backup vor Update Pflicht.
+    # Default-persist_path hat sich von /chroma/chroma auf /data geaendert.
+    image: chromadb/chroma:1.0.20
     volumes:
-      - chromadb-data:/chroma/chroma
+      - chromadb-data:/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # NEW-006: Defense-in-Depth — Rust-Service braucht keine Caps.
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat', timeout=2).status == 200 else 1)"]
+      # chromadb/chroma:1.x ist Rust-basiert, hat weder curl noch python im Image —
+      # bash-builtin TCP-Probe ist die portabelste Variante.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -52,6 +76,12 @@ services:
       backend:
         condition: service_started
     restart: unless-stopped
+    # nginx laeuft seit N-006 als USER nginx und listen 8080 — keine Caps
+    # mehr noetig.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   ollama-models:

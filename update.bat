@@ -76,6 +76,23 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 :: =============================================
+:: Schritt 2b: ChromaDB-Volume sichern (Vector-Index)
+:: =============================================
+:: ChromaDB-Volume wird beim Major-Bump (0.6 -> 1.x) inkompatibel.
+:: Tar-Backup erlaubt Rollback ohne Datenverlust.
+docker volume inspect zettelwirtschaft_chromadb-data >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo         Sichere ChromaDB-Volume...
+    docker run --rm -v zettelwirtschaft_chromadb-data:/src -v "%CD%\%BACKUP_DIR%":/dst alpine tar czf /dst/chromadb-volume.tar.gz -C /src . >nul 2>&1
+    if !ERRORLEVEL! EQU 0 (
+        echo         ChromaDB-Volume gesichert: %BACKUP_DIR%\chromadb-volume.tar.gz
+    ) else (
+        echo  [WARNUNG] ChromaDB-Volume konnte nicht gesichert werden.
+        echo  Falls das Update den Vector-Index verliert, neu aufbauen via "Vektor-Index neu aufbauen" in den Einstellungen.
+    )
+)
+
+:: =============================================
 :: Schritt 3: Neueste Images laden
 :: =============================================
 echo  [3/5] Lade Updates...

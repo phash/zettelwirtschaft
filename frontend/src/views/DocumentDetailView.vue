@@ -114,7 +114,12 @@ async function handleAddTag() {
   const name = newTag.value.trim()
   if (!name) return
   try {
-    doc.value = await addTag(doc.value.id, name)
+    // Nur Tags aus der Antwort uebernehmen, doc.value-Felder NICHT komplett
+    // ersetzen — sonst werden in Bearbeitung befindliche editForm-Aenderungen
+    // mit dem alten Server-Stand verglichen und beim naechsten Save als
+    // ungewollte Updates geschickt (M-25).
+    const updated = await addTag(doc.value.id, name)
+    doc.value.tags = updated.tags
     newTag.value = ''
   } catch {
     notify.error('Tag konnte nicht hinzugefügt werden.')
