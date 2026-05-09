@@ -2,11 +2,14 @@
 
 import json
 import logging
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.models.document import Document, DocumentStatus
 from app.models.filing_scope import FilingScope, generate_slug
@@ -141,8 +144,12 @@ async def update_filing_scope(
 async def delete_filing_scope(
     scope_id: str,
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
-    """Loescht einen Ablagebereich. Dokumente werden auf den Default umgehaengt."""
+    """Loescht einen Ablagebereich. Dokumente + Archiv-Dateien werden auf den
+    Default umgehaengt (H-6). Vorher: Dateien blieben unter dem alten Slug-Ordner
+    liegen (`data/archive/{old_slug}/...`) und waren ueber Backups inkonsistent.
+    """
     result = await session.execute(
         select(FilingScope).where(FilingScope.id == scope_id)
     )
@@ -166,16 +173,60 @@ async def delete_filing_scope(
         select(FilingScope).where(FilingScope.is_default.is_(True))
     )
     default_scope = default_result.scalar_one_or_none()
+    if default_scope is None:
+        raise HTTPException(500, "Kein Standard-Ablagebereich konfiguriert — Loeschen abgebrochen")
 
-    # Dokumente umhaengen
-    if default_scope:
-        from sqlalchemy import update
-        await session.execute(
-            update(Document)
-            .where(Document.filing_scope_id == scope_id)
-            .values(filing_scope_id=default_scope.id)
-        )
+    # 1. Betroffene Dokumente holen (vor UPDATE) damit wir die Dateien physisch
+    # umkopieren koennen. file_path zeigt aktuell auf {archive}/{old_slug}/...
+    docs_result = await session.execute(
+        select(Document).where(Document.filing_scope_id == scope_id)
+    )
+    docs = docs_result.scalars().all()
+
+    archive_root = Path(settings.ARCHIVE_DIR).resolve()
+    old_prefix = archive_root / scope.slug
+    new_prefix = archive_root / default_scope.slug
+
+    # 2. Dateien verschieben + file_path aktualisieren
+    for doc in docs:
+        try:
+            old_path = Path(doc.file_path).resolve()
+            # Sicherheit: nur verschieben wenn die Datei wirklich unter dem
+            # alten Scope-Ordner liegt (verhindert Schaden bei manipuliertem
+            # file_path).
+            if not old_path.is_file():
+                logger.warning("Datei %s existiert nicht, ueberspringe", old_path)
+                continue
+            try:
+                relative = old_path.relative_to(old_prefix)
+            except ValueError:
+                # Datei lebt nicht unter dem alten Scope-Pfad — nur DB-Update,
+                # Datei wird beim naechsten Re-Index/Backup zurechtgerueckt.
+                logger.info("Datei %s liegt nicht unter %s — nur DB aktualisiert", old_path, old_prefix)
+                continue
+            new_path = new_prefix / relative
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_path), str(new_path))
+            doc.file_path = str(new_path)
+        except Exception:
+            logger.warning("Konnte Datei fuer Dokument %s nicht verschieben", doc.id, exc_info=True)
+
+    # 3. DB-Verknuepfung umhaengen (UPDATE auf alle, falls oben uebersprungen)
+    from sqlalchemy import update
+    await session.execute(
+        update(Document)
+        .where(Document.filing_scope_id == scope_id)
+        .values(filing_scope_id=default_scope.id)
+    )
 
     await session.delete(scope)
     await session.flush()
-    return {"message": f"Ablagebereich '{scope.name}' geloescht"}
+
+    # 4. Leeren alten Scope-Ordner aufraeumen (best-effort)
+    try:
+        if old_prefix.exists():
+            shutil.rmtree(old_prefix, ignore_errors=True)
+    except Exception:
+        logger.warning("Konnte alten Scope-Ordner nicht entfernen: %s", old_prefix)
+
+    return {"message": f"Ablagebereich '{scope.name}' geloescht ({len(docs)} Dokumente verschoben)"}

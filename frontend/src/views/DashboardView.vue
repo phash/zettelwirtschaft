@@ -18,10 +18,14 @@ const queuePaused = ref(false)
 const emailStats = ref(null)
 const loadingData = ref(false)
 let pollTimer = null
+// Request-Token: gegen Race-Bedingungen wenn Polling eine zweite loadData
+// startet, waehrend die erste E-Mail-Stats noch nicht aufgeloest hat.
+let activeRequestId = 0
 
 async function loadData() {
   if (loadingData.value) return
   loadingData.value = true
+  const requestId = ++activeRequestId
   try {
     const [s, docs, activeJobs, failJobs, qStatus] = await Promise.all([
       getDashboardStats(),
@@ -30,6 +34,7 @@ async function loadData() {
       getJobs({ status: 'FAILED', page_size: 10 }),
       getQueueStatus(),
     ])
+    if (requestId !== activeRequestId) return  // veraltet
     stats.value = s
     recentDocs.value = docs.items
     processingJobs.value = activeJobs.items?.filter(j => ['PENDING', 'PROCESSING'].includes(j.status)) || []
@@ -38,6 +43,7 @@ async function loadData() {
 
     // E-Mail-Stats separat laden (blockiert Dashboard nicht wenn E-Mail nicht konfiguriert)
     getEmailStats().then(stats => {
+      if (requestId !== activeRequestId) return  // veraltet, nicht ueberschreiben
       if (stats && stats.length > 0) {
         emailStats.value = stats.reduce((acc, s) => ({
           total: acc.total + s.total_processed,

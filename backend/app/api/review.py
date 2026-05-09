@@ -202,7 +202,7 @@ async def reanalyze_document(
         raise HTTPException(400, "Kein OCR-Text vorhanden, Re-Analyse nicht moeglich")
 
     # LLM-Analyse mit vorhandenem OCR-Text
-    from app.services.analysis_service import _truncate_text, _try_combined_analysis, _try_sequential_analysis
+    from app.services.analysis_service import _truncate_text, _try_combined_analysis, _try_sequential_analysis, _load_correction_examples
 
     # Filing Scopes laden
     scope_result = await session.execute(select(FilingScope))
@@ -216,8 +216,11 @@ async def reanalyze_document(
 
     truncated_text = _truncate_text(doc.ocr_text)
 
+    # Few-Shot-Examples aus User-Korrekturen laden
+    corrections = await _load_correction_examples(session)
+
     # Kombinierte Analyse versuchen
-    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes)
+    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes, corrections=corrections)
     if not analysis:
         analysis = await _try_sequential_analysis(truncated_text, settings)
 
@@ -232,8 +235,8 @@ async def reanalyze_document(
             pass
     if analysis.title:
         doc.title = analysis.title
-    if analysis.issuer:
-        doc.issuer = analysis.issuer
+    if analysis.sender:
+        doc.issuer = analysis.sender
     if analysis.document_date:
         doc.document_date = analysis.document_date
     if analysis.amount is not None:

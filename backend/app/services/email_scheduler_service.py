@@ -1,4 +1,9 @@
-"""Scheduler fuer automatischen E-Mail-Abruf."""
+"""Scheduler fuer automatischen E-Mail-Abruf.
+
+Cron-Expressions werden in **UTC** ausgewertet (siehe `should_fetch_now`).
+Wer „taeglich um 8 Uhr Lokalzeit" will und in MESZ lebt, traegt `0 6 * * *` ein
+(8h - 2h Sommerzeit). Future Work: Settings-Option `TZ` mit `ZoneInfo`.
+"""
 
 import asyncio
 import logging
@@ -17,15 +22,28 @@ logger = logging.getLogger(__name__)
 SCHEDULER_POLL_INTERVAL = 60
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Naive Datetime defensiv als UTC interpretieren."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def should_fetch_now(account, now: datetime) -> bool:
-    """Prueft ob ein Konto jetzt abgerufen werden soll."""
+    """Prueft ob ein Konto jetzt abgerufen werden soll.
+
+    Bei CRON-Schedule: vermeidet Drift nach Outages (H-15) — wenn der naechste
+    geplante Lauf laut letztem Check in der Vergangenheit liegt, triggert sofort
+    EIN Fetch (kein Catch-up von verpassten Slots, das wuerde nur LLM-Kosten
+    verschwenden).
+    """
     if account.schedule_type == ScheduleType.MANUAL:
         return False
 
     if account.schedule_type == ScheduleType.IDLE:
         if not account.last_checked_at:
             return True
-        diff = (now - account.last_checked_at).total_seconds()
+        diff = (now - _ensure_utc(account.last_checked_at)).total_seconds()
         return diff >= 300
 
     if account.schedule_type == ScheduleType.CRON:
@@ -33,10 +51,9 @@ def should_fetch_now(account, now: datetime) -> bool:
             return False
         if not account.last_checked_at:
             return True
-        cron = croniter(account.cron_expression, account.last_checked_at)
-        next_run = cron.get_next(datetime)
-        if next_run.tzinfo is None:
-            next_run = next_run.replace(tzinfo=timezone.utc)
+        last_checked = _ensure_utc(account.last_checked_at)
+        cron = croniter(account.cron_expression, last_checked)
+        next_run = _ensure_utc(cron.get_next(datetime))
         return now >= next_run
 
     return False

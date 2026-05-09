@@ -127,6 +127,9 @@ async def manual_fetch(
     if not account:
         raise HTTPException(404, "Konto nicht gefunden")
     stats = await fetch_emails_for_account(account, db, settings)
+    # M-21: ohne expliziten Commit bleiben ProcessedEmail-Eintraege + last_checked_at
+    # nicht persistent (get_db macht keinen Auto-Commit).
+    await db.commit()
     return stats
 
 

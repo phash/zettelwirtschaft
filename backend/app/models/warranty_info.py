@@ -41,7 +41,11 @@ class WarrantyInfo(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    document: Mapped["Document"] = relationship(back_populates="warranty_info", lazy="selectin")
+    # H-18: war "selectin" — beidseitig eager fuehrte zu unnoetigen JOIN/SELECT-
+    # Lawinen ueber tags + review_questions wenn /api/warranties die Garantien
+    # listet. "raise" zwingt Code der das Document hier braucht, es per
+    # explizitem selectinload(...) zu laden.
+    document: Mapped["Document"] = relationship(back_populates="warranty_info", lazy="raise")
 
     @property
     def is_expired(self) -> bool:

@@ -4,10 +4,17 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
+// Version primär aus package.json (immer im Build-Context), fallback auf VERSION.
+// Docker-Frontend-Build sieht ../VERSION nicht, weil nur frontend/ kopiert wird.
 let appVersion = 'dev'
 try {
-  appVersion = readFileSync(resolve(__dirname, '../VERSION'), 'utf-8').trim()
+  appVersion = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')).version || 'dev'
 } catch {}
+if (appVersion === 'dev') {
+  try {
+    appVersion = readFileSync(resolve(__dirname, '../VERSION'), 'utf-8').trim()
+  } catch {}
+}
 
 export default defineConfig({
   define: {

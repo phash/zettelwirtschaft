@@ -58,9 +58,10 @@ async def _process_job(
     # Thumbnail generieren
     thumbnail_path = await generate_thumbnail(file_path, job.file_type, job.id, settings)
 
-    # OCR + KI-Analyse
+    # OCR + KI-Analyse — Session uebergeben damit CorrectionMappings als
+    # Few-Shot-Examples in den Prompt injiziert werden koennen.
     ocr_result, analysis_result = await analyze_document(
-        file_path, job.file_type, settings, filing_scopes=filing_scopes,
+        file_path, job.file_type, settings, filing_scopes=filing_scopes, session=session,
     )
 
     # OCR-Ergebnisse im Job speichern
@@ -91,6 +92,7 @@ async def _process_job(
             thumbnail_path=thumbnail_str,
             filing_scopes=filing_scopes,
         )
+        archived = True
 
         if analysis_result and analysis_result.needs_review:
             job.status = JobStatus.NEEDS_REVIEW
@@ -106,20 +108,26 @@ async def _process_job(
             document.id,
         )
 
+        archived = True
     except ValueError as e:
-        # Duplikat erkannt
-        job.status = JobStatus.NEEDS_REVIEW
-        job.error_message = str(e)
+        # Duplikat erkannt: kein Document-Eintrag, kein Review moeglich.
+        # Status FAILED ist semantisch korrekt (NEEDS_REVIEW haette keine ReviewQuestion).
+        # Quelldatei bleibt im Upload-Ordner, damit der User den Konflikt inspizieren kann.
+        job.status = JobStatus.FAILED
+        job.error_message = f"Duplikat erkannt: {e}"
+        archived = False
         logger.warning("Job %s: %s", job.id, e)
 
     await session.commit()
 
-    # Quelldatei nach erfolgreichem Commit loeschen (archive_service kopiert statt move)
-    try:
-        if file_path.exists():
-            file_path.unlink()
-    except OSError:
-        logger.warning("Quelldatei konnte nicht geloescht werden: %s", file_path)
+    # Quelldatei nur loeschen wenn erfolgreich archiviert (archive_service kopiert statt move).
+    # Bei Duplikat behalten, damit der User die Datei manuell entfernen oder umbenennen kann.
+    if archived:
+        try:
+            if file_path.exists():
+                file_path.unlink()
+        except OSError:
+            logger.warning("Quelldatei konnte nicht geloescht werden: %s", file_path)
 
 
 async def run_queue_worker(
