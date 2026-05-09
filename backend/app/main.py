@@ -224,18 +224,13 @@ app = FastAPI(
 # auth-spezifische 5/30s aus N-002 — verhindert dass ein einzelner Client
 # das LAN-Backend mit Polling oder Suchen ueberlastet. Die Pin-Login-Route
 # behaelt ihren eigenen, strengeren Limiter.
-from slowapi import Limiter, _rate_limit_exceeded_handler
+# Limiter-Definition liegt in app.core.rate_limit damit Endpoints
+# (z.B. /api/health) ihn fuer @limiter.exempt importieren koennen.
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
+from app.core.rate_limit import limiter
 
-def _client_id(request) -> str:
-    """Wenn nginx X-Real-IP setzt (vertrauenswuerdig in der Heim-Topologie),
-    nutzen wir diesen, sonst den Socket-Peer. Verhindert dass alle LAN-User
-    in einem gemeinsamen Bucket landen."""
-    return request.headers.get("X-Real-IP") or get_remote_address(request)
-
-limiter = Limiter(key_func=_client_id, default_limits=["200/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)

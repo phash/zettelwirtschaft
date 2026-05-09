@@ -22,8 +22,8 @@ class JobStatusResponse(BaseModel):
 
     id: str
     original_filename: str
-    stored_filename: str
-    file_path: str
+    # NEW-001: stored_filename und file_path raus — gleiche Begruendung wie
+    # VULN-014 fuer DocumentResponse (Pfad-Disclosure, hilft Path-Traversal).
     file_type: str
     file_size_bytes: int
     source: JobSource

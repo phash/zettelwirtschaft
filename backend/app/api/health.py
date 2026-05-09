@@ -7,7 +7,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.core.rate_limit import limiter
 from app.database import get_db
+from fastapi import Request
 
 router = APIRouter()
 
@@ -26,10 +28,16 @@ class HealthResponse(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse)
+@limiter.exempt
 async def health_check(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> HealthResponse:
+    """H-03: vom slowapi-Default-Limit ausgenommen. docker-compose-Healthchecks
+    feuern alle 30s pro Container, plus Frontend-Polling — wuerde sonst
+    bei knapp mehreren Clients das 200/min-Limit zerschiessen und einen
+    unhealthy-Restart-Loop ausloesen."""
     components: dict[str, ComponentStatus] = {}
 
     # API - immer OK wenn erreichbar

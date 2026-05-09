@@ -100,15 +100,26 @@ async def _llm_rerank(
     try:
         raw = await call_llm(prompt, settings, schema=_RERANK_SCHEMA)
         if not raw:
-            return chunks
+            return chunks[:target_k]
         import json as _json
         scores = _json.loads(raw).get("scores", [])
+        # NEW-007 / H-05: bei Mismatch trotzdem auf target_k stutzen, sonst
+        # bekommt das Antwort-LLM 15 statt 5 Chunks (Lost-in-the-Middle).
         if not scores or len(scores) != len(chunks):
-            return chunks
-        # Kombiniere additiv: LLM-Score (0-10) -> /10 normiert + bestehender RRF
+            logger.warning(
+                "Reranker-Mismatch: %d Chunks, %d Scores — Fallback ohne LLM-Boost",
+                len(chunks), len(scores) if scores else 0,
+            )
+            return chunks[:target_k]
+        # H-06: Score-Validation — clamp auf [0, 10], NaN/None -> 0
         for c, s in zip(chunks, scores):
             try:
-                c["_rrf_score"] = (c.get("_rrf_score") or 0) + (float(s) / 10.0)
+                f = float(s)
+                if f != f or f < 0:  # NaN-Check + negativ
+                    f = 0.0
+                elif f > 10:
+                    f = 10.0
+                c["_rrf_score"] = (c.get("_rrf_score") or 0) + (f / 10.0)
             except (TypeError, ValueError):
                 pass
         ranked = sorted(chunks, key=lambda c: c.get("_rrf_score", 0), reverse=True)

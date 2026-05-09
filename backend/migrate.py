@@ -7,7 +7,6 @@ Unterstützt Legacy-Installationen ohne alembic_version-Tracking:
 - Stempelt die alembic_version entsprechend
 - Führt dann `alembic upgrade head` aus
 """
-import asyncio
 import os
 import sqlite3
 import subprocess
@@ -32,9 +31,35 @@ def has_column(cur: sqlite3.Cursor, table: str, column: str) -> bool:
     return any(row[1] == column for row in cur.fetchall())
 
 
+def has_index(cur: sqlite3.Cursor, name: str) -> bool:
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (name,)
+    )
+    return cur.fetchone() is not None
+
+
+def column_type(cur: sqlite3.Cursor, table: str, column: str) -> str | None:
+    cur.execute(f"PRAGMA table_info({table})")
+    for row in cur.fetchall():
+        if row[1] == column:
+            return (row[2] or "").upper()
+    return None
+
+
 def detect_stamp(cur: sqlite3.Cursor) -> str | None:
-    """Erkennt die höchste angewandte Migration anhand des tatsächlichen Schemas."""
+    """Erkennt die höchste angewandte Migration anhand des tatsächlichen Schemas.
+
+    Reihenfolge: neueste zuerst. B-01 (CODE_REVIEW_v3): bisher fehlten 010 + 011,
+    sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
+    + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
+    """
+    if has_index(cur, "ix_notifications_is_read"):
+        return "011_add_performance_indexes"
+    # Migration 010 fixt email_accounts.filing_scope_id von Integer auf VARCHAR(36)
     if has_table(cur, "email_accounts"):
+        col_type = column_type(cur, "email_accounts", "filing_scope_id")
+        if col_type and ("VARCHAR" in col_type or "CHAR" in col_type or "TEXT" in col_type):
+            return "010_fix_email_filing_scope_fk_type"
         return "009_add_email_accounts"
     if has_table(cur, "warranty_info") and has_column(
         cur, "warranty_info", "reminder_90d_sent"
@@ -57,26 +82,6 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     ):
         return "001_add_ocr_analysis_columns"
     return None
-
-
-async def create_schema() -> None:
-    """Erstellt initiales Schema via create_all (idempotent, für Frisch-Installs)."""
-    import app.models.audit_log  # noqa: F401
-    import app.models.chat_message  # noqa: F401
-    import app.models.correction_mapping  # noqa: F401
-    import app.models.document  # noqa: F401
-    import app.models.email_account  # noqa: F401
-    import app.models.filing_scope  # noqa: F401
-    import app.models.notification  # noqa: F401
-    import app.models.processed_email  # noqa: F401
-    import app.models.processing_job  # noqa: F401
-    import app.models.review_question  # noqa: F401
-    import app.models.saved_search  # noqa: F401
-    import app.models.warranty_info  # noqa: F401
-
-    from app.database import init_db
-
-    await init_db()
 
 
 def fix_alembic_version() -> None:
@@ -121,12 +126,12 @@ def run_alembic() -> None:
 def main() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
-    print("[migrate] Erstelle/prüfe Datenbankschema...", flush=True)
-    asyncio.run(create_schema())
-
+    # B-01: KEIN create_all mehr vor alembic. Frisch-Installs werden komplett
+    # ueber die Migrationskette aufgebaut, Legacy-DBs ohne alembic_version
+    # werden ueber detect_stamp() korrekt verortet (inkl. 010 + 011).
     fix_alembic_version()
 
-    print("[migrate] Führe alembic upgrade head aus...", flush=True)
+    print("[migrate] Fuehre alembic upgrade head aus...", flush=True)
     run_alembic()
     print("[migrate] Migrationen abgeschlossen", flush=True)
 
