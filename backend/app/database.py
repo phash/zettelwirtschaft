@@ -33,6 +33,5 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             raise
 
 
-async def init_db() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+# init_db() entfernt — Schema laeuft seit Phase-6/B-01 ausschliesslich ueber
+# Alembic-Migrationen (siehe backend/migrate.py + backend/alembic/).

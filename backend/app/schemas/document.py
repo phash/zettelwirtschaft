@@ -53,6 +53,11 @@ def _resolve_scope_name(cls, data):
     Frueher: gewrappt in einer _OrmProxy-Klasse, die jeden Attribut-Zugriff
     weiterreichen musste. Jetzt: kopieren in ein Dict + Scope-Name daraufsetzen.
     Pydantic v2 akzeptiert mit from_attributes=True auch dicts als Input.
+
+    H-09: filing_scope-Zugriff defensiv per try/except — wenn das ORM-Doc
+    ausserhalb der urspruenglichen Session validiert wird (z.B. nach refresh
+    ohne explizites selectinload), wuerde Lazy-Loading einen MissingGreenlet
+    ausloesen. Im Fehlerfall scope_name=None statt Crash.
     """
     # Wenn schon ein Dict (z.B. aus Tests / API-Round-Trip) — durchreichen.
     if isinstance(data, dict):
@@ -64,10 +69,17 @@ def _resolve_scope_name(cls, data):
         out = {}
         for f in fields:
             if f == "filing_scope_name":
-                fs = getattr(data, "filing_scope", None)
-                out[f] = fs.name if fs is not None else None
+                try:
+                    fs = getattr(data, "filing_scope", None)
+                    out[f] = fs.name if fs is not None else None
+                except Exception:
+                    # MissingGreenlet / detached instance — gracefully degrade
+                    out[f] = None
             elif hasattr(data, f):
-                out[f] = getattr(data, f)
+                try:
+                    out[f] = getattr(data, f)
+                except Exception:
+                    out[f] = None
         return out
     return data
 

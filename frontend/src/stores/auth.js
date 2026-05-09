@@ -43,11 +43,16 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // ignore
     }
-    isAuthenticated.value = false
+    // NEW-005: kompletter State-Reset nach Logout. Vorher blieb `loading`
+    // potenziell auf true haengen (wenn jemand mitten im Login klickt) und
+    // `pinEnabled` wurde stale getragen — kein Security-Bug heute, aber sauber.
+    reset()
   }
 
   function reset() {
     isAuthenticated.value = false
+    pinEnabled.value = false
+    loading.value = false
   }
 
   return {

@@ -60,9 +60,11 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      # chromadb/chroma:1.x ist Rust-basiert, hat weder curl noch python im Image —
-      # bash-builtin TCP-Probe ist die portabelste Variante.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000"]
+      # chromadb/chroma:1.x ist Rust-basiert, hat weder curl noch python im Image.
+      # bash-builtin HTTP-Probe (NEW-009): pruefen dass der Service nicht nur
+      # auf Port 8000 lauscht sondern auch /api/v2/heartbeat mit 200 antwortet.
+      # Verhindert "TCP listening, API broken"-Phantomgesund-Faelle.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && IFS= read -r -t 2 line <&3 && [[ \"$$line\" == *'200 OK'* ]]"]
       interval: 30s
       timeout: 5s
       retries: 3
