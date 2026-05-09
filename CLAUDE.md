@@ -4,6 +4,47 @@
 
 Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und Dokumente werden per Scanner oder Smartphone erfasst, automatisch durch KI (Ollama/lokales LLM) analysiert, kategorisiert und durchsuchbar archiviert. Laeuft ausschliesslich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, keine Telemetrie.
 
+## Quickstart
+
+```bash
+# Stack hochfahren (Backend, Frontend, Ollama, ChromaDB)
+docker compose up -d
+
+# Frontend: http://localhost:8080
+# Backend ist NUR intern erreichbar (siehe N-001), Aufrufe gehen ueber nginx-Proxy
+
+# Logs / Health
+curl http://localhost:8080/api/health
+docker compose logs -f backend
+```
+
+**Lokaler Entwicklungs-Modus** (ohne Docker):
+
+```bash
+# Backend (Python 3.12, virtualenv empfohlen)
+cd backend
+pip install -r requirements.txt
+python -m alembic upgrade head      # DB-Migrationen
+uvicorn app.main:app --reload       # Port 8000
+
+# Frontend (Node 22+)
+cd frontend
+npm install
+npm run dev                          # Vite Dev-Server, Port 3000
+
+# Tests
+cd backend && python -m pytest -q   # 358 Tests / 1 skipped (Tesseract)
+cd e2e && npx playwright test --project=chromium  # 145 Tests
+```
+
+**Lokale CI** (GitHub Actions deaktiviert, siehe `.github/workflows/ci.yml.disabled`):
+
+```bash
+pwsh scripts/ci-local.ps1                    # Windows: alles
+pwsh scripts/ci-local.ps1 -SkipE2E -SkipDocker
+bash scripts/ci-local.sh --skip-e2e          # Linux/macOS
+```
+
 ## Memory Files — Read Before Working on a Topic
 
 | File | Read when working on… |
@@ -237,22 +278,51 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
   -> Validierung (Dateityp, Groesse, Magic-Bytes)
   -> Queue-Eintrag (PENDING)
   -> Thumbnail-Generierung (Pillow/pdf2image)
-  -> OCR (PDF: pdfplumber -> Tesseract Fallback | Bilder: Tesseract mit Vorverarbeitung)
+  -> OCR
+     - PDF digital: pdfplumber (Konfidenz 1.0)
+     - PDF Scan / Bild: _preprocess_for_ocr (Auto-Upscale 2x bei <1500 px,
+       MedianFilter Denoising, Autocontrast cutoff=2) -> Tesseract deu+eng
   -> Text kuerzen (max 4000 Zeichen: erste 2000 + letzte 2000)
-  -> LLM-Analyse (Ollama /api/chat, format: json, temperature: 0.1)
-     1. Kombinierter Prompt (ein Aufruf fuer alles)
-     2. Fallback: 4 sequentielle Einzel-Prompts
-     3. Fallback: Minimal-Ergebnis mit needs_review=True
+  -> Few-Shot-Builder
+     - Top-8 haeufigste User-Korrekturen aus CorrectionMappings
+       (occurrence_count >= 2) als Beispiele in den Prompt injizieren
+  -> LLM-Analyse (Ollama /api/chat)
+     1. Kombinierter Prompt mit JSON-Schema-constrained Generation
+        (format=<schema>, garantiert konformer Output)
+     2. Fallback: 4 sequentielle Einzel-Prompts (klassifizieren / Metadaten /
+        Steuer / Garantie) — feuert nur noch bei JSON-Parse-Fehlern
+     3. Optional Verifier-Pass (LLM_USE_VERIFIER=true): zweiter LLM-Call
+        validiert die Felder bei confidence <= LLM_VERIFIER_THRESHOLD
+  -> Sanity-Checks (analysis_service)
+     - Amount > 50.000 EUR -> NEEDS_REVIEW (Anti-Prompt-Injection)
+     - tax_category Whitelist (Pipe-Werte vom LLM aufgesplittet)
   -> Ergebnisse in ProcessingJob speichern (ocr_text, ocr_confidence, analysis_result)
   -> Konfidenz-Check gegen CONFIDENCE_THRESHOLD (0.7)
   -> Archivierung:
-     - SHA-256 Hash berechnen + Duplikat-Check
-     - Filing Scope bestimmen (Keyword-Match > LLM > Default)
-     - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ verschieben
+     - SHA-256 Hash berechnen + Duplikat-Check (FAILED bei Duplikat,
+       Quelldatei bleibt fuer User-Inspektion stehen)
+     - Filing Scope bestimmen (Keyword-Match > LLM (>=0.7) > Default)
+     - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ kopieren,
+       erst nach DB-Commit aus Upload-Ordner loeschen (rollback-sicher)
      - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
      - FTS5-Index aktualisieren
-     - Vektorisierung (Chunking -> Ollama Embedding -> ChromaDB) - non-blocking
+     - Vektorisierung mit bge-m3 (1024 dim) -> ChromaDB-Collection
+       documents_bge-m3, filing_scope_id als Metadata
   -> Status: COMPLETED | NEEDS_REVIEW (+ review_questions) | FAILED
+```
+
+**RAG-Chat-Pipeline (Frage -> Antwort):**
+
+```
+User-Frage
+  -> embed_text (bge-m3) + parallel _fts_top_doc_ids (FTS5 mit Scope-Filter)
+  -> Vector-Search (ChromaDB top_k * 3, filing_scope_id-Where-Filter serverseitig)
+  -> Reciprocal Rank Fusion (_apply_rrf): score = 1/(k+vec_rank) + 1/(k+fts_rank)
+  -> Optional LLM-Reranker (RAG_USE_RERANKER=true): zweiter Pass mit
+     Schema-Mode-Score 0-10, additiv mit RRF-Score, dann top_k schneiden
+  -> Document-Filter (DELETED ausschliessen, Geister-Chunks verwerfen)
+  -> Prompt mit <document_excerpts> + <user_question> Wrapping
+  -> call_llm_text -> Antwort mit Quellen-Refs [Dok. N]
 ```
 
 ## Konventionen
@@ -295,53 +365,29 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 
 ## Implementierungsstatus
 
-- [x] Prompt 01 - Projekt-Setup (FastAPI, SQLAlchemy, Docker, Config)
-- [x] Prompt 02 - Dokumenten-Import (Upload, Watch-Ordner, Queue-Worker, Thumbnails)
-- [x] Prompt 03 - KI-Dokumentenanalyse (OCR via pdfplumber/Tesseract, LLM via Ollama, Wasserfall-Degradation)
-- [x] Prompt 04 - Datenmodell und Archiv-Datenbank (Document-Modell, Archive-Service, CRUD-API, Tags, Review, Dashboard-Stats)
-- [x] Prompt 05 - Web-Oberflaeche (Vue.js 3, TailwindCSS, Dashboard, Dokumentenliste, Detail, Upload, Review)
-- [x] Prompt 06 - Such- und Filtersystem (FTS5, Facetten, Autocomplete, Gespeicherte Suchen)
-- [x] Prompt 07 - Steuerpaket-Export (ZIP + PDF via reportlab + CSV, Kategorien, Validierung)
-- [x] Prompt 08 - Garantie-Tracker (Notification-Modell, Reminder-Service, Dashboard, Benachrichtigungsglocke)
-- [x] Prompt 09 - Smartphone-Integration (PWA via vite-plugin-pwa, Kamera-Scan, BottomNav)
-- [x] Prompt 10 - Installation und Deployment (Backup-Service, System-Health, Wartung)
-- [x] Prompt 11 - Rueckfrage-System (Erweiterte ReviewQuestion, CorrectionMapping, Wizard-Cards, Auto-Update)
-- [x] Ablagebereiche (Filing Scopes) - FilingScope-Modell, CRUD-API, Keyword+LLM-Zuweisung, Scope-Filter in Dokumenten/Suche/Steuer, Frontend-Einstellungen
-- [x] Windows-Installer - install.bat + install-gui.ps1 (grafischer 4-Schritt-Wizard, Windows Forms) + install.ps1 (CLI-Fallback), start/stop/update/uninstall Skripte, Desktop-Verknuepfung
-  - Installer erkennt bestehende Installation: version-Datei (`data\.version`) allein reicht, oder `.env` + DB/Archiv-Ordner
-  - Semantischer Versionsvergleich (`[System.Version]`): Downgrade = rote Warnung, gleiche Version = Reparatur-Modus
-  - Nach Install: Backend-Version via `/api/system/health` abgefragt und in `data\.version` gespeichert
-  - Ollama-Modell-Check: `ollama list` vor Download - kein Re-Download wenn bereits vorhanden
-  - Bekannte Fixes: v1.0.3 - `$btnBrowse` in CheckedChanged-Handler muss `$script:`-Scope haben (Event-Handler laeuft ausserhalb Funktions-Scope)
-- [x] CI/CD Pipeline - GitHub Actions: CI (Tests + Build), Release (Tag v* -> GitHub Release + GHCR Docker Images)
-- [x] PIN-Schutz - Optionaler PIN-Schutz fuer Web-Oberflaeche (`.env`-Config, In-Memory Sessions, Middleware, Router-Guard)
-- [x] RAG-basierter KI-Assistent - ChromaDB + nomic-embed-text Vektorisierung, natuerlichsprachige Dokumenten-Fragen, ChatView, Migration 006
-- [x] Issue #11: FilePicker-Hinweis + Windows-Pfad-Warnung in SettingsView
-- [x] Issue #12: ChromaDB-Fehler mit Hilfetext + Kopier-Button, Versions-Zirkelbug behoben
-- [x] Issue #13: Watch-Ordner Windows-Pfad-Problem erkannt und gewarnt
-- [x] Steuerrelevant-Checkbox in Dokumentenliste - Steuer-Spalte direkt in der Liste sichtbar und per Klick aenderbar
-- [x] Dashboard-Verbesserungen - Auto-Polling (3s) bei aktiven Jobs, Queue-Pause/Fortsetzen, fehlgeschlagene Jobs mit Copy-for-Claude-Button
-- [x] ReviewView-Verbesserungen - Zoom (Mausrad + Buttons), Drag-to-Pan, Download, In-neuem-Tab-oeffnen
-- [x] Versionierung - Sidebar-Footer + Einstellungen zeigen `app_version`; `/api/system/health` liefert Version aus `data/.version`
-- [x] Host-Ordner (Issue #14) - Windows-Pfade als Watch/Export via Docker-Volume-Mount, `generate-mounts.ps1` erzeugt `docker-compose.override.yml`, Restart-Banner in Settings
-- [x] Ablagebereich-Wechsel (Issue #15) - Scope-Dropdown immer sichtbar, "+"-Button fuer Inline-Anlage
-- [x] Fehlerbehandlung (Issue #16) - Job-Retry-Endpoint, Retry-Button in Dashboard, bessere Fehlermeldungen
-- [x] ChromaDB-Pinning - Image auf 0.6.3 gepinnt (Kompatibilitaet mit chromadb-client 0.6.x)
-- [x] Installationspfad - In Settings anzeigen, "Ordner oeffnen"-Button kopiert Explorer-Befehl
-- [x] Settings Auto-Refresh - Health-Status Polling alle 10 Sekunden
-- [x] E-Mail-Anbindung (Issue #18) - IMAP-Polling, LLM-Relevanzpruefung, Fernet-Passwortverschluesselung, CRON/MANUAL/IDLE-Scheduling, E-Mail-Konten-UI in Settings, Dashboard-Stats, Migration 009
-- [x] E2E Test-Suite - Playwright mit TypeScript, 13 Testdateien (~145 Tests), API-Mocking, Desktop + Mobile Projekte, CI-Integration
-- [x] Automatische DB-Migrationen (v1.1.1) - `backend/entrypoint.sh` ruft `migrate.py` vor uvicorn auf; `migrate.py` erkennt Legacy-DBs ohne alembic_version-Tracking und stempelt korrekt, dann `alembic upgrade head`
-- [x] ReviewView Kontext (v1.2.0) - Kontext-Cards pro Rueckfrage (betroffenes Feld + KI-Wert), Highlighting im Erkannte-Daten-Block, Umlaute im gesamten Frontend
-- [x] PWA Service Worker Fix (v1.2.1) - `navigateFallbackDenylist` fuer `/api/`, `NetworkOnly` fuer File/Thumbnail-Endpunkte
-- [x] AGPL-3.0 Lizenz - Open-Source-Lizenz hinzugefuegt
-- [x] Re-Analyse bei LLM-Ausfall (v1.2.2) - `POST /review/documents/{id}/reanalyze` fuehrt LLM-Analyse erneut durch mit vorhandenem OCR-Text, Frontend-Button bei "LLM nicht erreichbar"-Rueckfrage
-- [x] Code-Review + Security-Haertung (post-v1.2.2) - 47 von 55 Findings behoben (8 bewusst offen: Pagination/DELETE-Inkonsistenz, SVG-Duplizierung, aria-labels, reanalyze-Duplizierung, Dockerfile-Packages). Details in `CODE_REVIEW_FINDINGS.md`
-  - Security: .env aus Backups entfernt, Path-Traversal-Schutz, PIN Rate-Limiting (5 Versuche/30s), constant-time PIN-Vergleich, CORS eingeschraenkt, Nginx Security-Headers (CSP, X-Frame-Options), SQL ORDER BY Whitelist, E-Mail-Anhaenge Magic-Byte-Validierung, IMAP in asyncio.to_thread
-  - Backend: FK-Typ-Fix Migration 010, Performance-Indizes Migration 011, LLM-Service dedupliziert (_call_ollama), Double-Commits entfernt, datetime.utcnow() -> datetime.now(timezone.utc), Pydantic AnswerRequest statt dict, Dead Code entfernt
-  - Frontend: SettingsView in 5 Sub-Components, shared documentTypes.js + formatters.js, Route-Param-Watch Fix, Dashboard-Polling Guard, Umlaute korrigiert, Notification Outside-Click, dynamischer Seitentitel, ScanView HTTPS-Erkennung
-  - Docker: ChromaDB HTTP-Healthcheck, Ollama service_healthy Dependency, init_db() entfernt (nur Alembic), .dockerignore fuer Backend + Frontend
-  - E-Mail-Security: EMAIL_ENCRYPTION_KEY leer -> HTTP 503 statt stiller Key-Generierung
+Alle 11 urspruenglichen Spec-Prompts (Setup -> Rueckfrage-System) sind umgesetzt
+und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
+
+- **Filing Scopes** (Ablagebereiche): Keyword-Match > LLM (>=0.7) > Default
+- **Windows-Installer** (`install.bat` + `install-gui.ps1` GUI-Wizard +
+  `install.ps1` CLI-Fallback) inkl. Versionserkennung + Reparatur-Modus
+- **PIN-Schutz** (opt-in) mit slowapi-Rate-Limiting + Trusted-Proxy-Filter
+- **RAG-Assistent** mit Hybrid-Search FTS5+Vector + RRF + optional LLM-Reranker
+- **E-Mail-Anbindung** (IMAP-Polling, LLM-Relevanzpruefung, Fernet-verschluesselte Passwoerter)
+- **Auto-Migration** beim Start (`migrate.py` + Alembic-Chain, kein init_db mehr)
+- **CI lokal** statt GitHub-Actions (`scripts/ci-local.{ps1,sh}`)
+
+**Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27, siehe
+`SECURITY_AUDIT_v3.md` + `CODE_REVIEW_v3.md` + `LLM_OPTIMIZATION.md` +
+`REVIEW_REPORT.md`):
+
+- 3 BLOCKER + 13 HIGH + 11 MEDIUM Code-Review-Findings gefixt
+- 7 von 8 SECURITY-Findings (NEW-001..009) gefixt; PIN_ENABLED-Default nur
+  als Startup-Warning (Breaking-Change-Migration noch offen)
+- LLM-Pipeline: bge-m3, JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
+  optional Reranker + Verifier
+- Lib-Stand: Vite 7, Tailwind v4, Pinia 3, vue-router 5, Node 22, ChromaDB 1.0.20,
+  FastAPI 0.119+, Pillow 12.2+, axios 1.15.1+, slowapi neu
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.
@@ -360,22 +406,34 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 - `008_add_warranty_reminder_flags` - Separate Reminder-Flags (90d/30d/0d) auf WarrantyInfo
 - `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
 - `010_fix_email_filing_scope_fk_type` - FK-Typ-Fix EmailAccount.filing_scope_id Integer -> String(36)
-- `011_add_performance_indexes` - Indizes auf Notification.is_read, ProcessingJob.created_at/status, ReviewQuestion.is_answered
+- `011_add_performance_indexes` - Indizes auf Notification.is_read, ProcessingJob.created_at/status, ReviewQuestion.is_answered (idempotent: `CREATE INDEX IF NOT EXISTS`)
+
+`migrate.py` setzt `init_db()` nicht mehr aufruft — Schema kommt komplett aus
+der Alembic-Chain. `detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
+auch fuer 010 (FK-Typ) + 011 (Index-Existenz).
 
 ### Tests
 > Read `memory/e2e-tests.md` before writing or running E2E tests.
 
-- 268 Backend-Tests (1 skipped fuer Tesseract)
-- Backend: API-Tests (auth, documents, upload, jobs, search, tax, warranties, notifications, review, system, filing_scopes, chat, email), Service-Tests (archive, analysis, OCR, LLM, search, queue, upload, thumbnails, validation, tax_export, warranty_reminder, backup, embedding, rag, vectorize, crypto, email_relevance, email_fetch, email_scheduler), Model-Tests (email_models), Core-Tests (file_utils)
+- **Backend: 358 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
+  + Model-Tests + Core-Tests + Phase-8-Tests fuer Reranker, Verifier,
+  Trusted-Client-IP.
+- **E2E: 145 Tests** (Playwright + TypeScript), 13 Testdateien. API-Response-Mocking
+  via `page.route()` — Frontend-only-Run ohne Backend moeglich.
+- **CI lokal**: GitHub-Actions deaktiviert (`.github/workflows/ci.yml.disabled`),
+  Lauf via `pwsh scripts/ci-local.ps1` bzw. `bash scripts/ci-local.sh`.
 
-### E2E Tests
-- Framework: Playwright mit TypeScript
-- Verzeichnis: `e2e/` (eigenes package.json)
-- 13 Testdateien, ~145 Tests
-- Testdaten: API-Response-Mocking via `page.route()` (kein Backend noetig)
-- Projekte: `chromium` (Desktop) + `mobile` (Pixel 5, ueberspringt Sidebar-Tests)
-- Ausfuehren: `cd e2e && npm test` (benoetigt laufendes Frontend auf Port 8080)
-- CI: Laeuft automatisch in GitHub Actions mit Vite Dev-Server
+### Optional Settings (.env)
+
+| Variable | Default | Effekt |
+|---|---|---|
+| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | LLM fuer Analyse + Rerank + Verifier (Fallback `llama3.2`) |
+| `EMBEDDING_MODEL` | `bge-m3` | Multilingual, 1024 dim. ChromaDB-Collection ist modell-abhaengig |
+| `RAG_USE_RERANKER` | `false` | LLM-Score-Reranker zwischen Hybrid-Retrieval und Antwort |
+| `LLM_USE_VERIFIER` | `false` | Zweiter LLM-Pass validiert Erst-Pass-Felder bei niedriger Konfidenz |
+| `LLM_VERIFIER_THRESHOLD` | `0.5` | Confidence-Schwelle (`<=`) ab der der Verifier feuert |
+| `PIN_ENABLED` | `false` | Optionaler Web-PIN-Schutz; Backend warnt im Startup-Log wenn aus |
+| `EMAIL_ENCRYPTION_KEY` | (Pflicht fuer E-Mail) | Fernet-Key, vom Installer auto-generiert |
 
 ## Planungsdokumente
 
