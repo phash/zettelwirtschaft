@@ -277,10 +277,14 @@ if ($watchDir) {
     $envContent += "`nWATCH_DIR=./data/watch"
 }
 
+# PIN-Schutz immer explizit setzen — sonst zeigt das Backend bei jedem
+# Startup eine Sicherheitswarnung, weil PIN_ENABLED implizit fehlt.
+$envContent += "`n`n# PIN-Schutz"
 if ($pinEnabled) {
-    $envContent += "`n`n# PIN-Schutz"
     $envContent += "`nPIN_ENABLED=true"
     $envContent += "`nPIN_CODE=$pinCode"
+} else {
+    $envContent += "`nPIN_ENABLED=false"
 }
 
 # EMAIL_ENCRYPTION_KEY automatisch generieren (Fernet: 32 zufaellige Bytes urlsafe-base64)

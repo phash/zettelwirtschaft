@@ -19,6 +19,9 @@ chromadb-client>=0.6,<0.7
 cryptography>=44,<49
 croniter>=6,<7
 
+# Rate-Limiting (Defense-in-Depth, ergaenzt das Auth-spezifische Limit)
+slowapi>=0.1.9,<0.2
+
 # Testing
 pytest>=8,<10
 pytest-asyncio>=0.25,<2

@@ -13,6 +13,12 @@ services:
       chromadb:
         condition: service_healthy
     restart: unless-stopped
+    # Defense-in-Depth: keine zusaetzlichen Privilegien, alle Capabilities weg.
+    # appuser laeuft sowieso als non-root (siehe backend/Dockerfile).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -25,6 +31,8 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -37,6 +45,8 @@ services:
     volumes:
       - chromadb-data:/chroma/chroma
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat', timeout=2).status == 200 else 1)"]
       interval: 30s
@@ -52,6 +62,12 @@ services:
       backend:
         condition: service_started
     restart: unless-stopped
+    # nginx laeuft seit N-006 als USER nginx und listen 8080 — keine Caps
+    # mehr noetig.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   ollama-models:

@@ -69,6 +69,17 @@ async def lifespan(app: FastAPI):
         await ensure_fts_table(session)
     logger.info("FTS5-Index bereit")
 
+    # Sicherheitshinweis bei deaktiviertem PIN-Schutz (N-007).
+    # Der Default ist `False` und wird nicht geaendert (Breaking Change fuer
+    # Bestandsuser), aber ein lautstarker Warn-Log macht das Risiko sichtbar.
+    if not settings.PIN_ENABLED:
+        logger.warning(
+            "SICHERHEITSHINWEIS: PIN-Schutz ist deaktiviert (PIN_ENABLED=false). "
+            "Alle Dokumente und Einstellungen sind im Heimnetz ohne Passwort "
+            "zugaenglich. Aktivieren in .env: PIN_ENABLED=true + PIN_CODE=xxxx, "
+            "danach Backend-Container neu starten."
+        )
+
     # Stuck-Job-Recovery: Jobs die beim letzten Crash auf PROCESSING haengen geblieben sind
     # auf PENDING zuruecksetzen, damit der Worker sie erneut bearbeitet.
     from sqlalchemy import update
@@ -208,6 +219,26 @@ app = FastAPI(
     version=_read_version(),
     lifespan=lifespan,
 )
+
+# slowapi global rate-limit: 200 Requests/Minute pro IP. Ergaenzt das
+# auth-spezifische 5/30s aus N-002 — verhindert dass ein einzelner Client
+# das LAN-Backend mit Polling oder Suchen ueberlastet. Die Pin-Login-Route
+# behaelt ihren eigenen, strengeren Limiter.
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+def _client_id(request) -> str:
+    """Wenn nginx X-Real-IP setzt (vertrauenswuerdig in der Heim-Topologie),
+    nutzen wir diesen, sonst den Socket-Peer. Verhindert dass alle LAN-User
+    in einem gemeinsamen Bucket landen."""
+    return request.headers.get("X-Real-IP") or get_remote_address(request)
+
+limiter = Limiter(key_func=_client_id, default_limits=["200/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 class PinAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):

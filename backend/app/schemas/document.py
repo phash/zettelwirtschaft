@@ -48,24 +48,27 @@ class ReviewQuestionAnswer(BaseModel):
 
 
 def _resolve_scope_name(cls, data):
-    """Model-Validator: extrahiert filing_scope_name aus ORM-Relationship."""
-    if hasattr(data, "__dict__") and hasattr(data, "filing_scope") and data.filing_scope is not None:
-        scope_name = data.filing_scope.name
+    """Model-Validator: extrahiert filing_scope_name aus ORM-Relationship.
 
-        class _OrmProxy:
-            """Proxy um ORM-Objekt mit zusaetzlichem Attribut zu wrappen."""
-            __slots__ = ("_obj", "_filing_scope_name")
-
-            def __init__(self, obj, name):
-                object.__setattr__(self, "_obj", obj)
-                object.__setattr__(self, "_filing_scope_name", name)
-
-            def __getattr__(self, name):
-                if name == "filing_scope_name":
-                    return object.__getattribute__(self, "_filing_scope_name")
-                return getattr(object.__getattribute__(self, "_obj"), name)
-
-        return _OrmProxy(data, scope_name)
+    Frueher: gewrappt in einer _OrmProxy-Klasse, die jeden Attribut-Zugriff
+    weiterreichen musste. Jetzt: kopieren in ein Dict + Scope-Name daraufsetzen.
+    Pydantic v2 akzeptiert mit from_attributes=True auch dicts als Input.
+    """
+    # Wenn schon ein Dict (z.B. aus Tests / API-Round-Trip) — durchreichen.
+    if isinstance(data, dict):
+        return data
+    # ORM-Objekt: Felder via getattr extrahieren. Fields ist der Schema-Bauplan
+    # — wir lesen genau die Felder, die das Schema kennt.
+    if hasattr(data, "__dict__"):
+        fields = list(cls.model_fields.keys())
+        out = {}
+        for f in fields:
+            if f == "filing_scope_name":
+                fs = getattr(data, "filing_scope", None)
+                out[f] = fs.name if fs is not None else None
+            elif hasattr(data, f):
+                out[f] = getattr(data, f)
+        return out
     return data
 
 
@@ -73,7 +76,10 @@ class DocumentResponse(BaseModel):
     model_config = {"from_attributes": True}
     id: str
     original_filename: str
-    stored_filename: str
+    # `stored_filename` wurde aus VULN-014-Gruenden entfernt: der UUID-prefixed
+    # Disk-Name disclosed Innenstruktur des Archivs und half bei Path-Traversal.
+    # Frontend nutzt `original_filename` fuer Anzeige + `/api/documents/{id}/file`
+    # fuer Download; der interne Name ist nicht noetig.
     thumbnail_path: str | None = None
     file_type: str
     file_size_bytes: int

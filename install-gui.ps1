@@ -601,7 +601,12 @@ function Phase-Config {
     $env += "UPLOAD_DIR=./data/uploads`n"
     $env += "ARCHIVE_DIR=./data/archive`n"
     if ($script:Config.WatchEnabled) { $env += "WATCH_DIR=./data/watch`n" }
-    if ($script:Config.PinEnabled) { $env += "PIN_ENABLED=true`nPIN_CODE=$($script:Config.PinCode)`n" }
+    # PIN-Schutz: immer explizit, damit kein Default-Fallback im Backend greift.
+    if ($script:Config.PinEnabled) {
+        $env += "PIN_ENABLED=true`nPIN_CODE=$($script:Config.PinCode)`n"
+    } else {
+        $env += "PIN_ENABLED=false`n"
+    }
     $env += "OCR_LANGUAGES=deu+eng`n"
     $env += "LOG_LEVEL=INFO`n"
     $env += "`n# ChromaDB (RAG / KI-Assistent)`n"
