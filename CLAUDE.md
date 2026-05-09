@@ -18,14 +18,25 @@ Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und 
 
 ## Technologie-Stack
 
-- **Backend:** Python 3.12+ / FastAPI
-- **Datenbank:** SQLite (via SQLAlchemy + Alembic)
-- **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs)
-- **KI-Analyse:** Ollama + lokales LLM (Llama 3.2 / Mistral)
-- **Frontend:** Vue.js 3 (Composition API, `<script setup>`) + Vite
-- **Deployment:** Docker Compose (Backend, Frontend/Nginx, Ollama, ChromaDB)
-- **Smartphone:** PWA (Progressive Web App)
-- **Vektor-Suche:** ChromaDB + Ollama Embeddings (nomic-embed-text) fuer RAG
+- **Backend:** Python 3.12 / FastAPI 0.119+ / SQLAlchemy 2.0 async / Pydantic v2
+- **Datenbank:** SQLite (via SQLAlchemy + Alembic, Migrationen via `migrate.py`)
+- **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs), Pillow 12.x
+  - Pre-Processing: Auto-Upscale 2x bei kleinen Bildern, MedianFilter Denoising,
+    aggressives Autocontrast (cutoff=2)
+- **KI-Analyse:** Ollama mit qwen2.5:7b-instruct (Default) / llama3.2 (Fallback)
+  - JSON-Schema-constrained Generation (Ollama 0.5+)
+  - Few-Shot aus CorrectionMappings
+  - Optional: LLM-Reranker + Verifier-Pass (config-flags)
+- **Frontend:** Vue.js 3.5+ (Composition API, `<script setup>`) + Vite 7 + Tailwind v4
+  + Pinia 3 + vue-router 5
+- **Deployment:** Docker Compose (Backend, Frontend/Nginx, Ollama, ChromaDB 1.x)
+  - Container-Hardening: cap_drop ALL, no-new-privileges
+  - Frontend nginx als non-root, Listen 8080
+  - Backend nur intern erreichbar (expose, kein host-port-binding)
+- **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 1.x)
+- **Vektor-Suche:** ChromaDB 1.0.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
+- **Rate-Limiting:** slowapi (200/min default, X-Real-IP-Trust nur aus Docker-Net)
+- **CI:** Lokal via `scripts/ci-local.{ps1,sh}`, GitHub-Actions deaktiviert
 
 ## Projektstruktur
 
