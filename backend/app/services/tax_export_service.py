@@ -1,5 +1,6 @@
 """Steuerpaket-Export: ZIP mit kategorisierten Dokumenten, Uebersicht-PDF und CSV."""
 
+import asyncio
 import csv
 import io
 import logging
@@ -108,7 +109,13 @@ async def create_tax_export_zip(
     include_csv: bool = True,
     filing_scope_id: str | None = None,
 ) -> bytes:
-    """Erstellt ZIP-Datei mit allen steuerrelevanten Dokumenten eines Jahres."""
+    """Erstellt ZIP-Datei mit allen steuerrelevanten Dokumenten eines Jahres.
+
+    Lädt die Dokument-Metadaten async, übergibt dann die fertigen Plain-Dicts
+    an einen Sync-Builder, der ZIP + reportlab im Thread läuft. Verhindert
+    dass der Event-Loop ~30 s blockiert während ZIP_DEFLATED grosse Archive
+    durchcomprimiert.
+    """
     stmt = (
         select(Document)
         .where(Document.tax_relevant.is_(True))
@@ -121,10 +128,37 @@ async def create_tax_export_zip(
     result = await session.execute(stmt)
     docs = result.scalars().all()
 
-    # Dokumente nach Kategorie gruppieren
-    by_category: dict[str, list] = {}
+    # Daten in serialisierbares Format kopieren — ORM-Objekte duerfen den
+    # Thread nicht verlassen (Lazy-Loading + Session-Bindung).
+    docs_data: list[dict] = []
     for doc in docs:
-        cat = doc.tax_category or TaxCategory.KEINE
+        docs_data.append({
+            "tax_category": doc.tax_category or TaxCategory.KEINE,
+            "title": doc.title,
+            "issuer": doc.issuer,
+            "amount": float(doc.amount) if doc.amount is not None else None,
+            "currency": doc.currency,
+            "document_date": doc.document_date,
+            "file_path": doc.file_path,
+            "file_type": doc.file_type,
+            "document_type": doc.document_type,
+        })
+
+    return await asyncio.to_thread(
+        _build_zip_sync, docs_data, year, include_pdf, include_csv,
+    )
+
+
+def _build_zip_sync(
+    docs_data: list[dict],
+    year: int,
+    include_pdf: bool,
+    include_csv: bool,
+) -> bytes:
+    """Sync ZIP-Builder — nur in to_thread aufrufen."""
+    by_category: dict[str, list] = {}
+    for doc in docs_data:
+        cat = doc["tax_category"]
         by_category.setdefault(cat, []).append(doc)
 
     zip_buffer = io.BytesIO()
@@ -144,17 +178,17 @@ async def create_tax_export_zip(
             for doc in cat_docs:
                 # Dateiname: Datum_Beschreibung_Aussteller_Betrag.ext
                 parts = []
-                if doc.document_date:
-                    parts.append(doc.document_date.strftime("%Y-%m-%d"))
-                parts.append(_safe_filename(doc.title) or "Dokument")
-                if doc.issuer:
-                    parts.append(_safe_filename(doc.issuer))
-                if doc.amount is not None:
-                    parts.append(f"{float(doc.amount):.2f}{doc.currency}")
-                fname = "_".join(parts) + f".{doc.file_type}"
+                if doc["document_date"]:
+                    parts.append(doc["document_date"].strftime("%Y-%m-%d"))
+                parts.append(_safe_filename(doc["title"]) or "Dokument")
+                if doc["issuer"]:
+                    parts.append(_safe_filename(doc["issuer"]))
+                if doc["amount"] is not None:
+                    parts.append(f"{doc['amount']:.2f}{doc['currency']}")
+                fname = "_".join(parts) + f".{doc['file_type']}"
 
                 # Datei zum ZIP hinzufuegen
-                file_path = Path(doc.file_path)
+                file_path = Path(doc["file_path"])
                 if file_path.exists():
                     zf.write(file_path, f"{prefix}/{folder}/{fname}")
                 else:
@@ -162,13 +196,13 @@ async def create_tax_export_zip(
 
                 all_rows.append({
                     "Kategorie": TAX_CATEGORY_LABELS.get(cat_key, cat_key),
-                    "Datum": str(doc.document_date or ""),
-                    "Titel": doc.title,
-                    "Aussteller": doc.issuer or "",
-                    "Betrag": f"{float(doc.amount):.2f}" if doc.amount is not None else "",
-                    "Waehrung": doc.currency,
+                    "Datum": str(doc["document_date"] or ""),
+                    "Titel": doc["title"],
+                    "Aussteller": doc["issuer"] or "",
+                    "Betrag": f"{doc['amount']:.2f}" if doc["amount"] is not None else "",
+                    "Waehrung": doc["currency"],
                     "Dateiname": fname,
-                    "Dokumenttyp": doc.document_type,
+                    "Dokumenttyp": doc["document_type"],
                 })
 
             # CSV pro Kategorie

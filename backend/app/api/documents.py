@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentType, ReviewStatus, Tag
+from app.models.document import Document, DocumentStatus, DocumentType, DocumentTag, ReviewStatus, Tag
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.models.review_question import ReviewQuestion
 from app.models.warranty_info import WarrantyInfo
@@ -74,6 +75,9 @@ async def upload_documents(
                     settings=settings,
                     db=db,
                 )
+                # Pro Datei comitten — sonst rollt ein spaeterer Fehler in der
+                # gleichen Session alle vorherigen Uploads zurueck (H-19).
+                await db.commit()
                 uploaded.append(
                     UploadResponse(
                         document_id=job.id,
@@ -86,9 +90,11 @@ async def upload_documents(
                 tmp_path.unlink(missing_ok=True)
 
         except FileValidationError as e:
+            await db.rollback()
             rejected.append({"filename": e.filename or file.filename, "error": e.message})
         except Exception:
             logger.exception("Fehler beim Upload von %s", file.filename)
+            await db.rollback()
             rejected.append({"filename": file.filename, "error": "Interner Fehler beim Upload"})
 
     return MultiUploadResponse(uploaded=uploaded, rejected=rejected)
@@ -160,6 +166,13 @@ async def list_documents(
 
     # Pagination
     query = query.offset((page - 1) * page_size).limit(page_size)
+
+    # M-26: nur tags + filing_scope laden (selectin per Default), warranty +
+    # review_questions ueberspringen — DocumentListItem nutzt sie nicht.
+    query = query.options(
+        noload(Document.warranty_info),
+        noload(Document.review_questions),
+    )
 
     result = await db.execute(query)
     documents = result.scalars().all()
@@ -363,14 +376,26 @@ async def add_tag_to_document(
         db.add(tag)
         await db.flush()
 
-    if tag not in document.tags:
-        document.tags.append(tag)
+    # Pruefen ob bereits zugewiesen — explizit per Junction-Table-Query
+    # statt `tag in document.tags`, das in async-Kontext ggf. einen
+    # MissingGreenlet-Refresh aufrufen wuerde.
+    existing_link = await db.execute(
+        select(DocumentTag).where(
+            DocumentTag.document_id == document.id,
+            DocumentTag.tag_id == tag.id,
+        )
+    )
+    if existing_link.scalar_one_or_none() is None:
+        db.add(DocumentTag(document_id=document.id, tag_id=tag.id))
         audit = AuditLog(
             document_id=document.id,
             action=AuditAction.TAG_ADDED,
             details=json.dumps({"tag": tag_name}, ensure_ascii=False),
         )
         db.add(audit)
+        await db.flush()
+        # Tags fuer Response neu laden — Relationship cache war u.U. stale.
+        await db.refresh(document, ["tags"])
 
     return DocumentResponse.model_validate(document)
 
@@ -391,14 +416,24 @@ async def remove_tag_from_document(
 
     tag_result = await db.execute(select(Tag).where(Tag.name == tag_name.lower()))
     tag = tag_result.scalar_one_or_none()
-    if tag and tag in document.tags:
-        document.tags.remove(tag)
+    if tag is None:
+        return {"message": f"Tag '{tag_name}' war nicht zugewiesen"}
+
+    from sqlalchemy import delete as sa_delete
+    delete_result = await db.execute(
+        sa_delete(DocumentTag).where(
+            DocumentTag.document_id == document.id,
+            DocumentTag.tag_id == tag.id,
+        )
+    )
+    if delete_result.rowcount:
         audit = AuditLog(
             document_id=document.id,
             action=AuditAction.TAG_REMOVED,
             details=json.dumps({"tag": tag_name}, ensure_ascii=False),
         )
         db.add(audit)
+        await db.flush()
 
     return {"message": f"Tag '{tag_name}' entfernt"}
 

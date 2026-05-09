@@ -23,15 +23,48 @@ class OcrResult:
     page_count: int = 0
 
 
+def _preprocess_for_ocr(image):
+    """Pre-Processing-Pipeline fuer Tesseract.
+
+    Pillow-only (kein OpenCV), aber deutlich besser als der vorige
+    Grayscale+Autocontrast+Sharpen-Pfad bei Smartphone-Scans:
+
+    1. Auto-Upscale: Tesseract braucht ~300 DPI fuer gute Resultate. Bilder
+       deren kuerzere Kante < 1500 px hat (typische Handy-Fotos auf Belegen)
+       werden auf 2x hochskaliert mit Lanczos.
+    2. Grayscale + aggressives Autocontrast (cutoff=2) — schneidet die
+       extremsten 2 % schwarzer und weisser Pixel ab, dehnt den Rest auf
+       0..255. Holt mehr Detail aus unterbelichteten Fotos.
+    3. MedianFilter(3) — entfernt Salt-and-Pepper-Noise von schlechten Scans
+       ohne Linien zu zerstoeren.
+    4. Sharpen — Kanten betonen.
+    """
+    from PIL import Image, ImageFilter, ImageOps
+
+    # 1. Auto-Upscale
+    min_side = min(image.size)
+    if min_side < 1500:
+        scale = 2 if min_side < 1500 else 1
+        new_size = (image.size[0] * scale, image.size[1] * scale)
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+
+    # 2. Grayscale + Autocontrast
+    processed = ImageOps.grayscale(image)
+    processed = ImageOps.autocontrast(processed, cutoff=2)
+
+    # 3. Denoise
+    processed = processed.filter(ImageFilter.MedianFilter(size=3))
+
+    # 4. Sharpen
+    processed = processed.filter(ImageFilter.SHARPEN)
+    return processed
+
+
 def _ocr_image_sync(image, languages: str) -> tuple[str, float]:
     """Fuehrt OCR auf einem PIL-Image aus (synchron)."""
     import pytesseract
-    from PIL import ImageFilter, ImageOps
 
-    # Vorverarbeitung: Graustufen + Autokontrast
-    processed = ImageOps.grayscale(image)
-    processed = ImageOps.autocontrast(processed)
-    processed = processed.filter(ImageFilter.SHARPEN)
+    processed = _preprocess_for_ocr(image)
 
     # OCR mit Detaildaten fuer Konfidenz
     data = pytesseract.image_to_data(

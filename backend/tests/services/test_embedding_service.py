@@ -118,8 +118,9 @@ class TestEmbedTexts:
 class TestEnsureEmbeddingModel:
     @pytest.mark.asyncio
     async def test_model_already_present(self, test_settings):
+        # Default-EMBEDDING_MODEL ist bge-m3 (siehe config.py); Mock muss matchen.
         tags_resp = _make_response(200, {
-            "models": [{"name": "nomic-embed-text:latest"}]
+            "models": [{"name": "bge-m3:latest"}]
         }, method="GET")
 
         with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:

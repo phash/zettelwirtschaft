@@ -283,6 +283,12 @@ if ($pinEnabled) {
     $envContent += "`nPIN_CODE=$pinCode"
 }
 
+# EMAIL_ENCRYPTION_KEY automatisch generieren (Fernet: 32 zufaellige Bytes urlsafe-base64)
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$emailKeyBytes = New-Object byte[] 32
+$rng.GetBytes($emailKeyBytes)
+$emailKey = [Convert]::ToBase64String($emailKeyBytes).Replace('+','-').Replace('/','_')
+
 $envContent += @"
 
 # OCR
@@ -290,6 +296,13 @@ OCR_LANGUAGES=deu+eng
 
 # Logging
 LOG_LEVEL=INFO
+
+# Embedding-Modell (multilingual, gut fuer deutsche Belege)
+EMBEDDING_MODEL=bge-m3
+
+# E-Mail-Verschluesselung (Fernet-Schluessel — automatisch generiert,
+# nicht mehr aendern, sonst werden gespeicherte IMAP-Passwoerter unbrauchbar)
+EMAIL_ENCRYPTION_KEY=$emailKey
 "@
 
 Set-Content -Path (Join-Path $ProjectDir ".env") -Value $envContent -Encoding UTF8

@@ -87,6 +87,14 @@ def _connect_imap(account: EmailAccount, password: str) -> imaplib.IMAP4_SSL | i
     if account.use_ssl:
         conn = imaplib.IMAP4_SSL(account.imap_host, account.imap_port)
     else:
+        # Cleartext IMAP — Passwort fliesst unverschluesselt durchs LAN.
+        # Auf Heim-Routern selten ausnutzbar, aber definitiv unschoen — pro
+        # Verbindung warnen damit der User es im Log mitbekommt.
+        logger.warning(
+            "IMAP-Verbindung zu %s:%d ohne SSL — Login-Daten gehen im Klartext "
+            "uebers Netzwerk. Bitte 993/IMAPS nutzen.",
+            account.imap_host, account.imap_port,
+        )
         conn = imaplib.IMAP4(account.imap_host, account.imap_port)
     conn.login(account.username, password)
     return conn
@@ -143,6 +151,14 @@ def _move_emails_sync(account: EmailAccount, password: str, msg_nums: list[bytes
         conn.select(account.folder_inbox)
         for num in msg_nums:
             _move_email(conn, num, target_folder)
+        # Erst nach EXPUNGE sind die als Deleted markierten Mails wirklich weg.
+        # Ohne EXPUNGE werden sie bei manchen IMAP-Servern (Gmail / Dovecot mit
+        # auto-expunge=off) nach Reconnect erneut als UNSEEN sichtbar -> doppelte
+        # LLM-Relevance-Calls.
+        try:
+            conn.expunge()
+        except Exception:
+            logger.warning("EXPUNGE fehlgeschlagen fuer %s", account.name)
     finally:
         try:
             conn.close()

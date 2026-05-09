@@ -4,16 +4,80 @@ import asyncio
 import logging
 from collections import OrderedDict
 
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.models.document import Document, DocumentStatus
 from app.services.embedding_service import embed_text
 from app.services.llm_service import call_llm_text, load_prompt_template
+from app.services.search_service import _sanitize_fts_query
 from app.services.vectorize_service import search_similar_chunks
 
 logger = logging.getLogger("zettelwirtschaft.rag")
+
+# Reciprocal-Rank-Fusion-Konstante. Standardwert aus dem Cormack et al. Paper.
+# Niedrigere Werte gewichten Top-Treffer staerker, hoehere Werte glaetten.
+RRF_K = 60
+
+
+async def _fts_top_doc_ids(
+    session: AsyncSession,
+    query: str,
+    limit: int = 15,
+    filing_scope_id: str | None = None,
+) -> list[str]:
+    """FTS5-Suche fuer den Hybrid-Retrieval-Pfad.
+
+    FTS5 ist exzellent fuer Eigennamen, Rechnungsnummern und exakte Begriffe —
+    Vector-Search ist exzellent fuer semantische Naehe. Beide werden via RRF
+    kombiniert.
+    """
+    sanitized = _sanitize_fts_query(query)
+    if not sanitized:
+        return []
+    sql = """
+        SELECT documents_fts.doc_id
+        FROM documents_fts
+        JOIN documents d ON d.id = documents_fts.doc_id
+        WHERE documents_fts MATCH :q
+          AND d.status != 'DELETED'
+    """
+    params: dict = {"q": sanitized}
+    if filing_scope_id:
+        sql += " AND d.filing_scope_id = :scope"
+        params["scope"] = filing_scope_id
+    sql += " ORDER BY rank LIMIT :lim"
+    params["lim"] = limit
+    try:
+        result = await session.execute(sql_text(sql), params)
+        return [str(row[0]) for row in result.all()]
+    except Exception:
+        logger.warning("FTS5-Hybrid-Pfad fehlgeschlagen", exc_info=True)
+        return []
+
+
+def _apply_rrf(
+    chunks: list[dict],
+    fts_doc_ids: list[str],
+    target_k: int,
+) -> list[dict]:
+    """Reciprocal Rank Fusion zwischen Vector-Chunks und FTS5-Doc-Ranking.
+
+    Score(chunk) = 1/(k + vec_rank) + 1/(k + fts_rank_of_its_doc)
+    Boost laesst Chunks aus Dokumenten, die FTS5 hoch gewichtet, ueber
+    semantisch nahen aber thematisch fernen Chunks emporsteigen.
+    """
+    if not fts_doc_ids:
+        return chunks[:target_k]
+    fts_rank = {doc_id: idx for idx, doc_id in enumerate(fts_doc_ids)}
+    for vec_rank, chunk in enumerate(chunks):
+        score = 1 / (RRF_K + vec_rank)
+        fr = fts_rank.get(chunk["doc_id"])
+        if fr is not None:
+            score += 1 / (RRF_K + fr)
+        chunk["_rrf_score"] = score
+    return sorted(chunks, key=lambda c: c["_rrf_score"], reverse=True)[:target_k]
 
 
 async def ask_question(
@@ -47,24 +111,45 @@ async def ask_question(
             "chunks_found": 0,
         }
 
-    # 2. Aehnliche Chunks suchen (mehr holen fuer Scope-Filterung)
-    fetch_k = settings.RAG_TOP_K * 3 if filing_scope_id else settings.RAG_TOP_K
-    chunks = await asyncio.to_thread(
-        lambda: search_similar_chunks(query_embedding, settings, top_k=fetch_k)
+    # 2. Hybrid Retrieval: Vector + FTS5 mit Reciprocal Rank Fusion.
+    # Vector-Side oversamplt (top_k * 3), damit RRF aus mehr Kandidaten waehlen
+    # kann; FTS5-Side liefert Doc-Ids als Boost-Signal.
+    fetch_k = settings.RAG_TOP_K * 3
+    vector_task = asyncio.to_thread(
+        lambda: search_similar_chunks(
+            query_embedding, settings,
+            top_k=fetch_k,
+            filing_scope_id=filing_scope_id,
+        )
     )
+    fts_task = _fts_top_doc_ids(session, question, limit=15, filing_scope_id=filing_scope_id)
+    vector_chunks, fts_doc_ids = await asyncio.gather(vector_task, fts_task)
+
+    if vector_chunks and fts_doc_ids:
+        chunks = _apply_rrf(vector_chunks, fts_doc_ids, target_k=settings.RAG_TOP_K)
+        logger.info(
+            "Hybrid-Retrieval: %d vec + %d fts -> %d nach RRF",
+            len(vector_chunks), len(fts_doc_ids), len(chunks),
+        )
+    else:
+        chunks = (vector_chunks or [])[: settings.RAG_TOP_K]
 
     if not chunks:
+        msg = (
+            "Keine relevanten Dokumente im ausgewaehlten Ablagebereich gefunden."
+            if filing_scope_id
+            else "Keine relevanten Dokumente gefunden. Stelle sicher, dass der Vektor-Index aufgebaut wurde."
+        )
         return {
-            "answer": "Keine relevanten Dokumente gefunden. Stelle sicher, dass der Vektor-Index aufgebaut wurde.",
+            "answer": msg,
             "sources": [],
             "chunks_found": 0,
         }
 
-    # 3. Scope-Filterung und Dokument-Infos laden
-    # Sammle eindeutige doc_ids
+    # 3. Dokument-Infos laden — DELETED-Filter haengt nur an der DB,
+    # daher hier zusaetzlich pruefen und Chunks zu geloeschten Docs verwerfen
+    # (deckt Geister-Chunks ab, falls delete_document_vectors gefehlschlagen ist).
     doc_ids = list(OrderedDict.fromkeys(c["doc_id"] for c in chunks))
-
-    # Dokumente laden
     result = await session.execute(
         select(Document).where(
             Document.id.in_(doc_ids),
@@ -73,21 +158,10 @@ async def ask_question(
     )
     docs_by_id = {str(d.id): d for d in result.scalars().all()}
 
-    # Scope-Filter anwenden und Chunks filtern
-    filtered_chunks = []
-    for chunk in chunks:
-        doc = docs_by_id.get(chunk["doc_id"])
-        if not doc:
-            continue
-        if filing_scope_id and str(doc.filing_scope_id) != filing_scope_id:
-            continue
-        filtered_chunks.append(chunk)
-        if len(filtered_chunks) >= settings.RAG_TOP_K:
-            break
-
+    filtered_chunks = [c for c in chunks if c["doc_id"] in docs_by_id]
     if not filtered_chunks:
         return {
-            "answer": "Keine relevanten Dokumente im ausgewaehlten Ablagebereich gefunden.",
+            "answer": "Keine relevanten Dokumente gefunden.",
             "sources": [],
             "chunks_found": 0,
         }

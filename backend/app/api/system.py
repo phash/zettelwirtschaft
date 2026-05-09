@@ -61,6 +61,41 @@ async def get_folder_settings(
     )
 
 
+_FORBIDDEN_PATH_PREFIXES = (
+    # Windows (case-insensitive Vergleich; lower() weiter unten)
+    "c:\\windows", "c:/windows",
+    "c:\\program files", "c:/program files",
+    "c:\\programdata", "c:/programdata",
+    # Linux/macOS System-Verzeichnisse
+    "/etc", "/proc", "/sys", "/root", "/boot", "/dev",
+    "/var/log", "/var/run", "/var/lib/docker",
+    "/usr/bin", "/usr/sbin", "/sbin", "/bin",
+)
+
+
+def _validate_host_path(path_str: str, label: str) -> None:
+    """Verhindert dass User Host-Pfade in System-Verzeichnisse bind-mounten.
+
+    Ohne diese Validierung koennte ein LAN-Angreifer (oder unwissender User)
+    `watch_dir_host="C:\\Windows\\System32"` setzen — beim naechsten `start.bat`
+    haengt der Container-Worker im System-Ordner. Vgl. SECURITY_AUDIT_v2 N-003.
+    """
+    if not path_str or not path_str.strip():
+        return  # leer = deaktiviert, OK
+    p = path_str.strip().lower().replace("\\", "/")
+    # Normalize trailing slash
+    p_no_slash = p.rstrip("/")
+    for forbidden in _FORBIDDEN_PATH_PREFIXES:
+        f = forbidden.lower().replace("\\", "/").rstrip("/")
+        if p_no_slash == f or p_no_slash.startswith(f + "/"):
+            raise HTTPException(
+                400,
+                f"{label} darf nicht auf Systemverzeichnisse zeigen: {path_str}",
+            )
+    if ".." in path_str.split("/") or ".." in path_str.split("\\"):
+        raise HTTPException(400, f"{label} enthaelt unerlaubte Pfad-Segmente: {path_str}")
+
+
 @router.put("/system/settings", response_model=FolderSettings)
 async def update_folder_settings(
     body: FolderSettings,
@@ -69,6 +104,10 @@ async def update_folder_settings(
     settings: Settings = Depends(get_settings),
 ):
     """Aktualisiert Watch-Ordner und Export-Ordner. Startet Watch-Task bei Pfadaenderung neu."""
+    # Host-Pfad-Whitelist gegen System-Verzeichnisse (siehe N-003)
+    _validate_host_path(body.watch_dir_host, "Watch-Ordner")
+    _validate_host_path(body.export_dir_host, "Export-Ordner")
+
     old_watch_dir = await get_db_setting(session, "watch_dir", settings.WATCH_DIR)
 
     restart_required = False
@@ -197,8 +236,10 @@ async def system_health(
     except Exception:
         components["chromadb"] = {"status": "offline", "message": "Nicht erreichbar"}
 
-    # Speicher-Info
-    sys_info = get_system_info(settings)
+    # Speicher-Info — rglob+stat ueber das ganze Archiv kann mehrere Sekunden
+    # dauern (M-20). Im Thread laufen lassen, damit der Event-Loop bei Polling
+    # alle 10 s nicht blockiert.
+    sys_info = await asyncio.to_thread(get_system_info, settings)
 
     # Dokument-Statistiken
     doc_count_result = await session.execute(
@@ -271,10 +312,32 @@ async def download_backup(
 
 
 @router.post("/system/maintenance/optimize-db")
-async def optimize_db(session: AsyncSession = Depends(get_db)):
-    """Datenbank optimieren (VACUUM)."""
+async def optimize_db(settings: Settings = Depends(get_settings)):
+    """Datenbank optimieren (VACUUM).
+
+    VACUUM darf nicht in einer aktiven Transaktion laufen und blockiert alle
+    Writes. Wir nutzen daher eine fresh sqlite3-Connection ausserhalb des
+    SQLAlchemy-Pools und rufen sie in to_thread, um den Event-Loop nicht zu
+    blockieren.
+    """
+    import sqlite3
+    from urllib.parse import urlparse
+
+    # DATABASE_URL Format: sqlite+aiosqlite:///./data/zettelwirtschaft.db
+    parsed = urlparse(settings.DATABASE_URL.split("+", 1)[-1] if "+" in settings.DATABASE_URL else settings.DATABASE_URL)
+    db_path = parsed.path.lstrip("/") if parsed.path.startswith("/./") else parsed.path
+    if not db_path:
+        raise HTTPException(500, "DB-Pfad konnte nicht ermittelt werden")
+
+    def _vacuum() -> None:
+        conn = sqlite3.connect(db_path, isolation_level=None)  # autocommit
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+
     try:
-        await session.execute(text("VACUUM"))
+        await asyncio.to_thread(_vacuum)
         return {"message": "Datenbank optimiert"}
     except Exception:
         logger.exception("DB-Optimierung fehlgeschlagen")
@@ -293,30 +356,83 @@ async def rebuild_index(session: AsyncSession = Depends(get_db)):
         raise HTTPException(500, "Index-Rebuild fehlgeschlagen")
 
 
-@router.post("/system/maintenance/rebuild-vectors")
-async def rebuild_vectors(
-    session: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-):
-    """Vektor-Index fuer alle Dokumente neu aufbauen."""
+async def _run_rebuild_vectors(app, settings: Settings) -> None:
+    """Background-Task: Vektor-Index fuer alle Dokumente neu aufbauen.
+
+    Schreibt Fortschritt nach app.state.rebuild_status, damit das Frontend
+    pollen kann.
+    """
+    from app.services.vectorize_service import vectorize_document
+
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is None:
+        logger.error("session_factory fehlt — rebuild_vectors abgebrochen")
+        app.state.rebuild_status = {"in_progress": False, "error": "session_factory fehlt"}
+        return
+
     try:
-        from app.services.vectorize_service import vectorize_document
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Document).where(Document.status != DocumentStatus.DELETED)
+            )
+            docs = result.scalars().all()
 
-        result = await session.execute(
-            select(Document).where(Document.status != DocumentStatus.DELETED)
-        )
-        docs = result.scalars().all()
-
+        total_docs = len(docs)
         total_chunks = 0
-        for doc in docs:
-            chunks = await vectorize_document(doc, settings)
-            total_chunks += chunks
+        app.state.rebuild_status = {
+            "in_progress": True,
+            "total": total_docs,
+            "processed": 0,
+            "chunks": 0,
+        }
 
-        return {
-            "message": f"Vektor-Index fuer {len(docs)} Dokumente aufgebaut ({total_chunks} Chunks)",
-            "documents": len(docs),
+        for idx, doc in enumerate(docs, 1):
+            try:
+                chunks = await vectorize_document(doc, settings)
+                total_chunks += chunks
+            except Exception:
+                logger.warning("Vektorisierung fehlgeschlagen fuer Dokument %s", doc.id, exc_info=True)
+            app.state.rebuild_status = {
+                "in_progress": True,
+                "total": total_docs,
+                "processed": idx,
+                "chunks": total_chunks,
+            }
+
+        app.state.rebuild_status = {
+            "in_progress": False,
+            "total": total_docs,
+            "processed": total_docs,
             "chunks": total_chunks,
         }
-    except Exception:
+        logger.info("Vektor-Rebuild abgeschlossen: %d Docs / %d Chunks", total_docs, total_chunks)
+    except Exception as e:
         logger.exception("Vektor-Rebuild fehlgeschlagen")
-        raise HTTPException(500, "Vektor-Rebuild fehlgeschlagen")
+        app.state.rebuild_status = {
+            "in_progress": False,
+            "error": str(e),
+        }
+
+
+@router.post("/system/maintenance/rebuild-vectors")
+async def rebuild_vectors(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+):
+    """Vektor-Index fuer alle Dokumente neu aufbauen (Background)."""
+    state = getattr(request.app.state, "rebuild_status", None)
+    if state and state.get("in_progress"):
+        raise HTTPException(409, "Rebuild laeuft bereits — Status via GET /system/maintenance/rebuild-vectors/status")
+
+    request.app.state.rebuild_status = {"in_progress": True, "total": 0, "processed": 0, "chunks": 0}
+    asyncio.create_task(_run_rebuild_vectors(request.app, settings))
+    return {"started": True, "message": "Vektor-Rebuild im Hintergrund gestartet"}
+
+
+@router.get("/system/maintenance/rebuild-vectors/status")
+async def rebuild_vectors_status(request: Request):
+    """Aktueller Stand des laufenden / letzten Vektor-Rebuilds."""
+    state = getattr(request.app.state, "rebuild_status", None)
+    if state is None:
+        return {"in_progress": False, "total": 0, "processed": 0, "chunks": 0}
+    return state

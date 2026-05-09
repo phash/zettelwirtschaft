@@ -33,7 +33,7 @@ async def _call_ollama(
     prompt: str,
     settings: Settings,
     system_prompt: str | None = None,
-    response_format: str | None = None,
+    response_format: str | dict | None = None,
     temperature: float = 0.1,
 ) -> str | None:
     """Gemeinsame Ollama-Aufruflogik mit Retry.
@@ -42,7 +42,8 @@ async def _call_ollama(
         prompt: Der User-Prompt fuer das LLM.
         settings: App-Konfiguration.
         system_prompt: Optionaler System-Prompt.
-        response_format: "json" fuer JSON-Output, None fuer Freitext.
+        response_format: "json" fuer JSON-Output, dict fuer JSON-Schema-constrained
+            Generation (Ollama 0.5+), None fuer Freitext.
         temperature: LLM-Temperature (0.1 fuer JSON, 0.3 fuer Text).
 
     Returns:
@@ -63,7 +64,7 @@ async def _call_ollama(
         payload["format"] = response_format
 
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-    label = "JSON" if response_format else "Text"
+    label = "Schema" if isinstance(response_format, dict) else ("JSON" if response_format else "Text")
 
     for attempt in range(settings.OLLAMA_MAX_RETRIES + 1):
         try:
@@ -123,9 +124,16 @@ async def call_llm(
     prompt: str,
     settings: Settings,
     system_prompt: str | None = None,
+    schema: dict | None = None,
 ) -> str | None:
-    """Sendet einen Prompt an Ollama mit JSON-Format-Output."""
-    return await _call_ollama(prompt, settings, system_prompt, response_format="json", temperature=0.1)
+    """Sendet einen Prompt an Ollama mit JSON-Format-Output.
+
+    Wenn `schema` uebergeben wird, nutzt Ollama JSON-Schema-constrained Generation
+    (Ollama >= 0.5). Das Modell ist dann garantiert konform zum Schema; Fallback-
+    Parsing-Pfade werden ueberfluessig.
+    """
+    fmt: str | dict = schema if schema is not None else "json"
+    return await _call_ollama(prompt, settings, system_prompt, response_format=fmt, temperature=0.1)
 
 
 async def call_llm_text(

@@ -58,10 +58,10 @@ function stopCamera() {
   cameraActive.value = false
 }
 
-function switchCamera() {
+async function switchCamera() {
   facingMode.value = facingMode.value === 'environment' ? 'user' : 'environment'
   stopCamera()
-  startCamera()
+  await startCamera()
 }
 
 function capturePhoto() {

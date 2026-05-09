@@ -1,8 +1,8 @@
 services:
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - ./data:/app/data
     env_file:
@@ -38,7 +38,7 @@ services:
       - chromadb-data:/chroma/chroma
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8000/api/v2/heartbeat || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat', timeout=2).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -47,7 +47,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "${FRONTEND_PORT:-8080}:80"
+      - "${FRONTEND_PORT:-8080}:8080"
     depends_on:
       backend:
         condition: service_started

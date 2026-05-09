@@ -17,6 +17,11 @@ REMINDER_DAYS = [90, 30, 0]
 # Mapping: Tage -> DB-Feld
 REMINDER_FIELD_MAP = {90: "reminder_90d_sent", 30: "reminder_30d_sent", 0: "reminder_0d_sent"}
 
+# Lookback-Fenster fuer Range-Query: deckt Service-Outages bis zu N Tagen ab.
+# Wenn der Reminder-Service 3 Tage off war, fangen wir die Garantien, deren
+# 90-Tage-Marke in dem Zeitraum lag, beim naechsten Lauf nach.
+_REMINDER_LOOKBACK_DAYS = 7
+
 
 async def check_warranty_reminders(session: AsyncSession) -> int:
     """Prueft alle Garantien und erstellt Benachrichtigungen fuer ablaufende."""
@@ -24,13 +29,17 @@ async def check_warranty_reminders(session: AsyncSession) -> int:
     created = 0
 
     for days in REMINDER_DAYS:
+        # Range statt exaktem Tag — vergleicht mit `[target_date - lookback, target_date]`,
+        # der `reminder_*_sent`-Flag stellt sicher dass nicht doppelt benachrichtigt wird.
         target_date = today + timedelta(days=days)
+        lookback_start = target_date - timedelta(days=_REMINDER_LOOKBACK_DAYS)
         field_name = REMINDER_FIELD_MAP[days]
         field = getattr(WarrantyInfo, field_name)
 
         stmt = (
             select(WarrantyInfo)
-            .where(WarrantyInfo.warranty_end_date == target_date)
+            .where(WarrantyInfo.warranty_end_date >= lookback_start)
+            .where(WarrantyInfo.warranty_end_date <= target_date)
             .where(field.is_(False))
         )
         result = await session.execute(stmt)

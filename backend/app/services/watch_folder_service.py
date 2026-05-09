@@ -17,6 +17,12 @@ logger = logging.getLogger("zettelwirtschaft.watch_folder")
 # Verzoegerung bevor eine neue Datei verarbeitet wird (Sekunden)
 _SETTLE_DELAY = 2.0
 
+# Stabilitaets-Check: zweimal stat() mit Pause; wenn Groesse identisch ist die
+# Datei fertig kopiert. Verhindert OCR auf inkomplette Files bei langsamen
+# Quellen (USB-Stick, Netzwerk-Share).
+_STABILITY_POLL_INTERVAL = 1.0
+_STABILITY_MAX_TRIES = 30  # max ~30 s warten bei sehr langsamer Quelle
+
 
 class _WatchHandler(FileSystemEventHandler):
     """Reagiert auf neue Dateien im Watch-Ordner."""
@@ -41,14 +47,33 @@ class _WatchHandler(FileSystemEventHandler):
         )
 
     async def _handle_new_file(self, file_path: Path) -> None:
-        """Verarbeitet eine neue Datei nach kurzer Wartezeit."""
+        """Verarbeitet eine neue Datei nach kurzer Wartezeit + Stabilitaets-Check."""
         await asyncio.sleep(_SETTLE_DELAY)
 
         if not file_path.exists():
             logger.warning("Datei nicht mehr vorhanden: %s", file_path)
             return
 
-        file_size = file_path.stat().st_size
+        # Stabilitaets-Check: warten bis Groesse zweimal in Folge gleich ist
+        # (file_path.stat() in to_thread um Event-Loop nicht zu blockieren).
+        previous_size = -1
+        for _ in range(_STABILITY_MAX_TRIES):
+            try:
+                current_size = await asyncio.to_thread(lambda: file_path.stat().st_size)
+            except FileNotFoundError:
+                logger.warning("Datei wuerd waehrend Stabilitaets-Check entfernt: %s", file_path)
+                return
+            if current_size == previous_size and current_size > 0:
+                break
+            previous_size = current_size
+            await asyncio.sleep(_STABILITY_POLL_INTERVAL)
+        else:
+            logger.warning(
+                "Datei %s wuchs noch nach %.0f s — verarbeite trotzdem",
+                file_path, _STABILITY_MAX_TRIES * _STABILITY_POLL_INTERVAL,
+            )
+
+        file_size = previous_size if previous_size > 0 else 0
         original_name = file_path.name
 
         try:

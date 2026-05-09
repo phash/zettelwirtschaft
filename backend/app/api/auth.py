@@ -31,7 +31,9 @@ def _cleanup_expired() -> None:
     expired = [k for k, v in _sessions.items() if v <= now]
     for k in expired:
         del _sessions[k]
-    # Login-Attempts aufraeumen: abgelaufene Lockouts entfernen
+    # Login-Attempts: abgelaufene Lockouts vollstaendig entfernen
+    # (Counter MUSS mit zurueckgesetzt werden, sonst lockt jeder weitere Fehlversuch
+    # fuer weitere LOCKOUT_SECONDS — Self-DoS-Vektor.)
     stale = [
         ip for ip, (count, lockout) in _login_attempts.items()
         if lockout and lockout <= now

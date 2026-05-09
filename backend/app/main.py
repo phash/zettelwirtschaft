@@ -22,7 +22,7 @@ from app.api.system import router as system_router
 from app.api.tax import router as tax_router
 from app.api.warranties import router as warranties_router
 from app.config import get_settings
-from app.database import async_session_factory, init_db
+from app.database import async_session_factory
 
 
 def _read_version() -> str:
@@ -69,18 +69,46 @@ async def lifespan(app: FastAPI):
         await ensure_fts_table(session)
     logger.info("FTS5-Index bereit")
 
-    # Embedding-Modell sicherstellen
-    try:
-        from app.services.embedding_service import ensure_embedding_model
-        if await ensure_embedding_model(settings):
-            logger.info("Embedding-Modell bereit")
-        else:
-            logger.warning("Embedding-Modell konnte nicht geladen werden - Chat nicht verfuegbar")
-    except Exception:
-        logger.warning("Embedding-Modell-Check fehlgeschlagen", exc_info=True)
+    # Stuck-Job-Recovery: Jobs die beim letzten Crash auf PROCESSING haengen geblieben sind
+    # auf PENDING zuruecksetzen, damit der Worker sie erneut bearbeitet.
+    from sqlalchemy import update
+    from app.models.processing_job import JobStatus, ProcessingJob
+
+    async with async_session_factory() as session:
+        recovery_result = await session.execute(
+            update(ProcessingJob)
+            .where(ProcessingJob.status == JobStatus.PROCESSING)
+            .values(
+                status=JobStatus.PENDING,
+                error_message="Worker neu gestartet, Job wird wiederholt",
+            )
+        )
+        if recovery_result.rowcount:
+            logger.warning(
+                "%d haengender Job(s) von PROCESSING -> PENDING zurueckgesetzt",
+                recovery_result.rowcount,
+            )
+        await session.commit()
+
+    # Embedding-Modell im Hintergrund sicherstellen — Pull kann bei grossen Modellen
+    # (bge-m3 ~1.2 GB) mehrere Minuten dauern, das darf den HTTP-Server nicht
+    # blockieren. Falls das Modell noch nicht da ist, gibt embed_text() so lange
+    # None zurueck und Vektorisierung schlaegt graceful fehl.
+    async def _ensure_embedding_bg():
+        try:
+            from app.services.embedding_service import ensure_embedding_model
+            if await ensure_embedding_model(settings):
+                logger.info("Embedding-Modell bereit")
+            else:
+                logger.warning("Embedding-Modell konnte nicht geladen werden - Chat nicht verfuegbar")
+        except Exception:
+            logger.warning("Embedding-Modell-Check fehlgeschlagen", exc_info=True)
 
     # Background-Tasks starten
     background_tasks: list[asyncio.Task] = []
+
+    # Embedding-Modell-Check als ersten Background-Task (non-blocking)
+    background_tasks.append(asyncio.create_task(_ensure_embedding_bg()))
 
     # Queue-Worker
     from app.services.queue_worker_service import run_queue_worker
@@ -127,7 +155,14 @@ async def lifespan(app: FastAPI):
     background_tasks.append(email_task)
 
     # Initiale Vektorisierung (wenn ChromaDB leer)
+    # ChromaDB ist beim Backend-Start ggf. noch nicht ready; mit kurzem Retry
+    # vermeiden wir falsche „leer"-Reads und verhindern dass die Initial-
+    # Vektorisierung mit Rebuild-Vectors-Endpoint kollidiert (gleicher Lock).
     async def _initial_vectorize():
+        await asyncio.sleep(5)
+        if getattr(app.state, "rebuild_status", {}).get("in_progress"):
+            logger.info("Rebuild-Vectors laeuft bereits — initiale Vektorisierung uebersprungen")
+            return
         try:
             from app.services.vectorize_service import get_collection_count, vectorize_document
             from app.models.document import Document, DocumentStatus

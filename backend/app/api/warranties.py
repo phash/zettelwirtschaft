@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only, selectinload
 
 from app.database import get_db
 from app.models.document import Document, DocumentStatus
@@ -26,7 +27,15 @@ async def list_warranties(
     session: AsyncSession = Depends(get_db),
 ):
     """Liste aller Garantien."""
-    stmt = select(WarrantyInfo).join(Document).where(Document.status != DocumentStatus.DELETED)
+    # WarrantyInfo.document ist seit H-18 `lazy="raise"` — explizit nur die
+    # benoetigten Felder (title, thumbnail_path) laden, nicht den ganzen
+    # Document-Tree mit tags + review_questions.
+    stmt = (
+        select(WarrantyInfo)
+        .join(Document)
+        .where(Document.status != DocumentStatus.DELETED)
+        .options(selectinload(WarrantyInfo.document).load_only(Document.title, Document.thumbnail_path))
+    )
     today = date.today()
 
     if status == "active":
@@ -87,7 +96,9 @@ async def update_warranty(
 ):
     """Garantie aktualisieren."""
     result = await session.execute(
-        select(WarrantyInfo).where(WarrantyInfo.id == warranty_id)
+        select(WarrantyInfo)
+        .where(WarrantyInfo.id == warranty_id)
+        .options(selectinload(WarrantyInfo.document).load_only(Document.title, Document.thumbnail_path))
     )
     warranty = result.scalar_one_or_none()
     if not warranty:

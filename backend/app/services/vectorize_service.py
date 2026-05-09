@@ -24,11 +24,24 @@ def _get_chroma_client(settings: Settings) -> chromadb.HttpClient:
     )
 
 
+def _collection_name(settings: Settings) -> str:
+    """Collection-Name pro Embedding-Modell.
+
+    Verschiedene Embedding-Modelle haben unterschiedliche Dimensionen
+    (nomic-embed-text=768, bge-m3=1024). Eine separate Collection pro Modell
+    verhindert Dimension-Mismatch-Fehler beim Wechsel und erlaubt den Vergleich
+    in der Migrationsphase. ChromaDB-Namen erlauben keine ":" oder "/", also
+    normalisieren.
+    """
+    safe = settings.EMBEDDING_MODEL.replace(":", "_").replace("/", "_")
+    return f"documents_{safe}"
+
+
 def _get_collection_sync(settings: Settings) -> chromadb.Collection:
     """Holt oder erstellt die documents-Collection (synchron)."""
     client = _get_chroma_client(settings)
     return client.get_or_create_collection(
-        name="documents",
+        name=_collection_name(settings),
         metadata={"hnsw:space": "cosine"},
     )
 
@@ -131,11 +144,14 @@ def _check_chromadb_reachable(settings: Settings) -> bool:
 
 
 def _chroma_delete_existing(settings: Settings, doc_id: str) -> None:
-    """Loescht bestehende Chunks eines Dokuments (synchron, fuer to_thread)."""
+    """Loescht bestehende Chunks eines Dokuments (synchron, fuer to_thread).
+
+    Nutzt direkt collection.delete(where=...) statt vorab alle IDs + Embeddings
+    zu laden — bei grossen Dokumenten (10000+ Chunks) spart das mehrere MB
+    Memory-Spike pro Re-Index.
+    """
     collection = _get_collection_sync(settings)
-    existing = collection.get(where={"doc_id": doc_id})
-    if existing and existing["ids"]:
-        collection.delete(ids=existing["ids"])
+    collection.delete(where={"doc_id": doc_id})
 
 
 def _chroma_add(settings: Settings, ids, embeddings, documents, metadatas) -> None:
@@ -214,6 +230,12 @@ async def vectorize_document(doc: Document, settings: Settings) -> int:
             meta["amount"] = float(doc.amount)
         if doc.document_date:
             meta["document_date"] = doc.document_date.isoformat()
+        # filing_scope_id als Metadata speichern, damit ChromaDB serverseitig
+        # filtern kann (H-13). Ohne das musste der RAG-Service in Python
+        # nachfiltern und konnte relevante Chunks ausserhalb der Top-K-Auswahl
+        # nicht mehr sehen.
+        if doc.filing_scope_id:
+            meta["filing_scope_id"] = str(doc.filing_scope_id)
         metadatas.append(meta)
 
     try:
@@ -250,19 +272,22 @@ def search_similar_chunks(
         query_embedding: Embedding-Vektor der Suchanfrage.
         settings: App-Konfiguration.
         top_k: Anzahl Ergebnisse (Default: settings.RAG_TOP_K).
-        filing_scope_id: Optionaler Scope-Filter (wird derzeit nicht in ChromaDB-Metadaten gespeichert,
-                         Filterung erfolgt im RAG-Service auf Dokumentebene).
+        filing_scope_id: Wenn gesetzt, serverseitig in ChromaDB filtern (H-13).
+            Setzt voraus dass Chunks mit `filing_scope_id` in den Metadaten
+            indexiert wurden — nach Migration auf bge-m3 gegeben.
 
     Returns:
         Liste von Dicts mit id, doc_id, text, distance, metadata.
     """
     k = top_k or settings.RAG_TOP_K
+    where_filter = {"filing_scope_id": filing_scope_id} if filing_scope_id else None
 
     try:
         collection = _get_collection_sync(settings)
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
+            where=where_filter,
         )
     except Exception:
         logger.exception("ChromaDB-Suche fehlgeschlagen")
