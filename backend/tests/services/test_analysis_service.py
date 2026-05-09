@@ -385,3 +385,119 @@ class TestHybridSearch:
         chunks = [{"doc_id": "doc-A", "text": "a"}, {"doc_id": "doc-B", "text": "b"}]
         result = _apply_rrf(chunks, fts_doc_ids=[], target_k=10)
         assert result == chunks  # unveraendert
+
+
+class TestVerifierPass:
+    """Tests fuer den optionalen LLM-Verifier (analysis_service._verify_analysis)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_issues_returns_empty(self, test_settings):
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(
+            document_type="RECHNUNG", confidence=0.4, sender="Test GmbH",
+            amount=99.0, currency="EUR",
+        )
+        with patch("app.services.analysis_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = '{"issues": []}'
+            issues = await _verify_analysis("Rechnung Text", analysis, test_settings)
+        assert issues == []
+
+    @pytest.mark.asyncio
+    async def test_issues_returned_as_strings(self, test_settings):
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(document_type="RECHNUNG", confidence=0.3)
+        with patch("app.services.analysis_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = (
+                '{"issues": ["Aussteller fehlt — bitte ergaenzen", '
+                '"Datum nicht erkannt"]}'
+            )
+            issues = await _verify_analysis("OCR-Text", analysis, test_settings)
+        assert len(issues) == 2
+        assert "Aussteller" in issues[0]
+
+    @pytest.mark.asyncio
+    async def test_issues_capped_at_5(self, test_settings):
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(document_type="RECHNUNG", confidence=0.3)
+        with patch("app.services.analysis_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = '{"issues": ["i1","i2","i3","i4","i5","i6","i7"]}'
+            issues = await _verify_analysis("OCR-Text", analysis, test_settings)
+        assert len(issues) == 5
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_returns_empty(self, test_settings):
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(document_type="RECHNUNG", confidence=0.3)
+        with patch("app.services.analysis_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = None
+            issues = await _verify_analysis("OCR-Text", analysis, test_settings)
+        assert issues == []
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_returns_empty(self, test_settings):
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(document_type="RECHNUNG", confidence=0.3)
+        with patch("app.services.analysis_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = "kein json"
+            issues = await _verify_analysis("OCR-Text", analysis, test_settings)
+        assert issues == []
+
+    @pytest.mark.asyncio
+    async def test_none_fields_rendered_as_text(self, test_settings):
+        """H-07: None-Felder duerfen nicht als String 'None' im Prompt landen."""
+        from app.services.analysis_service import _verify_analysis, AnalysisResult
+        analysis = AnalysisResult(
+            document_type="RECHNUNG", confidence=0.3,
+            sender=None, amount=None, currency=None,  # alle None
+        )
+        captured = {}
+
+        async def fake_llm(prompt, settings, system_prompt=None, schema=None):
+            captured["prompt"] = prompt
+            return '{"issues": []}'
+
+        with patch("app.services.analysis_service.call_llm", side_effect=fake_llm):
+            await _verify_analysis("OCR-Text", analysis, test_settings)
+
+        assert "(nicht erkannt)" in captured["prompt"]
+        # Kein literales "None None" mehr
+        assert "None None" not in captured["prompt"]
+
+
+class TestRateLimitTrustedIP:
+    """Tests fuer trusted_client_ip (NEW-002 X-Real-IP-Defense)."""
+
+    def _request(self, host, headers=None):
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client = MagicMock()
+        req.client.host = host
+        req.headers = headers or {}
+        return req
+
+    def test_real_ip_trusted_when_from_docker_network(self):
+        from app.core.rate_limit import trusted_client_ip
+        req = self._request("172.18.0.5", {"X-Real-IP": "192.168.1.42"})
+        assert trusted_client_ip(req) == "192.168.1.42"
+
+    def test_real_ip_trusted_when_from_localhost(self):
+        from app.core.rate_limit import trusted_client_ip
+        req = self._request("127.0.0.1", {"X-Real-IP": "192.168.1.42"})
+        assert trusted_client_ip(req) == "192.168.1.42"
+
+    def test_real_ip_ignored_when_from_external(self):
+        from app.core.rate_limit import trusted_client_ip
+        req = self._request("8.8.8.8", {"X-Real-IP": "spoofed-ip"})
+        # Externe Connection -> X-Real-IP ignoriert, fallback auf Socket-Peer
+        assert trusted_client_ip(req) == "8.8.8.8"
+
+    def test_no_real_ip_falls_back_to_socket(self):
+        from app.core.rate_limit import trusted_client_ip
+        req = self._request("172.18.0.5", {})
+        assert trusted_client_ip(req) == "172.18.0.5"
+
+    def test_invalid_socket_host_handled(self):
+        from app.core.rate_limit import trusted_client_ip
+        req = self._request("not-an-ip", {"X-Real-IP": "10.0.0.1"})
+        # Untrusted (kann nicht parsen) -> Real-IP ignoriert
+        assert trusted_client_ip(req) == "not-an-ip"

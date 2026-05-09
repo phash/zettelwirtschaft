@@ -74,8 +74,9 @@ async def auth_login(
 
     _cleanup_expired()
 
-    # Rate Limiting
-    client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
+    # Rate Limiting — gleicher Trust-Filter wie slowapi (NEW-002).
+    from app.core.rate_limit import trusted_client_ip
+    client_ip = trusted_client_ip(request)
     now = datetime.now(timezone.utc)
     fail_count, lockout_until = _login_attempts.get(client_ip, (0, None))
     if lockout_until and now < lockout_until:

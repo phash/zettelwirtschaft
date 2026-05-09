@@ -173,3 +173,61 @@ class TestAskQuestion:
                     result = await ask_question("Test?", test_settings, db_session)
                     assert "keine Antwort generieren" in result["answer"]
                     assert result["chunks_found"] == 1
+
+
+class TestLLMRerank:
+    """Tests fuer den optionalen LLM-Reranker (rag_service._llm_rerank)."""
+
+    @pytest.mark.asyncio
+    async def test_passthrough_when_chunks_below_target(self, test_settings):
+        from app.services.rag_service import _llm_rerank
+        chunks = [{"doc_id": "a"}, {"doc_id": "b"}]
+        result = await _llm_rerank(chunks, "frage", test_settings, target_k=5)
+        assert result == chunks  # nicht mehr als target_k -> nichts zu tun
+
+    @pytest.mark.asyncio
+    async def test_score_validation_clamps_invalid_values(self, test_settings):
+        from app.services.rag_service import _llm_rerank
+        chunks = [
+            {"doc_id": "a", "text": "alpha", "_rrf_score": 0.5},
+            {"doc_id": "b", "text": "beta", "_rrf_score": 0.4},
+            {"doc_id": "c", "text": "gamma", "_rrf_score": 0.3},
+        ]
+        # NaN, negativ, > 10, null — alle muessen geclamped werden
+        with patch("app.services.rag_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = '{"scores": [-5, 100, "invalid"]}'
+            result = await _llm_rerank(chunks, "frage", test_settings, target_k=2)
+        assert len(result) == 2  # auf target_k gestutzt
+        # _rrf_score darf weder negativ noch ueber Original+1.0 sein
+        for c in result:
+            assert c["_rrf_score"] >= 0
+            assert c["_rrf_score"] <= 1.5
+
+    @pytest.mark.asyncio
+    async def test_length_mismatch_falls_back_to_target_k(self, test_settings):
+        """H-05/NEW-007: bei Mismatch chunks[:target_k] statt voller Liste."""
+        from app.services.rag_service import _llm_rerank
+        chunks = [{"doc_id": str(i), "text": f"chunk {i}"} for i in range(10)]
+        with patch("app.services.rag_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = '{"scores": [9, 8, 7]}'  # nur 3 statt 10
+            result = await _llm_rerank(chunks, "frage", test_settings, target_k=5)
+        assert len(result) == 5  # NICHT 10
+        assert result == chunks[:5]
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_to_target_k(self, test_settings):
+        from app.services.rag_service import _llm_rerank
+        chunks = [{"doc_id": str(i), "text": f"chunk {i}"} for i in range(10)]
+        with patch("app.services.rag_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = None  # LLM down
+            result = await _llm_rerank(chunks, "frage", test_settings, target_k=4)
+        assert len(result) == 4
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_falls_back_gracefully(self, test_settings):
+        from app.services.rag_service import _llm_rerank
+        chunks = [{"doc_id": str(i), "text": f"chunk {i}"} for i in range(8)]
+        with patch("app.services.rag_service.call_llm", new_callable=AsyncMock) as m:
+            m.return_value = "nicht json"  # JSONDecodeError
+            result = await _llm_rerank(chunks, "frage", test_settings, target_k=3)
+        assert len(result) == 3
