@@ -41,14 +41,19 @@ services:
       start_period: 10s
 
   chromadb:
-    image: chromadb/chroma:0.6.3
+    # 1.x ist Rust-Rewrite mit deutlich besserer Performance. Volume-Format
+    # ist bei Major-Bump nicht abwaerts-kompatibel — Backup vor Update Pflicht.
+    # Default-persist_path hat sich von /chroma/chroma auf /data geaendert.
+    image: chromadb/chroma:1.0.20
     volumes:
-      - chromadb-data:/chroma/chroma
+      - chromadb-data:/data
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat', timeout=2).status == 200 else 1)"]
+      # chromadb/chroma:1.x ist Rust-basiert, hat weder curl noch python im Image —
+      # bash-builtin TCP-Probe ist die portabelste Variante.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000"]
       interval: 30s
       timeout: 5s
       retries: 3
