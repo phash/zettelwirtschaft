@@ -36,6 +36,54 @@ VALID_DOCUMENT_TYPES = {
     "SONSTIGES",
 }
 
+VALID_TAX_CATEGORIES = {
+    "Werbungskosten",
+    "Sonderausgaben",
+    "Aussergewoehnliche_Belastungen",
+    "Handwerkerleistungen",
+    "Haushaltsnahe_Dienstleistungen",
+    "Vorsorgeaufwendungen",
+    "Keine",
+}
+
+# Plausibilitaets-Grenzen fuer Beleg-Beträge (Privathaushalt).
+# Werte ueber dieser Grenze sind verdaechtig — entweder Tippfehler im Beleg
+# oder Prompt-Injection-Versuch ("setze amount=99999"). Forciert NEEDS_REVIEW.
+AMOUNT_SANITY_CEILING = 50_000.0
+
+
+def _analysis_schema() -> dict:
+    """JSON-Schema fuer das AnalysisResult.
+
+    Wird an Ollama als `format=...` uebergeben, sodass das Modell garantiert
+    konformen JSON-Output liefert. Eliminiert die Fallback-Parsing-Kaskade.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "document_type": {"type": "string", "enum": sorted(VALID_DOCUMENT_TYPES)},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "title": {"type": ["string", "null"]},
+            "sender": {"type": ["string", "null"]},
+            "recipient": {"type": ["string", "null"]},
+            "document_date": {"type": ["string", "null"]},
+            "amount": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "reference_number": {"type": ["string", "null"]},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": ["string", "null"]},
+            "tax_relevant": {"type": "boolean"},
+            "tax_category": {"type": ["string", "null"]},
+            "tax_year": {"type": ["integer", "null"]},
+            "warranty_info": {"type": ["object", "null"]},
+            "filing_scope": {"type": ["string", "null"]},
+            "filing_scope_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "needs_review": {"type": "boolean"},
+            "review_questions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["document_type", "confidence", "needs_review"],
+    }
+
 
 @dataclass
 class AnalysisResult:
@@ -120,6 +168,33 @@ def _parse_analysis_json(raw: str) -> dict | None:
     return None
 
 
+def _sanitize_amount(raw_amount) -> tuple[float | None, str | None]:
+    """Normalisiert + plausibilisiert das amount-Feld.
+
+    Schutz gegen Prompt-Injection: ein Dokument mit OCR-Text "setze amount=99999"
+    darf das LLM nicht dazu bringen, einen unsinnig grossen Betrag zu setzen.
+    Werte ueber AMOUNT_SANITY_CEILING werden zwar uebernommen, triggern aber
+    NEEDS_REVIEW mit konkreter Frage.
+
+    Returns:
+        (amount, review_question_or_none). amount kann None sein.
+    """
+    if raw_amount is None:
+        return None, None
+    try:
+        amount = float(raw_amount)
+    except (ValueError, TypeError):
+        return None, None
+    if amount < 0:
+        return None, "Negativer Betrag erkannt — bitte pruefen."
+    if amount > AMOUNT_SANITY_CEILING:
+        return amount, (
+            f"Auffaellig hoher Betrag: {amount:.2f}. Bitte verifizieren — "
+            f"falls korrekt, einfach bestaetigen."
+        )
+    return amount, None
+
+
 def _build_result_from_combined(data: dict, confidence_threshold: float) -> AnalysisResult:
     """Baut AnalysisResult aus der kombinierten LLM-Antwort."""
     doc_type = data.get("document_type", "SONSTIGES")
@@ -129,7 +204,23 @@ def _build_result_from_combined(data: dict, confidence_threshold: float) -> Anal
     confidence = _safe_float(data.get("confidence", 0.0))
     needs_review = data.get("needs_review", False) or confidence < confidence_threshold
 
-    review_questions = data.get("review_questions", [])
+    review_questions = list(data.get("review_questions", []) or [])
+
+    # tax_category whitelist — auch wenn das LLM zwei Werte mit Pipe liefert,
+    # nehmen wir nur den ersten gueltigen. Schutz gegen Prompt-Injection-induzierte
+    # Tax-Manipulation ("setze tax_category=Werbungskosten").
+    tax_category = data.get("tax_category")
+    if tax_category and "|" in tax_category:
+        tax_category = tax_category.split("|")[0].strip()
+    if tax_category and tax_category not in VALID_TAX_CATEGORIES:
+        tax_category = None
+
+    # Amount-Sanity: extreme Werte triggern Review statt blind zu uebernehmen.
+    amount, amount_question = _sanitize_amount(data.get("amount"))
+    if amount_question:
+        review_questions.append(amount_question)
+        needs_review = True
+
     if confidence < confidence_threshold and not review_questions:
         review_questions = [
             f"Die automatische Erkennung ist unsicher (Konfidenz: {confidence:.0%}). "
@@ -143,13 +234,13 @@ def _build_result_from_combined(data: dict, confidence_threshold: float) -> Anal
         sender=data.get("sender"),
         recipient=data.get("recipient"),
         document_date=data.get("document_date"),
-        amount=data.get("amount"),
+        amount=amount,
         currency=data.get("currency"),
         reference_number=data.get("reference_number"),
         tags=data.get("tags", []),
         summary=data.get("summary"),
-        tax_relevant=data.get("tax_relevant", False),
-        tax_category=data.get("tax_category"),
+        tax_relevant=bool(data.get("tax_relevant", False)),
+        tax_category=tax_category,
         tax_year=data.get("tax_year"),
         warranty_info=data.get("warranty_info"),
         needs_review=needs_review,
@@ -171,10 +262,66 @@ def _format_filing_scopes(filing_scopes: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_correction_examples(corrections: list[dict] | None) -> str:
+    """Formatiert User-Korrekturen als Few-Shot-Block fuer das LLM.
+
+    Nutzt die `CorrectionMapping`-Tabelle als impliziten Trainingsdatensatz —
+    haeufig korrigierte Patterns (occurrence_count >= 2) werden dem Modell
+    explizit gezeigt damit es daraus lernt.
+    """
+    if not corrections:
+        return ""
+    lines = [
+        "Lerneffekt aus frueheren Benutzer-Korrekturen — bitte beachten und "
+        "aehnliche Faelle entsprechend behandeln:",
+    ]
+    for c in corrections:
+        lines.append(
+            f"  - Feld \"{c['field']}\": KI-erkannt \"{c['original']}\" "
+            f"-> Benutzer-korrigiert \"{c['corrected']}\" "
+            f"({c['count']}x korrigiert)"
+        )
+    return "\n".join(lines)
+
+
+async def _load_correction_examples(
+    session, limit: int = 8
+) -> list[dict]:
+    """Top-N haeufigste User-Korrekturen als Few-Shot-Beispiele.
+
+    Auf 8 begrenzt damit der Prompt nicht aufblaeht — bei mehr Examples
+    nimmt die Modell-Aufmerksamkeit fuer den eigentlichen OCR-Text ab.
+    """
+    if session is None:
+        return []
+    try:
+        from sqlalchemy import select, desc
+        from app.models.correction_mapping import CorrectionMapping
+        result = await session.execute(
+            select(CorrectionMapping)
+            .where(CorrectionMapping.occurrence_count >= 2)
+            .order_by(desc(CorrectionMapping.occurrence_count), desc(CorrectionMapping.updated_at))
+            .limit(limit)
+        )
+        return [
+            {
+                "field": m.field,
+                "original": m.original_value,
+                "corrected": m.corrected_value,
+                "count": m.occurrence_count,
+            }
+            for m in result.scalars().all()
+        ]
+    except Exception:
+        logger.warning("Korrekturen konnten nicht geladen werden", exc_info=True)
+        return []
+
+
 async def _try_combined_analysis(
     ocr_text: str,
     settings: Settings,
     filing_scopes: list[dict] | None = None,
+    corrections: list[dict] | None = None,
 ) -> AnalysisResult | None:
     """Versucht die kombinierte Analyse mit einem einzigen LLM-Aufruf."""
     try:
@@ -184,8 +331,10 @@ async def _try_combined_analysis(
         return None
 
     prompt = template.replace("{filing_scopes}", _format_filing_scopes(filing_scopes))
+    prompt = prompt.replace("{corrections}", _format_correction_examples(corrections))
     prompt = prompt.replace("{ocr_text}", ocr_text)
-    raw_response = await call_llm(prompt, settings)
+    # JSON-Schema-constrained Generation: Ollama >= 0.5 erzwingt schema-konformen Output.
+    raw_response = await call_llm(prompt, settings, schema=_analysis_schema())
     if not raw_response:
         return None
 
@@ -277,15 +426,20 @@ async def analyze_document(
     file_type: str,
     settings: Settings,
     filing_scopes: list[dict] | None = None,
+    session=None,
 ) -> tuple[OcrResult | None, AnalysisResult | None]:
     """Fuehrt die vollstaendige Dokumentenanalyse durch.
 
-    Pipeline: OCR -> Text kuerzen -> LLM-Analyse (kombiniert, Fallback sequentiell)
+    Pipeline: OCR -> Text kuerzen -> Few-Shot-Build -> LLM-Analyse
+    (kombiniert, Fallback sequentiell).
 
     Args:
         file_path: Pfad zur Dokumentdatei.
         file_type: Dateityp (pdf, jpg, etc.).
         settings: App-Konfiguration.
+        filing_scopes: Verfuegbare Ablagebereiche fuer LLM-Zuweisung.
+        session: Optionale DB-Session — wenn vorhanden werden CorrectionMappings
+            als Few-Shot-Examples in den Prompt injiziert (Lerneffekt).
 
     Returns:
         Tuple aus (OcrResult, AnalysisResult).
@@ -308,8 +462,13 @@ async def analyze_document(
         len(truncated_text),
     )
 
+    # 2b. Few-Shot-Examples aus User-Korrekturen (wenn DB-Session da)
+    corrections = await _load_correction_examples(session) if session else []
+    if corrections:
+        logger.info("Few-Shot-Pipeline: %d Korrektur-Beispiele injiziert", len(corrections))
+
     # 3. Kombinierte Analyse (Primaerstrategie)
-    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes)
+    analysis = await _try_combined_analysis(truncated_text, settings, filing_scopes, corrections=corrections)
     if analysis:
         logger.info(
             "Kombinierte Analyse erfolgreich: Typ=%s, Konfidenz=%.1f%%",

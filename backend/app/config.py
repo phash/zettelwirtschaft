@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # ChromaDB / RAG
     CHROMADB_HOST: str = "localhost"
     CHROMADB_PORT: int = 8000
-    EMBEDDING_MODEL: str = "nomic-embed-text"
+    EMBEDDING_MODEL: str = "bge-m3"
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 150
     RAG_TOP_K: int = 5
