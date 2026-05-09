@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models.document import Document, DocumentStatus
 from app.services.embedding_service import embed_text
-from app.services.llm_service import call_llm_text, load_prompt_template
+from app.services.llm_service import call_llm, call_llm_text, load_prompt_template
 from app.services.search_service import _sanitize_fts_query
 from app.services.vectorize_service import search_similar_chunks
 
@@ -55,6 +55,67 @@ async def _fts_top_doc_ids(
     except Exception:
         logger.warning("FTS5-Hybrid-Pfad fehlgeschlagen", exc_info=True)
         return []
+
+
+_RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "array",
+            "items": {"type": "number", "minimum": 0, "maximum": 10},
+        },
+    },
+    "required": ["scores"],
+}
+
+
+async def _llm_rerank(
+    chunks: list[dict],
+    question: str,
+    settings: Settings,
+    target_k: int,
+) -> list[dict]:
+    """LLM-basiertes Re-Ranking als optionale Stufe nach Hybrid-Retrieval.
+
+    Sendet alle Kandidaten in EINEM Prompt und laesst das Modell jeden Chunk
+    auf einer 0-10-Skala fuer Relevanz zur Frage bewerten. Schema-Mode
+    erzwingt strukturierten Output. Kombiniert die LLM-Scores additiv mit dem
+    bestehenden RRF-Score und sortiert neu.
+
+    Wird nur aufgerufen wenn `RAG_USE_RERANKER=true` und mehr Kandidaten als
+    target_k vorhanden sind.
+    """
+    if len(chunks) <= target_k:
+        return chunks
+    snippet_list = "\n".join(
+        f"[{i}] {c['text'][:400]}" for i, c in enumerate(chunks)
+    )
+    prompt = (
+        "Bewerte jeden der folgenden Dokumentenausschnitte auf einer Skala von "
+        "0 (gar nicht relevant) bis 10 (sehr relevant) fuer die Frage. Antworte "
+        "ausschliesslich mit JSON: {\"scores\": [score_0, score_1, ...]} — die "
+        "Liste muss exakt so viele Eintraege haben wie es Ausschnitte gibt.\n\n"
+        f"Frage: {question}\n\nAusschnitte:\n{snippet_list}"
+    )
+    try:
+        raw = await call_llm(prompt, settings, schema=_RERANK_SCHEMA)
+        if not raw:
+            return chunks
+        import json as _json
+        scores = _json.loads(raw).get("scores", [])
+        if not scores or len(scores) != len(chunks):
+            return chunks
+        # Kombiniere additiv: LLM-Score (0-10) -> /10 normiert + bestehender RRF
+        for c, s in zip(chunks, scores):
+            try:
+                c["_rrf_score"] = (c.get("_rrf_score") or 0) + (float(s) / 10.0)
+            except (TypeError, ValueError):
+                pass
+        ranked = sorted(chunks, key=lambda c: c.get("_rrf_score", 0), reverse=True)
+        return ranked[:target_k]
+    except Exception:
+        logger.warning("LLM-Reranker fehlgeschlagen, nutze Fallback-RRF", exc_info=True)
+        return chunks[:target_k]
 
 
 def _apply_rrf(
@@ -125,14 +186,23 @@ async def ask_question(
     fts_task = _fts_top_doc_ids(session, question, limit=15, filing_scope_id=filing_scope_id)
     vector_chunks, fts_doc_ids = await asyncio.gather(vector_task, fts_task)
 
+    # Reranker-Aware: wenn LLM-Reranker aktiv ist, hier mehr Kandidaten halten
+    # damit der Reranker eine echte Auswahl hat. Sonst direkt auf top_k stutzen.
+    rrf_target = settings.RAG_TOP_K * 2 if settings.RAG_USE_RERANKER else settings.RAG_TOP_K
     if vector_chunks and fts_doc_ids:
-        chunks = _apply_rrf(vector_chunks, fts_doc_ids, target_k=settings.RAG_TOP_K)
+        chunks = _apply_rrf(vector_chunks, fts_doc_ids, target_k=rrf_target)
         logger.info(
             "Hybrid-Retrieval: %d vec + %d fts -> %d nach RRF",
             len(vector_chunks), len(fts_doc_ids), len(chunks),
         )
     else:
-        chunks = (vector_chunks or [])[: settings.RAG_TOP_K]
+        chunks = (vector_chunks or [])[:rrf_target]
+
+    # Optionales LLM-basiertes Re-Ranking (RAG_USE_RERANKER=true)
+    if settings.RAG_USE_RERANKER and len(chunks) > settings.RAG_TOP_K:
+        before = len(chunks)
+        chunks = await _llm_rerank(chunks, question, settings, target_k=settings.RAG_TOP_K)
+        logger.info("LLM-Reranker: %d -> %d Chunks", before, len(chunks))
 
     if not chunks:
         msg = (

@@ -317,6 +317,53 @@ async def _load_correction_examples(
         return []
 
 
+_VERIFIER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issues": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["issues"],
+}
+
+
+async def _verify_analysis(
+    ocr_text: str,
+    analysis: "AnalysisResult",
+    settings: Settings,
+) -> list[str]:
+    """Zweiter LLM-Pass — validiert die extrahierten Felder.
+
+    Bekommt den OCR-Text + die JSON-Antwort vom Erst-Pass und gibt eine Liste
+    von konkreten Auffaelligkeiten zurueck (leere Liste = alles ok). Issues
+    werden als zusaetzliche review_questions in das Ergebnis gemerged.
+    """
+    summary_lines = [
+        f"document_type = {analysis.document_type}",
+        f"sender = {analysis.sender}",
+        f"document_date = {analysis.document_date}",
+        f"amount = {analysis.amount} {analysis.currency or ''}",
+        f"tax_relevant = {analysis.tax_relevant}",
+        f"tax_category = {analysis.tax_category}",
+    ]
+    prompt = (
+        "Du bist ein Validator fuer KI-extrahierte Beleg-Felder. Pruefe ob die "
+        "folgenden Werte zum Dokumentinhalt passen. Antworte ausschliesslich "
+        "mit JSON: {\"issues\": [\"...\", ...]}. Wenn alles plausibel ist, "
+        "leeres Array. Issues bitte konkret formulieren als Frage an den User.\n\n"
+        f"Dokument-Text (gekuerzt):\n{ocr_text[:1500]}\n\n"
+        "Extrahierte Felder:\n" + "\n".join(summary_lines)
+    )
+    try:
+        raw = await call_llm(prompt, settings, schema=_VERIFIER_SCHEMA)
+        if not raw:
+            return []
+        import json as _json
+        return list(_json.loads(raw).get("issues", []))[:5]
+    except Exception:
+        logger.warning("Verifier-Pass fehlgeschlagen", exc_info=True)
+        return []
+
+
 async def _try_combined_analysis(
     ocr_text: str,
     settings: Settings,
@@ -475,6 +522,18 @@ async def analyze_document(
             analysis.document_type,
             analysis.confidence * 100,
         )
+        # 3b. Optional Verifier-Pass bei niedriger Konfidenz
+        if (
+            settings.LLM_USE_VERIFIER
+            and analysis.confidence < settings.LLM_VERIFIER_THRESHOLD
+        ):
+            issues = await _verify_analysis(truncated_text, analysis, settings)
+            if issues:
+                analysis.needs_review = True
+                for issue in issues:
+                    if issue not in analysis.review_questions:
+                        analysis.review_questions.append(issue)
+                logger.info("Verifier hat %d Probleme gefunden", len(issues))
         return ocr_result, analysis
 
     # 4. Fallback: Sequentielle Analyse

@@ -31,7 +31,7 @@ $script:Step           = 0
 $script:IsUpdate       = $false
 $script:BackupDir      = ""
 $script:ExistingInstall = $false
-$script:Config         = @{ Port=8080; WatchEnabled=$false; Model="llama3.2"; PinEnabled=$false; PinCode="" }
+$script:Config         = @{ Port=8080; WatchEnabled=$false; Model="qwen2.5:7b-instruct"; PinEnabled=$false; PinCode="" }
 $script:Checks         = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; RAM=0; FreeGB=0 }
 $script:Job            = $null
 $script:Phase          = 0
@@ -452,12 +452,12 @@ function Show-Configuration {
     $script:cmbModel = New-Object System.Windows.Forms.ComboBox
     $script:cmbModel.Location = [System.Drawing.Point]::new(180, $y); $script:cmbModel.Size = [System.Drawing.Size]::new(160, 26)
     $script:cmbModel.DropDownStyle = "DropDownList"
-    $script:cmbModel.Items.AddRange(@("llama3.2", "llama3.1", "mistral"))
-    $script:cmbModel.SelectedItem = if ($script:Checks.RAM -gt 16) { "llama3.1" } else { "llama3.2" }
+    $script:cmbModel.Items.AddRange(@("qwen2.5:7b-instruct", "llama3.2", "llama3.1", "mistral"))
+    $script:cmbModel.SelectedItem = if ($script:Checks.RAM -gt 12) { "qwen2.5:7b-instruct" } else { "llama3.2" }
     $pnlContent.Controls.Add($script:cmbModel)
     $lblMI = New-Object System.Windows.Forms.Label
     $lblMI.Location = [System.Drawing.Point]::new(350, $y+3); $lblMI.Size = [System.Drawing.Size]::new(240, 22); $lblMI.ForeColor = $cSub
-    $lblMI.Text = if ($script:Checks.RAM -gt 16) { "Empfohlen: llama3.1 (>16 GB)" } else { "Empfohlen: llama3.2" }
+    $lblMI.Text = if ($script:Checks.RAM -gt 12) { "Empfohlen: qwen2.5:7b-instruct (gute JSON-Treue + DE-Belege)" } else { "Empfohlen: llama3.2 (knapper RAM)" }
     $pnlContent.Controls.Add($lblMI)
     $y += 50
 
