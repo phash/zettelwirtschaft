@@ -1,5 +1,6 @@
 # Build stage
-FROM node:20-alpine AS build
+# Node 22 LTS (Node 20 EOL April 2026, Vite 7 erfordert Node 20.19+)
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
