@@ -284,10 +284,10 @@ export async function deleteFilingScope(id) {
 
 // === Chat (KI-Assistent) ===
 
-export async function askQuestion(question, filingScopeId = null) {
+export async function askQuestion(question, filingScopeId = null, signal = null) {
   const body = { question }
   if (filingScopeId) body.filing_scope_id = filingScopeId
-  const { data } = await api.post('/chat', body, { timeout: 60000 })
+  const { data } = await api.post('/chat', body, { timeout: 60000, signal })
   return data
 }
 

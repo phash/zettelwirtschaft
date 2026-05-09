@@ -120,7 +120,8 @@ class TestDocumentDeleteEndpoint:
         await db_session.commit()
 
         resp = await client.delete(f"/api/documents/{doc.id}")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
+        assert resp.text == ""
 
         # Should not appear in list
         list_resp = await client.get("/api/documents")

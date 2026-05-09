@@ -241,12 +241,12 @@ async def update_document(
     return DocumentResponse.model_validate(document)
 
 
-@router.delete("/documents/{document_id}")
+@router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Soft-Delete: Setzt Status auf DELETED."""
+):
+    """Soft-Delete: Setzt Status auf DELETED. Antwort: 204 No Content (M-23)."""
     result = await db.execute(
         select(Document).where(Document.id == document_id)
     )
@@ -272,7 +272,8 @@ async def delete_document(
     except Exception:
         logger.warning("Vektoren konnten nicht geloescht werden fuer %s", document_id)
 
-    return {"message": "Dokument geloescht", "id": document_id}
+    from fastapi import Response
+    return Response(status_code=204)
 
 
 @router.get("/documents/{document_id}/file")

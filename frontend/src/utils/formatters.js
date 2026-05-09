@@ -1,16 +1,22 @@
 export function formatDate(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleDateString('de-DE')
+  if (d == null || d === '') return '-'
+  const dt = new Date(d)
+  if (Number.isNaN(dt.getTime())) return '-'
+  return dt.toLocaleDateString('de-DE')
 }
 
 export function formatDateTime(d) {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('de-DE')
+  if (d == null || d === '') return '-'
+  const dt = new Date(d)
+  if (Number.isNaN(dt.getTime())) return '-'
+  return dt.toLocaleString('de-DE')
 }
 
 export function formatAmount(val, currency = 'EUR') {
-  if (val == null) return '-'
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency }).format(val)
+  if (val == null || val === '') return '-'
+  const n = typeof val === 'number' ? val : parseFloat(val)
+  if (!Number.isFinite(n)) return '-'
+  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(n)
 }
 
 export function formatBytes(bytes) {
