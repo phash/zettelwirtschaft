@@ -45,3 +45,15 @@ Thumbs.db
 
 # PindeX index data
 .pindex/
+
+# Claude Code local state
+.claude/
+.mcp.json
+
+# Playwright artifacts
+e2e/playwright-report/
+e2e/test-results/
+
+# Lokale Feedback-Screenshots / temp ZIPs
+feedback/
+zettelwirtschaft-local.zip
