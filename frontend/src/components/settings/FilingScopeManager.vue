@@ -1,23 +1,23 @@
 <script setup>
-import { ref } from 'vue'
-import { getFilingScopes, createFilingScope, updateFilingScope, deleteFilingScope } from '../../services/api'
+import { ref, onMounted } from 'vue'
+import { createFilingScope, updateFilingScope, deleteFilingScope } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
+import { useFilingScopes } from '../../composables/useFilingScopes'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
 
 const notify = useNotificationStore()
 
-const scopes = ref([])
+// H-FE-5: scopes aus dem shared Composable. CRUD-Operationen invalidieren
+// den Cache, sodass alle anderen Views (Documents, Search, Tax, Chat, Detail)
+// die Aenderung beim naechsten Mount oder direkt ueber Reactivity sehen.
+const { scopes, ensureLoaded, invalidate } = useFilingScopes()
 const scopeForm = ref({ name: '', description: '', keywords: '', is_default: false, color: '#3B82F6' })
 const editingScopeId = ref(null)
 const showScopeForm = ref(false)
 const deletingScopeId = ref(null)
 
 async function loadScopes() {
-  try {
-    scopes.value = await getFilingScopes()
-  } catch {
-    // ignore
-  }
+  await ensureLoaded(true)
 }
 
 function startNewScope() {
@@ -59,7 +59,8 @@ async function saveScope() {
       notify.success('Ablagebereich erstellt.')
     }
     showScopeForm.value = false
-    await loadScopes()
+    invalidate()
+    await ensureLoaded(true)
   } catch (e) {
     notify.error(e.response?.data?.detail || 'Fehler beim Speichern.')
   }
@@ -70,14 +71,18 @@ async function confirmDeleteScope() {
     await deleteFilingScope(deletingScopeId.value)
     notify.success('Ablagebereich gelöscht.')
     deletingScopeId.value = null
-    await loadScopes()
+    invalidate()
+    await ensureLoaded(true)
   } catch (e) {
     notify.error(e.response?.data?.detail || 'Löschen fehlgeschlagen.')
     deletingScopeId.value = null
   }
 }
 
-defineExpose({ loadScopes, scopes })
+// H-FE-4: Kind-Komponente laedt selbst, kein defineExpose-Pattern mehr.
+onMounted(async () => {
+  await ensureLoaded()
+})
 </script>
 
 <template>

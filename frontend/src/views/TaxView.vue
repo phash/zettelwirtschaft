@@ -1,7 +1,8 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
-import { getTaxSummary, getTaxYears, exportTaxPackage, getTaxValidation, getFilingScopes } from '../services/api'
+import { getTaxSummary, getTaxYears, exportTaxPackage, getTaxValidation } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { useFilingScopes } from '../composables/useFilingScopes'
 import StatCard from '../components/common/StatCard.vue'
 import { formatAmount } from '../utils/formatters'
 
@@ -14,7 +15,8 @@ const selectedScope = ref('')
 const summary = ref(null)
 const validation = ref(null)
 const showWarnings = ref(false)
-const filingScopes = ref([])
+// H-FE-5: shared Composable mit Cache.
+const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded } = useFilingScopes()
 
 async function loadYears() {
   try {
@@ -56,7 +58,7 @@ async function doExport() {
 watch([selectedYear, selectedScope], loadSummary)
 
 onMounted(async () => {
-  try { filingScopes.value = await getFilingScopes() } catch {}
+  await ensureScopesLoaded()
   await loadYears()
   await loadSummary()
 })

@@ -31,8 +31,9 @@ class ProcessedEmail(Base):
         Enum(EmailStatus, native_enum=False), nullable=False
     )
     relevance_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # H-ARCH-4: Index fuer Reverse-Lookups.
     processing_job_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

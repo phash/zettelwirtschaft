@@ -54,8 +54,9 @@ class ProcessingJob(Base):
     processing_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # H-ARCH-4: Index fuer Reverse-Lookups (Welche Jobs gehoeren zu Konto X?).
     email_account_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("email_accounts.id", ondelete="SET NULL"), nullable=True
+        Integer, ForeignKey("email_accounts.id", ondelete="SET NULL"), nullable=True, index=True
     )
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)

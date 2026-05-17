@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { getSystemSettings, updateSystemSettings } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
 
@@ -10,7 +10,7 @@ const savingFolders = ref(false)
 
 const emit = defineEmits(['restart-required'])
 
-const props = defineProps({
+defineProps({
   installPath: { type: String, default: '' },
 })
 
@@ -56,7 +56,10 @@ function resetHostPaths() {
   folderSettings.value.export_dir = ''
 }
 
-defineExpose({ loadFolderSettings })
+// H-FE-4: Komponente laedt selbst, kein defineExpose-Pattern mehr.
+onMounted(() => {
+  loadFolderSettings()
+})
 </script>
 
 <template>

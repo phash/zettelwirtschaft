@@ -1,12 +1,12 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import EmailAccountForm from './EmailAccountForm.vue'
 import { getEmailAccounts, createEmailAccount, updateEmailAccount, deleteEmailAccount, testEmailConnection, fetchEmailsNow, getEmailHistory } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
 import { formatDateTime } from '../../utils/formatters'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
 
-const props = defineProps({
+defineProps({
   scopes: { type: Array, default: () => [] },
 })
 
@@ -128,7 +128,10 @@ function statusLabel(status) {
   return 'Fehler'
 }
 
-defineExpose({ loadAccounts })
+// H-FE-4: Komponente laedt selbst.
+onMounted(() => {
+  loadAccounts()
+})
 </script>
 
 <template>

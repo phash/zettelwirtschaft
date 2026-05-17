@@ -53,6 +53,9 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
+    # H-ARCH: 013 prüft ob die FK + Indizes für chat_messages.filing_scope_id existieren.
+    if has_index(cur, "ix_chat_messages_filing_scope_id"):
+        return "013_fk_indexes_consistency"
     # B5: 012 prüft Heartbeat-Spalte auf processing_jobs.
     if has_column(cur, "processing_jobs", "processing_started_at"):
         return "012_add_processing_started_at"

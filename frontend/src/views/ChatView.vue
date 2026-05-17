@@ -1,14 +1,16 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { askQuestion, getChatHistory, clearChatHistory, getFilingScopes } from '../services/api'
+import { askQuestion, getChatHistory, clearChatHistory } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { useFilingScopes } from '../composables/useFilingScopes'
 
 const notify = useNotificationStore()
 const messages = ref([])
 const question = ref('')
 const loading = ref(false)
 const loadingHistory = ref(true)
-const scopes = ref([])
+// H-FE-5: scopes aus dem shared Composable — Cache verhindert redundante Calls.
+const { scopes, ensureLoaded } = useFilingScopes()
 const selectedScopeId = ref(null)
 const messagesContainer = ref(null)
 
@@ -33,11 +35,7 @@ async function loadHistory() {
 }
 
 async function loadScopes() {
-  try {
-    scopes.value = await getFilingScopes()
-  } catch {
-    // ignore
-  }
+  await ensureLoaded()
 }
 
 // AbortController fuer laufende Frage — User kann via "Abbrechen"-Button

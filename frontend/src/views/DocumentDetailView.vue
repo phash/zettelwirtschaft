@@ -3,7 +3,8 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
-import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, getFilingScopes, createFilingScope } from '../services/api'
+import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope } from '../services/api'
+import { useFilingScopes } from '../composables/useFilingScopes'
 import { useNotificationStore } from '../stores/notifications'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatBytes } from '../utils/formatters'
@@ -17,7 +18,8 @@ const loading = ref(true)
 const saving = ref(false)
 const showDeleteDialog = ref(false)
 const newTag = ref('')
-const filingScopes = ref([])
+// H-FE-5: scopes aus dem shared Composable mit Cache + Invalidation.
+const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded, invalidate: invalidateScopes } = useFilingScopes()
 
 // Editable fields
 const editForm = ref({})
@@ -145,7 +147,8 @@ async function quickAddScope() {
   creatingScopeInline.value = true
   try {
     const created = await createFilingScope({ name: newScopeName.value.trim(), keywords: [] })
-    filingScopes.value = await getFilingScopes()
+    invalidateScopes()
+    await ensureScopesLoaded(true)
     editForm.value.filing_scope_id = created.id
     newScopeName.value = ''
     showNewScope.value = false
@@ -178,7 +181,7 @@ watch(() => route.params.id, () => {
 })
 
 onMounted(async () => {
-  try { filingScopes.value = await getFilingScopes() } catch {}
+  await ensureScopesLoaded()
   loadDocument()
 })
 </script>

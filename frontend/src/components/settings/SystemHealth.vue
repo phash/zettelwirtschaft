@@ -64,7 +64,7 @@ onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
 })
 
-defineExpose({ loadHealth, health, installPath })
+// H-FE-4: defineExpose entfernt — Parent kommuniziert via @health-loaded Event.
 </script>
 
 <template>

@@ -1,10 +1,11 @@
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
-import { getDocuments, getFilingScopes, updateDocument } from '../services/api'
+import { getDocuments, updateDocument } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { useFilingScopes } from '../composables/useFilingScopes'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatAmount } from '../utils/formatters'
 
@@ -25,7 +26,8 @@ const filterTaxRelevant = ref(null)
 const filterScope = ref('')
 const sortBy = ref('created_at')
 const sortOrder = ref('desc')
-const filingScopes = ref([])
+// H-FE-5: scopes aus Composable
+const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded } = useFilingScopes()
 
 async function loadDocuments() {
   loading.value = true
@@ -86,21 +88,24 @@ function sortIcon(column) {
   return sortOrder.value === 'asc' ? ' \u2191' : ' \u2193'
 }
 
-let skipPageWatch = false
-
+// H-FE-6: Watcher race fix. Vorher: zwei Watcher mit `skipPageWatch`-Flag,
+// die einander triggerten. Jetzt: Filter-Change setzt page=1 oder triggert
+// direkt load — keine Doppellaeufe. page-Watcher behandelt nur User-
+// Pagination (Klick auf Seitenzahlen).
 watch([filterType, filterDateFrom, filterDateTo, filterTaxRelevant, filterScope, sortBy, sortOrder], () => {
-  skipPageWatch = true
-  page.value = 1
-  loadDocuments()
-  nextTick(() => { skipPageWatch = false })
+  if (page.value !== 1) {
+    page.value = 1  // triggert page-Watcher (loadDocuments), genau einmal
+  } else {
+    loadDocuments()
+  }
 })
 
 watch(page, () => {
-  if (!skipPageWatch) loadDocuments()
+  loadDocuments()
 })
 
 onMounted(async () => {
-  try { filingScopes.value = await getFilingScopes() } catch {}
+  await ensureScopesLoaded()
   loadDocuments()
 })
 </script>
@@ -186,8 +191,13 @@ onMounted(async () => {
           <tr
             v-for="doc in documents"
             :key="doc.id"
-            class="cursor-pointer hover:bg-gray-50 transition-colors"
+            role="link"
+            tabindex="0"
+            :aria-label="`Dokument ${doc.title || doc.original_filename} oeffnen`"
+            class="cursor-pointer hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-inset"
             @click="router.push(`/dokumente/${doc.id}`)"
+            @keydown.enter.prevent="router.push(`/dokumente/${doc.id}`)"
+            @keydown.space.prevent="router.push(`/dokumente/${doc.id}`)"
           >
             <td class="px-4 py-3">
               <div class="flex h-8 w-8 items-center justify-center rounded bg-gray-100 text-[10px] font-medium text-gray-500">

@@ -91,8 +91,13 @@ onMounted(loadData)
         <div
           v-for="w in warranties"
           :key="w.id"
-          class="card !p-4 cursor-pointer hover:shadow-md transition-shadow"
+          role="link"
+          tabindex="0"
+          :aria-label="`Garantie ${w.product_name} oeffnen`"
+          class="card !p-4 cursor-pointer hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-primary-500"
           @click="goToDocument(w.document_id)"
+          @keydown.enter.prevent="goToDocument(w.document_id)"
+          @keydown.space.prevent="goToDocument(w.document_id)"
         >
           <div class="flex items-start gap-4">
             <div class="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-500 flex-shrink-0">

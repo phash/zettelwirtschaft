@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { createBackup, getBackups, optimizeDb, rebuildIndex, rebuildVectors } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
 import { formatBytes, formatDate } from '../../utils/formatters'
@@ -74,7 +74,10 @@ function formatBackupDate(d) {
   return new Date(d).toLocaleString('de-DE')
 }
 
-defineExpose({ loadBackups })
+// H-FE-4: Komponente laedt selbst.
+onMounted(() => {
+  loadBackups()
+})
 </script>
 
 <template>

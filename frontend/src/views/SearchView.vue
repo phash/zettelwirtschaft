@@ -3,8 +3,9 @@ import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
-import { searchDocuments, createSavedSearch, getSavedSearches, deleteSavedSearch, getFilingScopes } from '../services/api'
+import { searchDocuments, createSavedSearch, getSavedSearches, deleteSavedSearch } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { useFilingScopes } from '../composables/useFilingScopes'
 import { typeLabels } from '../constants/documentTypes'
 import { formatDate, formatAmount } from '../utils/formatters'
 
@@ -17,7 +18,8 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(25)
 const facets = ref({ document_types: {}, years: {}, top_issuers: {}, filing_scopes: {} })
-const filingScopes = ref([])
+// H-FE-5: shared Composable.
+const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded } = useFilingScopes()
 const loading = ref(false)
 const savedSearches = ref([])
 
@@ -148,7 +150,7 @@ onMounted(async () => {
   if (route.query.q) {
     query.value = route.query.q
   }
-  try { filingScopes.value = await getFilingScopes() } catch {}
+  await ensureScopesLoaded()
   doSearch()
   loadSavedSearches()
 })
