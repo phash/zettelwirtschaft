@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from pathlib import Path
 
 import chromadb
 
@@ -16,8 +17,25 @@ logger = logging.getLogger("zettelwirtschaft.vectorize")
 SENTENCE_END_RE = re.compile(r"[.!?]\s|\n")
 
 
-def _get_chroma_client(settings: Settings) -> chromadb.HttpClient:
-    """Erstellt einen ChromaDB HTTP-Client."""
+def _resolve_chroma_path(settings: Settings) -> Path:
+    """Native-Mode: Pfad fuer PersistentClient ableiten.
+
+    1. Wenn CHROMADB_PATH explizit gesetzt: nutzen.
+    2. Sonst: <ARCHIVE_DIR-Parent>/chromadb (also data/chromadb bei Default).
+    """
+    if settings.CHROMADB_PATH:
+        return Path(settings.CHROMADB_PATH)
+    # ARCHIVE_DIR ist z.B. "./data/archive" — chromadb daneben legen
+    archive = Path(settings.ARCHIVE_DIR)
+    return archive.parent / "chromadb"
+
+
+def _get_chroma_client(settings: Settings):
+    """Erstellt einen ChromaDB-Client. Embedded (Native) oder HTTP (Docker)."""
+    if settings.CHROMADB_MODE == "embedded":
+        path = _resolve_chroma_path(settings)
+        path.mkdir(parents=True, exist_ok=True)
+        return chromadb.PersistentClient(path=str(path))
     return chromadb.HttpClient(
         host=settings.CHROMADB_HOST,
         port=settings.CHROMADB_PORT,
@@ -142,7 +160,13 @@ _REACHABLE_TTL_NEGATIVE = 3.0
 
 
 async def _check_chromadb_reachable_async(settings: Settings) -> bool:
-    """Asynchroner Erreichbarkeitscheck fuer ChromaDB mit TTL-Cache."""
+    """Asynchroner Erreichbarkeitscheck fuer ChromaDB mit TTL-Cache.
+
+    Native (CHROMADB_MODE=embedded): immer True — Chroma laeuft in-process.
+    """
+    if settings.CHROMADB_MODE == "embedded":
+        return True
+
     global _reachable_cache
     import time
     import httpx as _httpx
@@ -172,7 +196,10 @@ def _check_chromadb_reachable(settings: Settings) -> bool:
 
     Wer im async-Kontext laeuft, soll `_check_chromadb_reachable_async`
     verwenden — das ist deutlich effizienter und nutzt TTL-Cache.
+    Native (embedded): immer True.
     """
+    if settings.CHROMADB_MODE == "embedded":
+        return True
     import httpx as _httpx
     try:
         resp = _httpx.get(

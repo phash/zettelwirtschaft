@@ -1,0 +1,4 @@
+# Build-Dependencies fuer Native-Windows-Distribution.
+# Wird zusaetzlich zu requirements.txt installiert wenn pyinstaller laeuft.
+
+pyinstaller>=6.6,<7

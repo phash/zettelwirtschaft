@@ -1,19 +1,61 @@
+import os
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
+
+
+# Native-Windows-Setup: ein optionaler TOML-Pfad ueber ZETTELWIRTSCHAFT_CONFIG.
+# Wenn die Datei existiert, hat TOML Vorrang vor .env (aber Env-Vars selbst
+# ueberschreiben TOML — z.B. fuer Tests + Docker-Compose).
+# Wenn nicht gesetzt oder Datei fehlt, bleibt der bestehende .env-Pfad aktiv.
+_TOML_PATH = os.environ.get("ZETTELWIRTSCHAFT_CONFIG", "")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        toml_file=_TOML_PATH if (_TOML_PATH and os.path.exists(_TOML_PATH)) else None,
+        extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Reihenfolge: init > env > dotenv > toml > secrets.
+        # ENV-Vars haben Vorrang vor TOML (wichtig fuer Tests, Docker-Compose,
+        # Override im Service-Manager). TOML hat Vorrang vor .env, weil Native
+        # ohne .env laeuft.
+        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings, dotenv_settings]
+        if cls.model_config.get("toml_file"):
+            sources.append(TomlConfigSettingsSource(settings_cls))
+        sources.append(file_secret_settings)
+        return tuple(sources)
+
+    # Native-Mode HTTP-Bind (in Docker wird uvicorn ueber entrypoint.sh mit
+    # 0.0.0.0:8000 gestartet; in Native ueber app.entrypoint mit diesen Werten).
+    SERVER_HOST: str = "0.0.0.0"
+    SERVER_PORT: int = 8080
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/zettelwirtschaft.db"
     UPLOAD_DIR: str = "./data/uploads"
     WATCH_DIR: str = "./data/watch"
     ARCHIVE_DIR: str = "./data/archive"
     EXPORT_DIR: str = ""  # Leer = deaktiviert; absoluter Pfad zu einem externen Zielordner
+    # Optional: Pfad zum Frontend-Build (Native: vom Installer gesetzt).
+    # Leer = nicht serven (Docker-Pfad ueber nginx).
+    FRONTEND_DIST_DIR: str = ""
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
@@ -37,8 +79,14 @@ class Settings(BaseSettings):
     PIN_SESSION_TIMEOUT_MINUTES: int = 1440
 
     # ChromaDB / RAG
+    # Native-Mode: "embedded" laed Chroma als PersistentClient in-process (kein HTTP-Service noetig).
+    # Docker-Mode: "http" spricht den separaten chromadb-Container an.
+    CHROMADB_MODE: str = "http"  # "embedded" | "http"
     CHROMADB_HOST: str = "localhost"
     CHROMADB_PORT: int = 8000
+    # Bei CHROMADB_MODE=embedded: Pfad fuer PersistentClient (Default: <DATA_DIR>/chromadb).
+    # Leer = Auto-Default unter ARCHIVE_DIR/.. (data/chromadb).
+    CHROMADB_PATH: str = ""
     EMBEDDING_MODEL: str = "bge-m3"
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 150

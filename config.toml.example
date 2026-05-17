@@ -1,0 +1,68 @@
+# Zettelwirtschaft - Native-Konfiguration (Windows)
+# Kopiere diese Datei nach %LOCALAPPDATA%\Zettelwirtschaft\config.toml
+# oder dem im Setup gewaehlten Pfad. Das Backend liest ZETTELWIRTSCHAFT_CONFIG
+# als Pfad zur aktuellen Datei (vom Installer im Service-ENV gesetzt).
+#
+# Aenderungen werden nach Service-Neustart wirksam.
+
+# ---- HTTP-Server ----
+# host = "0.0.0.0" macht das Frontend aus dem LAN erreichbar
+# (Windows-Firewall-Regel wird vom Installer eingerichtet).
+# Setze host = "127.0.0.1" um Zettelwirtschaft nur lokal nutzbar zu machen.
+SERVER_HOST = "0.0.0.0"
+SERVER_PORT = 8080
+
+# ---- Datenbank + Verzeichnisse ----
+# Diese Pfade duerfen absolut oder relativ sein. Bei einem Setup-Run schreibt
+# der Installer hier in der Regel absolute Pfade zum gewaehlten Datenordner.
+DATABASE_URL = "sqlite+aiosqlite:///C:/Users/<USER>/Documents/Zettelwirtschaft/data/zettelwirtschaft.db"
+UPLOAD_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/uploads"
+ARCHIVE_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/archive"
+THUMBNAIL_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/thumbnails"
+WATCH_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/watch"
+EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-Sync.
+
+# ---- KI / Ollama ----
+OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)
+OLLAMA_MODEL = "qwen2.5:7b-instruct"
+OLLAMA_TIMEOUT = 300
+OLLAMA_MAX_RETRIES = 2
+
+# ---- OCR ----
+OCR_LANGUAGES = "deu+eng"
+CONFIDENCE_THRESHOLD = 0.7
+MAX_OCR_PAGES = 10
+
+# ---- Upload-Limits ----
+MAX_UPLOAD_SIZE_MB = 50
+ALLOWED_FILE_TYPES = "pdf,jpg,jpeg,png,tiff,bmp"
+
+# ---- Logging ----
+LOG_LEVEL = "INFO"
+
+# ---- PIN-Schutz ----
+# In der Native-Version aktiviert der Installer den PIN per Default und
+# generiert einen 6-stelligen Code, der dem User direkt nach Installation
+# angezeigt wird.
+PIN_ENABLED = true
+PIN_CODE = "<vom Installer generiert>"
+PIN_SESSION_TIMEOUT_MINUTES = 1440
+
+# ---- ChromaDB / RAG ----
+# Native: embedded. Chroma laeuft als PersistentClient im Backend-Prozess —
+# kein separater Service mehr.
+CHROMADB_MODE = "embedded"
+CHROMADB_PATH = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/chromadb"
+EMBEDDING_MODEL = "bge-m3"
+
+RAG_CHUNK_SIZE = 800
+RAG_CHUNK_OVERLAP = 150
+RAG_TOP_K = 5
+RAG_USE_RERANKER = false
+
+LLM_USE_VERIFIER = false
+LLM_VERIFIER_THRESHOLD = 0.5
+
+# ---- E-Mail-Anbindung ----
+# Fernet-Key fuer IMAP-Passwoerter (vom Installer kryptografisch generiert).
+EMAIL_ENCRYPTION_KEY = "<vom Installer generiert>"

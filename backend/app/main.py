@@ -3,6 +3,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Native-Windows: Tesseract + poppler aus gebundeltem bin/-Ordner laden, BEVOR
+# pdf2image/pytesseract irgendwo importiert werden. Im Docker/Linux no-op.
+from app.bin_paths import configure_bundled_binaries
+configure_bundled_binaries()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -314,3 +319,26 @@ app.include_router(notifications_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
+
+
+# Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.
+# Damit entfaellt der separate nginx-Container. FRONTEND_DIST_DIR wird vom
+# Installer auf `<install-dir>/frontend/dist` gesetzt; im Dev/Docker leer.
+# WICHTIG: Mount NACH allen `/api`-Routern, sonst werden API-Calls von
+# StaticFiles abgefangen (404 oder index.html).
+def _mount_frontend() -> None:
+    from fastapi.staticfiles import StaticFiles
+
+    dist_dir = _settings.FRONTEND_DIST_DIR
+    if not dist_dir:
+        return
+    dist_path = Path(dist_dir)
+    if not dist_path.exists():
+        return
+
+    # html=True liefert index.html bei Pfaden ohne Endung -> SPA-Routing
+    # funktioniert (alle nicht-/api/-URLs landen im Vue-Router).
+    app.mount("/", StaticFiles(directory=str(dist_path), html=True), name="frontend")
+
+
+_mount_frontend()
