@@ -53,6 +53,9 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
+    # B5: 012 prüft Heartbeat-Spalte auf processing_jobs.
+    if has_column(cur, "processing_jobs", "processing_started_at"):
+        return "012_add_processing_started_at"
     if has_index(cur, "ix_notifications_is_read"):
         return "011_add_performance_indexes"
     # Migration 010 fixt email_accounts.filing_scope_id von Integer auf VARCHAR(36)

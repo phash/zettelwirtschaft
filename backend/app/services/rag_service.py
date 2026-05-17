@@ -21,6 +21,25 @@ logger = logging.getLogger("zettelwirtschaft.rag")
 RRF_K = 60
 
 
+def _sanitize_for_prompt(text: str) -> str:
+    """B6: Entfernt die Delimiter-Tags des Prompt-Templates aus User-Daten.
+
+    Das RAG-Template wrappt OCR-Chunks zwischen <document_excerpts>...</document_excerpts>
+    und die User-Frage zwischen <user_question>...</user_question>. Wuerde ein
+    Dokument oder eine User-Eingabe diese Tags selbst enthalten, koennte sie aus
+    dem Wrap ausbrechen und neue Instruktionen einschmuggeln. Verhindern wir,
+    indem wir die Tags entschaerfen (Spitze Klammern ersetzen).
+    """
+    if not text:
+        return ""
+    return (
+        text.replace("<document_excerpts>", "&lt;document_excerpts&gt;")
+        .replace("</document_excerpts>", "&lt;/document_excerpts&gt;")
+        .replace("<user_question>", "&lt;user_question&gt;")
+        .replace("</user_question>", "&lt;/user_question&gt;")
+    )
+
+
 async def _fts_top_doc_ids(
     session: AsyncSession,
     query: str,
@@ -230,13 +249,16 @@ async def ask_question(
     # 3. Dokument-Infos laden — DELETED-Filter haengt nur an der DB,
     # daher hier zusaetzlich pruefen und Chunks zu geloeschten Docs verwerfen
     # (deckt Geister-Chunks ab, falls delete_document_vectors gefehlschlagen ist).
+    # B7: Bei aktivem Scope-Filter auch DB-seitig filtern. Notwendig fuer den
+    # ChromaDB-Fallback-Pfad ohne Metadata-Filter (alte Chunks vor Migration 005).
     doc_ids = list(OrderedDict.fromkeys(c["doc_id"] for c in chunks))
-    result = await session.execute(
-        select(Document).where(
-            Document.id.in_(doc_ids),
-            Document.status != DocumentStatus.DELETED,
-        )
+    query = select(Document).where(
+        Document.id.in_(doc_ids),
+        Document.status != DocumentStatus.DELETED,
     )
+    if filing_scope_id:
+        query = query.where(Document.filing_scope_id == filing_scope_id)
+    result = await session.execute(query)
     docs_by_id = {str(d.id): d for d in result.scalars().all()}
 
     filtered_chunks = [c for c in chunks if c["doc_id"] in docs_by_id]
@@ -248,6 +270,9 @@ async def ask_question(
         }
 
     # 4. Kontext aufbauen
+    # B6: Chunk-Inhalte werden sanitiert, damit OCR-Text mit Tag-Injection
+    # (</document_excerpts>...<user_question>...</user_question>...) nicht aus
+    # dem Template-Wrap ausbrechen und Anweisungen an das LLM einschmuggeln kann.
     context_parts = []
     source_doc_ids = OrderedDict()
     for i, chunk in enumerate(filtered_chunks):
@@ -255,9 +280,12 @@ async def ask_question(
         doc_label = f"Dok. {len(source_doc_ids) + 1}" if chunk["doc_id"] not in source_doc_ids else f"Dok. {list(source_doc_ids.keys()).index(chunk['doc_id']) + 1}"
         if chunk["doc_id"] not in source_doc_ids:
             source_doc_ids[chunk["doc_id"]] = doc
-        context_parts.append(f"[{doc_label}] {chunk['text']}")
+        safe_text = _sanitize_for_prompt(chunk["text"])
+        context_parts.append(f"[{doc_label}] {safe_text}")
 
     context = "\n\n---\n\n".join(context_parts)
+    # User-Frage sanitieren (gleicher Mechanismus)
+    safe_question = _sanitize_for_prompt(question)
 
     # 5. Prompt aufbauen und LLM aufrufen
     try:
@@ -268,7 +296,7 @@ async def ask_question(
             "Dokumentenausschnitte:\n{context}\n\nFrage: {question}"
         )
 
-    prompt = prompt_template.replace("{context}", context).replace("{question}", question)
+    prompt = prompt_template.replace("{context}", context).replace("{question}", safe_question)
     answer = await call_llm_text(prompt, settings)
 
     if not answer:

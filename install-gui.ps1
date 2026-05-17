@@ -467,19 +467,28 @@ function Show-Configuration {
     $pnlContent.Controls.Add($sep)
     $y += 15
 
-    # PIN
+    # PIN (B1: per Default aktiviert, auto-generierter 6-stelliger PIN vorbefuellt)
     $script:chkPin = New-Object System.Windows.Forms.CheckBox
     $script:chkPin.Location = [System.Drawing.Point]::new(30, $y); $script:chkPin.Size = [System.Drawing.Size]::new(560, 22)
-    $script:chkPin.Text = "PIN-Schutz aktivieren"
+    $script:chkPin.Text = "PIN-Schutz aktivieren (empfohlen)"
+    $script:chkPin.Checked = $true
     $pnlContent.Controls.Add($script:chkPin)
     $y += 32
+
+    # Auto-generierten Default-PIN setzen (numerisch, 6 Stellen, krypto-RNG)
+    $rngPinDef = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $pinBytesDef = New-Object byte[] 4
+    $rngPinDef.GetBytes($pinBytesDef)
+    $pinNumDef = [BitConverter]::ToUInt32($pinBytesDef, 0) % 1000000
+    $defaultPin = "{0:D6}" -f $pinNumDef
 
     $lp1 = New-Object System.Windows.Forms.Label
     $lp1.Location = [System.Drawing.Point]::new(50, $y+3); $lp1.Size = [System.Drawing.Size]::new(100, 22); $lp1.Text = "PIN:"
     $pnlContent.Controls.Add($lp1)
     $script:txtPin1 = New-Object System.Windows.Forms.TextBox
     $script:txtPin1.Location = [System.Drawing.Point]::new(180, $y); $script:txtPin1.Size = [System.Drawing.Size]::new(150, 26)
-    $script:txtPin1.UseSystemPasswordChar = $true; $script:txtPin1.Enabled = $false
+    $script:txtPin1.UseSystemPasswordChar = $false
+    $script:txtPin1.Text = $defaultPin
     $pnlContent.Controls.Add($script:txtPin1)
     $y += 32
 
@@ -488,8 +497,16 @@ function Show-Configuration {
     $pnlContent.Controls.Add($lp2)
     $script:txtPin2 = New-Object System.Windows.Forms.TextBox
     $script:txtPin2.Location = [System.Drawing.Point]::new(180, $y); $script:txtPin2.Size = [System.Drawing.Size]::new(150, 26)
-    $script:txtPin2.UseSystemPasswordChar = $true; $script:txtPin2.Enabled = $false
+    $script:txtPin2.UseSystemPasswordChar = $false
+    $script:txtPin2.Text = $defaultPin
     $pnlContent.Controls.Add($script:txtPin2)
+    $y += 32
+
+    $lblPinHint = New-Object System.Windows.Forms.Label
+    $lblPinHint.Location = [System.Drawing.Point]::new(50, $y); $lblPinHint.Size = [System.Drawing.Size]::new(540, 32)
+    $lblPinHint.Text = "Ohne PIN ist die Weboberflaeche fuer jedes Geraet im Heimnetz offen. Den PIN bitte notieren — wird in der .env gespeichert."
+    $lblPinHint.ForeColor = [System.Drawing.Color]::FromArgb(180, 120, 0)
+    $pnlContent.Controls.Add($lblPinHint)
 
     $script:chkPin.add_CheckedChanged({ $script:txtPin1.Enabled = $script:chkPin.Checked; $script:txtPin2.Enabled = $script:chkPin.Checked })
 

@@ -47,6 +47,13 @@ class ProcessingJob(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # B5: Heartbeat fuer Stuck-Job-Recovery. Wird beim Claim gesetzt; die
+    # Recovery-Logik in main.py setzt nur Jobs zurueck, deren Heartbeat
+    # aelter als RECOVERY_STALE_MINUTES ist — verhindert doppelte LLM-Calls
+    # bei legitimen Container-Restarts.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     email_account_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("email_accounts.id", ondelete="SET NULL"), nullable=True
     )

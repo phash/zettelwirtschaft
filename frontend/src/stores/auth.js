@@ -8,12 +8,16 @@ export const useAuthStore = defineStore('auth', () => {
   const pinEnabled = ref(false)
   const isAuthenticated = ref(false)
   const loading = ref(false)
+  // B1: Backend setzt pin_warning=true wenn das System ohne PIN-Schutz laeuft.
+  // Frontend zeigt einen prominenten Banner damit Heim-User die Lage erkennen.
+  const pinWarning = ref(false)
 
   async function checkStatus() {
     try {
       const { data } = await axios.get('/api/auth/status')
       pinEnabled.value = data.pin_enabled
       isAuthenticated.value = data.authenticated
+      pinWarning.value = !!data.pin_warning
     } catch {
       // Bei Netzwerkfehler: PIN-Status beibehalten (nicht deaktivieren)
       // isAuthenticated bleibt false -> Login-Redirect wird ausgeloest
@@ -53,12 +57,14 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated.value = false
     pinEnabled.value = false
     loading.value = false
+    pinWarning.value = false
   }
 
   return {
     pinEnabled,
     isAuthenticated,
     loading,
+    pinWarning,
     checkStatus,
     login,
     logout,

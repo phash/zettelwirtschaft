@@ -55,13 +55,21 @@ def clear_all_sessions() -> None:
 
 @router.get("/status")
 async def auth_status(request: Request, settings: Settings = Depends(get_settings)):
+    # pin_warning signalisiert dem Frontend, dass das System ohne Auth laeuft.
+    # Verschoben aus dem reinen Startup-Log (sieht nur wer `docker compose logs`
+    # aufruft) ins UI, damit Heim-User die Lage erkennen.
     if not settings.PIN_ENABLED:
-        return {"pin_enabled": False, "authenticated": True}
+        return {
+            "pin_enabled": False,
+            "authenticated": True,
+            "pin_warning": True,
+        }
 
     token = request.cookies.get(SESSION_COOKIE)
     return {
         "pin_enabled": True,
         "authenticated": is_session_valid(token),
+        "pin_warning": False,
     }
 
 

@@ -3,6 +3,7 @@ import Sidebar from './Sidebar.vue'
 import AppHeader from './AppHeader.vue'
 import BottomNav from './BottomNav.vue'
 import ToastContainer from '../common/ToastContainer.vue'
+import PinWarningBanner from '../common/PinWarningBanner.vue'
 </script>
 
 <template>
@@ -10,6 +11,7 @@ import ToastContainer from '../common/ToastContainer.vue'
     <Sidebar />
     <div class="flex flex-1 flex-col overflow-hidden">
       <AppHeader />
+      <PinWarningBanner />
       <main class="flex-1 overflow-y-auto bg-gray-50 p-6 pb-20 lg:pb-6">
         <router-view />
       </main>

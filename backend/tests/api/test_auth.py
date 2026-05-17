@@ -60,12 +60,14 @@ from app.database import get_db
 
 @pytest.mark.asyncio
 async def test_auth_status_pin_disabled(client):
-    """When PIN is disabled, status returns not enabled + authenticated."""
+    """When PIN is disabled, status returns not enabled + authenticated + pin_warning."""
     resp = await client.get("/api/auth/status")
     assert resp.status_code == 200
     data = resp.json()
     assert data["pin_enabled"] is False
     assert data["authenticated"] is True
+    # B1: Frontend nutzt pin_warning um Banner anzuzeigen.
+    assert data["pin_warning"] is True
 
 
 @pytest.mark.asyncio
@@ -86,6 +88,7 @@ async def test_auth_status_pin_enabled_not_authenticated(pin_client):
     data = resp.json()
     assert data["pin_enabled"] is True
     assert data["authenticated"] is False
+    assert data["pin_warning"] is False
 
 
 @pytest.mark.asyncio

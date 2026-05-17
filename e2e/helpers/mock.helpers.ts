@@ -34,11 +34,13 @@ export const MOCK_SYSTEM_HEALTH = {
 export const MOCK_AUTH_STATUS = {
   pin_enabled: false,
   authenticated: true,
+  pin_warning: true,
 };
 
 export const MOCK_AUTH_STATUS_PIN_ENABLED = {
   pin_enabled: true,
   authenticated: false,
+  pin_warning: false,
 };
 
 export const MOCK_STATS = {

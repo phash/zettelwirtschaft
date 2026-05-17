@@ -224,14 +224,27 @@ $modelInput = Read-Host "  LLM-Modell (Standard: $defaultModel)"
 if ([string]::IsNullOrWhiteSpace($modelInput)) { $model = $defaultModel } else { $model = $modelInput }
 Write-OK "LLM-Modell: $model"
 
-# PIN-Schutz
+# PIN-Schutz (B1: Default ist jetzt "ja" — Heim-LAN ist nicht implizit sicher)
 $pinEnabled = $false
 $pinCode = ""
-$enablePin = Read-Host "  PIN-Schutz aktivieren? Schuetzt die Weboberflaeche mit einer PIN (j/n, Standard: n)"
-if ($enablePin -eq "j") {
+Write-Info "PIN-Schutz aktivieren? Ohne PIN ist die Weboberflaeche fuer jedes Geraet im Heimnetz offen."
+$enablePin = Read-Host "  PIN-Schutz aktivieren? (j/n, Standard: j)"
+if ([string]::IsNullOrWhiteSpace($enablePin) -or $enablePin -eq "j") {
+    Write-Info "Eigenen PIN eingeben oder mit Enter automatisch generieren."
     do {
-        $pin1 = Read-Host "  PIN eingeben (mind. 4 Zeichen)" -AsSecureString
+        $pin1 = Read-Host "  PIN eingeben (mind. 4 Zeichen, Enter = auto)" -AsSecureString
         $pin1Plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pin1))
+        if ([string]::IsNullOrWhiteSpace($pin1Plain)) {
+            # Auto-Generate: 6-stelliger numerischer PIN aus kryptografisch starker Quelle
+            $rngPin = [Security.Cryptography.RandomNumberGenerator]::Create()
+            $pinBytes = New-Object byte[] 4
+            $rngPin.GetBytes($pinBytes)
+            $pinNum = [BitConverter]::ToUInt32($pinBytes, 0) % 1000000
+            $pinCode = "{0:D6}" -f $pinNum
+            $pinEnabled = $true
+            Write-OK "PIN automatisch generiert: $pinCode  (am Ende noch einmal angezeigt)"
+            break
+        }
         if ($pin1Plain.Length -lt 4) {
             Write-Warn "PIN muss mindestens 4 Zeichen lang sein."
             continue
@@ -247,6 +260,8 @@ if ($enablePin -eq "j") {
         Write-OK "PIN-Schutz wird aktiviert."
         break
     } while ($true)
+} else {
+    Write-Warn "PIN-Schutz deaktiviert. Die Weboberflaeche zeigt einen Hinweis-Banner."
 }
 
 Write-Host ""
@@ -452,6 +467,21 @@ Write-Host "  LLM-Modell: $model" -ForegroundColor Gray
 Write-Host "  Ollama-Modelle verwalten:" -ForegroundColor Gray
 Write-Host "    docker compose exec ollama ollama list" -ForegroundColor Gray
 Write-Host ""
+if ($pinEnabled) {
+    Write-Host "  ----------------------------------------------------" -ForegroundColor Yellow
+    Write-Host "   PIN-Schutz aktiviert" -ForegroundColor Yellow
+    Write-Host "   PIN: $pinCode" -ForegroundColor Yellow
+    Write-Host "   (Bitte notieren — wird nicht erneut angezeigt)" -ForegroundColor Yellow
+    Write-Host "  ----------------------------------------------------" -ForegroundColor Yellow
+    Write-Host ""
+} else {
+    Write-Host "  ----------------------------------------------------" -ForegroundColor Yellow
+    Write-Host "   PIN-Schutz NICHT aktiviert!" -ForegroundColor Yellow
+    Write-Host "   Jedes Geraet im Heimnetz kann Dokumente sehen." -ForegroundColor Yellow
+    Write-Host "   Aktivieren: PIN_ENABLED=true und PIN_CODE in .env." -ForegroundColor Yellow
+    Write-Host "  ----------------------------------------------------" -ForegroundColor Yellow
+    Write-Host ""
+}
 
 # Browser oeffnen
 $openBrowser = Read-Host "  Browser jetzt oeffnen? (j/n, Standard: j)"

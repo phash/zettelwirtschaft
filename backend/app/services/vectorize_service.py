@@ -282,18 +282,42 @@ def search_similar_chunks(
     k = top_k or settings.RAG_TOP_K
     where_filter = {"filing_scope_id": filing_scope_id} if filing_scope_id else None
 
-    try:
+    def _do_query(where):
+        # B7: Bei Scope-Filter mehr Kandidaten holen, damit der DB-seitige
+        # Nachfilter (rag_service) nicht hungert. Ohne Scope-Filter reicht k.
+        n = k * 3 if where is None and filing_scope_id else k
         collection = _get_collection_sync(settings)
-        results = collection.query(
+        return collection.query(
             query_embeddings=[query_embedding],
-            n_results=k,
-            where=where_filter,
+            n_results=n,
+            where=where,
         )
+
+    try:
+        results = _do_query(where_filter)
     except Exception:
         logger.exception("ChromaDB-Suche fehlgeschlagen")
         return []
 
-    if not results or not results["ids"] or not results["ids"][0]:
+    has_results = results and results["ids"] and results["ids"][0]
+
+    # B7: Fallback wenn Scope-Filter leer zurueckkommt.
+    # Alte Chunks (vor Migration 005) haben kein filing_scope_id-Metadata —
+    # ChromaDB filtert sie serverseitig weg. Retry ohne Filter; der Caller
+    # macht DB-seitig einen zusaetzlichen Scope-Check ueber das Document-Join.
+    if not has_results and filing_scope_id:
+        logger.info(
+            "ChromaDB-Suche mit Scope-Filter leer — Fallback ohne Filter "
+            "(eventuell alte Chunks ohne filing_scope_id-Metadata)"
+        )
+        try:
+            results = _do_query(None)
+            has_results = results and results["ids"] and results["ids"][0]
+        except Exception:
+            logger.exception("ChromaDB-Fallback-Suche fehlgeschlagen")
+            return []
+
+    if not has_results:
         return []
 
     chunks = []

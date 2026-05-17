@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -74,12 +75,13 @@ async def _process_job(
         job.analysis_result = json.dumps(analysis_result.to_dict(), ensure_ascii=False)
 
     # Archivierung: Dokument in Archiv verschieben + DB-Eintrag erstellen
+    archived_document = None
     try:
         thumbnail_str = None
         if thumbnail_path:
             thumbnail_str = str(thumbnail_path)
 
-        document = await archive_document(
+        archived_document = await archive_document(
             file_path=file_path,
             original_filename=job.original_filename,
             stored_filename=job.stored_filename,
@@ -92,7 +94,6 @@ async def _process_job(
             thumbnail_path=thumbnail_str,
             filing_scopes=filing_scopes,
         )
-        archived = True
 
         if analysis_result and analysis_result.needs_review:
             job.status = JobStatus.NEEDS_REVIEW
@@ -105,24 +106,35 @@ async def _process_job(
         logger.info(
             "Job %s verarbeitet -> Dokument %s archiviert",
             job.id,
-            document.id,
+            archived_document.id,
         )
-
-        archived = True
     except ValueError as e:
         # Duplikat erkannt: kein Document-Eintrag, kein Review moeglich.
         # Status FAILED ist semantisch korrekt (NEEDS_REVIEW haette keine ReviewQuestion).
         # Quelldatei bleibt im Upload-Ordner, damit der User den Konflikt inspizieren kann.
         job.status = JobStatus.FAILED
         job.error_message = f"Duplikat erkannt: {e}"
-        archived = False
         logger.warning("Job %s: %s", job.id, e)
 
     await session.commit()
 
+    # B3: Vektorisierung NACH dem Commit (best-effort, ausserhalb der DB-Transaction).
+    # Ein langsamer ChromaDB-Call darf keine SQLite-WAL-Locks halten, ein Fehler
+    # darf die archive-Transaction nicht rollbacken.
+    if archived_document is not None:
+        try:
+            from app.services.vectorize_service import vectorize_document
+            await vectorize_document(archived_document, settings)
+        except Exception:
+            logger.warning(
+                "Vektorisierung nach Archivierung fehlgeschlagen fuer %s",
+                archived_document.id,
+                exc_info=True,
+            )
+
     # Quelldatei nur loeschen wenn erfolgreich archiviert (archive_service kopiert statt move).
     # Bei Duplikat behalten, damit der User die Datei manuell entfernen oder umbenennen kann.
-    if archived:
+    if archived_document is not None:
         try:
             if file_path.exists():
                 file_path.unlink()
@@ -157,12 +169,16 @@ async def run_queue_worker(
                     await asyncio.sleep(settings.QUEUE_POLL_INTERVAL)
                     continue
 
-                # 2. Atomic claim: nur erfolgreich wenn noch PENDING
+                # 2. Atomic claim: nur erfolgreich wenn noch PENDING.
+                # B5: processing_started_at als Heartbeat fuer Stuck-Job-Recovery.
                 claim_result = await session.execute(
                     update(ProcessingJob)
                     .where(ProcessingJob.id == job_id)
                     .where(ProcessingJob.status == JobStatus.PENDING)
-                    .values(status=JobStatus.PROCESSING)
+                    .values(
+                        status=JobStatus.PROCESSING,
+                        processing_started_at=datetime.now(timezone.utc),
+                    )
                 )
                 await session.commit()
 
@@ -185,28 +201,45 @@ async def run_queue_worker(
                     logger.info("Job %s abgeschlossen (Status: %s)", job.id, job.status)
 
                 except Exception as e:
+                    # B5: Session ist nach Exception nicht reentrant ohne rollback().
+                    # Frische Session fuer das Retry-Bookkeeping verwenden — alte
+                    # Session koennte halb-committeten Zustand enthalten.
                     error_msg = str(e) or f"{type(e).__name__}: Unbekannter Fehler"
-                    job.retry_count += 1
-                    if job.retry_count >= settings.MAX_RETRIES:
-                        job.status = JobStatus.FAILED
-                        job.error_message = error_msg
-                        logger.error(
-                            "Job %s endgueltig fehlgeschlagen nach %d Versuchen: %s",
-                            job.id,
-                            job.retry_count,
-                            e,
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        logger.exception("Rollback nach Job-Fehler fehlgeschlagen")
+
+                    async with session_factory() as retry_session:
+                        rj_result = await retry_session.execute(
+                            select(ProcessingJob).where(ProcessingJob.id == job_id)
                         )
-                    else:
-                        job.status = JobStatus.PENDING
-                        job.error_message = error_msg
-                        logger.warning(
-                            "Job %s fehlgeschlagen (Versuch %d/%d): %s",
-                            job.id,
-                            job.retry_count,
-                            settings.MAX_RETRIES,
-                            e,
-                        )
-                    await session.commit()
+                        rj = rj_result.scalar_one_or_none()
+                        if rj is None:
+                            logger.error("Job %s nach Fehler nicht mehr in DB auffindbar", job_id)
+                        else:
+                            rj.retry_count += 1
+                            if rj.retry_count >= settings.MAX_RETRIES:
+                                rj.status = JobStatus.FAILED
+                                rj.error_message = error_msg
+                                logger.error(
+                                    "Job %s endgueltig fehlgeschlagen nach %d Versuchen: %s",
+                                    rj.id,
+                                    rj.retry_count,
+                                    e,
+                                )
+                            else:
+                                rj.status = JobStatus.PENDING
+                                rj.error_message = error_msg
+                                rj.processing_started_at = None
+                                logger.warning(
+                                    "Job %s fehlgeschlagen (Versuch %d/%d): %s",
+                                    rj.id,
+                                    rj.retry_count,
+                                    settings.MAX_RETRIES,
+                                    e,
+                                )
+                            await retry_session.commit()
 
         except asyncio.CancelledError:
             logger.info("Queue-Worker wird beendet")

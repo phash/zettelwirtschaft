@@ -368,7 +368,10 @@ async def archive_document(
 
     await session.flush()
 
-    # FTS-Index aktualisieren (in Savepoint, damit Fehler die Session nicht korrumpieren)
+    # FTS-Index aktualisieren (in Savepoint, damit Fehler die Session nicht korrumpieren).
+    # B3-Fix: `nested = None` vor begin_nested, damit ein Fehler im begin_nested()-Aufruf
+    # selbst nicht zu UnboundLocalError im except-Zweig fuehrt.
+    nested = None
     try:
         nested = await session.begin_nested()
         tag_names = " ".join(analysis.tags) if analysis.tags else ""
@@ -383,15 +386,14 @@ async def archive_document(
         )
         await nested.commit()
     except Exception:
-        await nested.rollback()
+        if nested is not None:
+            await nested.rollback()
         logger.warning("FTS-Indexierung fehlgeschlagen fuer %s", document.id, exc_info=True)
 
-    # Vektorisierung (fuer RAG-Chat)
-    try:
-        from app.services.vectorize_service import vectorize_document
-        await vectorize_document(document, settings)
-    except Exception:
-        logger.warning("Vektorisierung fehlgeschlagen fuer %s", document.id, exc_info=True)
+    # B3-Fix: Vektorisierung lauft nicht mehr in der DB-Transaction.
+    # Der Caller (queue_worker_service) ruft vectorize_document() NACH dem Commit
+    # auf — damit haelt ein langsamer ChromaDB-Call keine SQLite-WAL-Locks und ein
+    # Vektorisierungs-Fehler korrumpiert nicht die archive-Transaction.
 
     logger.info(
         "Dokument archiviert: %s (Typ: %s, Konfidenz: %.0f%%)",

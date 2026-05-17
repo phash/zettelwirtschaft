@@ -67,12 +67,17 @@ echo         Backup-Verzeichnis: %BACKUP_DIR%
 :: =============================================
 :api_backup
 echo  [2/5] Erstelle vollstaendiges API-Backup...
-curl -sf -X POST http://localhost:8000/api/system/backup >nul 2>&1
+:: B2: Backend ist seit N-001 nur ueber nginx (FRONTEND_PORT) erreichbar,
+:: nicht mehr direkt auf 8000. API-Backup-Fehlschlag wird jetzt sichtbar.
+curl -sf -X POST http://localhost:%FRONTEND_PORT%/api/system/backup
 if %ERRORLEVEL% EQU 0 (
+    echo.
     echo         API-Backup erstellt.
 ) else (
-    echo         API-Backup uebersprungen (Backend nicht erreichbar).
-    echo         Lokale Sicherheitskopie wurde bereits erstellt.
+    echo.
+    echo  [WARNUNG] API-Backup fehlgeschlagen ^(Backend nicht erreichbar^).
+    echo  Lokale Sicherheitskopie wurde bereits erstellt — Update faehrt fort.
+    echo  Pruefe nach dem Update: docker compose logs backend
 )
 
 :: =============================================
@@ -127,7 +132,8 @@ echo  [5/5] Warte auf Backend...
 set WAIT_COUNT=0
 :wait_loop
 timeout /t 2 /nobreak >nul
-curl -sf http://localhost:8000/api/health >nul 2>&1
+:: B2: Health-Check ueber nginx (FRONTEND_PORT), nicht direkt auf 8000.
+curl -sf http://localhost:%FRONTEND_PORT%/api/health >nul 2>&1
 if %ERRORLEVEL% EQU 0 goto :healthy
 set /a WAIT_COUNT+=1
 if %WAIT_COUNT% GEQ 30 (

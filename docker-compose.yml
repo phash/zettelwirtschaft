@@ -12,6 +12,12 @@ services:
         condition: service_healthy
       chromadb:
         condition: service_healthy
+    # B4: Backend ist in zwei Netzen — public (default) fuer nginx, und das
+    # interne chromadb-net fuer den Embedding-Store. Andere Container im
+    # default-Netz koennen ChromaDB damit nicht erreichen.
+    networks:
+      - default
+      - chromadb-net
     restart: unless-stopped
     # Defense-in-Depth: keine zusaetzlichen Privilegien, alle Capabilities weg.
     # appuser laeuft sowieso als non-root (siehe backend/Dockerfile).
@@ -54,6 +60,11 @@ services:
     volumes:
       - chromadb-data:/data
     restart: unless-stopped
+    # B4: ChromaDB ist NUR ueber das interne chromadb-net erreichbar.
+    # Andere Container (Portainer, Watchtower etc.) im default-Netz haben
+    # keinen Zugriff auf den ungeschuetzten HTTP-Port.
+    networks:
+      - chromadb-net
     security_opt:
       - no-new-privileges:true
     # NEW-006: Defense-in-Depth — Rust-Service braucht keine Caps.
@@ -88,3 +99,11 @@ services:
 volumes:
   ollama-models:
   chromadb-data:
+
+# B4: chromadb-net ist ein dediziertes internes Netzwerk fuer den
+# Embedding-Store. `internal: true` blockt jeden Egress (kein Internet, kein
+# Host-Zugriff) — nur Container die explizit in diesem Netz sind (backend)
+# koennen kommunizieren.
+networks:
+  chromadb-net:
+    internal: true

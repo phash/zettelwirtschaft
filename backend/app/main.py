@@ -80,18 +80,33 @@ async def lifespan(app: FastAPI):
             "danach Backend-Container neu starten."
         )
 
-    # Stuck-Job-Recovery: Jobs die beim letzten Crash auf PROCESSING haengen geblieben sind
-    # auf PENDING zuruecksetzen, damit der Worker sie erneut bearbeitet.
-    from sqlalchemy import update
+    # Stuck-Job-Recovery: Jobs die beim letzten Crash auf PROCESSING haengen
+    # geblieben sind auf PENDING zuruecksetzen, damit der Worker sie erneut
+    # bearbeitet.
+    # B5: Nur Jobs deren Heartbeat (processing_started_at) aelter als 10 Minuten
+    # ist — verhindert dass ein legitimer Container-Restart waehrend laufender
+    # Verarbeitung den Job doppelt verarbeitet.
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import or_, update
     from app.models.processing_job import JobStatus, ProcessingJob
+
+    STALE_MINUTES = 10
+    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=STALE_MINUTES)
 
     async with async_session_factory() as session:
         recovery_result = await session.execute(
             update(ProcessingJob)
             .where(ProcessingJob.status == JobStatus.PROCESSING)
+            .where(
+                or_(
+                    ProcessingJob.processing_started_at == None,  # noqa: E711
+                    ProcessingJob.processing_started_at < stale_threshold,
+                )
+            )
             .values(
                 status=JobStatus.PENDING,
-                error_message="Worker neu gestartet, Job wird wiederholt",
+                processing_started_at=None,
+                error_message=f"Worker neu gestartet (>{STALE_MINUTES} Min steckengeblieben), Job wird wiederholt",
             )
         )
         if recovery_result.rowcount:
