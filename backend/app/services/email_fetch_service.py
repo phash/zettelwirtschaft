@@ -208,6 +208,11 @@ async def fetch_emails_for_account(
     emails_to_move: list[bytes] = []
 
     for num, raw in raw_emails:
+        # T16: Pro E-Mail eigene Sub-Transaktion via SAVEPOINT. Bei Fehler
+        # nur diese eine zuruecksetzen, danach den Vorgang als FAILED ueber
+        # eine separate kleine Transaktion festschreiben — verhindert dass
+        # ein einziger LLM-Crash 30 schon gefetchte E-Mails kostet UND dass
+        # die gleiche E-Mail beim naechsten Run wieder LLM-Calls produziert.
         try:
             parsed = parse_email_message(raw)
 
@@ -243,6 +248,7 @@ async def fetch_emails_for_account(
                     relevance_reason=relevance.get("reason", ""),
                 )
                 db.add(processed)
+                await db.commit()  # T16: pro E-Mail committen
                 stats["irrelevant"] += 1
                 emails_to_move.append(num)
                 continue
@@ -261,17 +267,47 @@ async def fetch_emails_for_account(
                 processing_job_id=job_ids[0] if job_ids else None,
             )
             db.add(processed)
+            await db.commit()  # T16: pro E-Mail committen (inkl. der Jobs)
             stats["relevant"] += 1
             emails_to_move.append(num)
 
-        except Exception:
-            logger.exception("Fehler bei E-Mail %s", num)
+        except Exception as e:
+            # T16: Failed-Eintrag damit die E-Mail nicht beim naechsten Run
+            # erneut LLM-Calls produziert. message_id ist UNIQUE pro Account,
+            # also keine Doppel-Inserts moeglich.
+            err_msg = str(e)[:400] or type(e).__name__
+            logger.exception("Fehler bei E-Mail %s (num=%r): %s", account.name, num, err_msg)
+            try:
+                await db.rollback()
+            except Exception:
+                logger.exception("Rollback nach E-Mail-Fehler fehlgeschlagen")
+            try:
+                # Versuch der message_id Extraktion fuer Dedup — wenn das auch scheitert,
+                # ueberspringen wir den Failed-Eintrag (E-Mail wird ggf. erneut versucht).
+                parsed_for_fail = parse_email_message(raw)
+                failed_record = ProcessedEmail(
+                    email_account_id=account.id,
+                    message_id=parsed_for_fail.get("message_id") or f"failed-{num!r}",
+                    subject=parsed_for_fail.get("subject"),
+                    sender=parsed_for_fail.get("sender"),
+                    received_at=parsed_for_fail.get("date"),
+                    status=EmailStatus.FAILED,
+                    relevance_reason=err_msg,
+                )
+                db.add(failed_record)
+                await db.commit()
+                emails_to_move.append(num)  # auch FAILED verschieben — sonst Endlos-Retry
+            except Exception:
+                logger.exception("Konnte FAILED-Eintrag nicht speichern")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
             stats["failed"] += 1
 
-    await db.flush()
     account.last_checked_at = datetime.now(timezone.utc)
     account.last_error = None
-    await db.flush()
+    await db.commit()
 
     # Verarbeitete E-Mails verschieben (in Thread)
     try:

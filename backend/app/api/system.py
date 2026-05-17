@@ -281,7 +281,9 @@ async def create_backup_endpoint(
 ):
     """Erstellt ein Backup."""
     try:
-        path = create_backup(settings, include_documents=full)
+        # T17: create_backup() walks recursively + erzeugt ZIP — bei 5000 Files
+        # blockierender I/O. In to_thread, damit andere Requests durchkommen.
+        path = await asyncio.to_thread(create_backup, settings, full)
         return {"path": path, "message": "Backup erstellt"}
     except Exception:
         logger.exception("Backup fehlgeschlagen")

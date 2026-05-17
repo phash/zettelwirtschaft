@@ -279,8 +279,9 @@ async def archive_document(
         await session.rollback()
         raise ValueError(f"Duplikat erkannt: Datei mit Hash {file_hash[:12]}... existiert bereits")
 
-    # Datei kopieren (statt move) — Originaldatei bleibt erhalten bis Transaction committed
-    shutil.copy2(str(file_path), str(archive_path))
+    # T17: shutil.copy2 in to_thread, damit grosse PDFs (50 MB) den Event-
+    # Loop nicht blockieren. Bei langsamer Disk macht das 0.5-1s pro Datei aus.
+    await asyncio.to_thread(shutil.copy2, str(file_path), str(archive_path))
     logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
 
     # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
@@ -290,7 +291,7 @@ async def archive_document(
                 export_dir, doc_type.value, doc_date, stored_filename,
                 scope_slug=scope_slug,
             )
-            shutil.copy2(str(archive_path), str(export_path))
+            await asyncio.to_thread(shutil.copy2, str(archive_path), str(export_path))
             logger.info("Export-Kopie erstellt: %s", export_path)
         except Exception:
             logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)

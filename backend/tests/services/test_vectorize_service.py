@@ -112,13 +112,16 @@ class TestVectorizeDocument:
         mock_collection.get.return_value = {"ids": []}
         mock_collection.add = MagicMock()
 
-        with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            # to_thread calls: 1. reachable check (True), 2. delete existing, 3. add
-            mock_thread.side_effect = [True, None, None]
-            with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
-                mock_embed.return_value = [[0.1, 0.2], [0.3, 0.4]]
-                result = await vectorize_document(doc, test_settings)
-                assert result == 2  # metadata chunk + text chunk
+        # T17: _check_chromadb_reachable_async ersetzt to_thread fuer
+        # Reachable-Probe. to_thread wird jetzt nur noch fuer delete + add genutzt.
+        with patch("app.services.vectorize_service._check_chromadb_reachable_async", new_callable=AsyncMock) as mock_reach:
+            mock_reach.return_value = True
+            with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+                mock_thread.side_effect = [None, None]  # delete + add
+                with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
+                    mock_embed.return_value = [[0.1, 0.2], [0.3, 0.4]]
+                    result = await vectorize_document(doc, test_settings)
+                    assert result == 2  # metadata chunk + text chunk
 
     @pytest.mark.asyncio
     async def test_vectorize_no_text(self, test_settings):

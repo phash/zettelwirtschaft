@@ -130,8 +130,42 @@ def _build_metadata_chunk(doc: Document) -> str:
     return "\n".join(parts)
 
 
+# T17: Erreichbarkeitscheck mit TTL-Cache. Bei initial-Vectorize ueber tausende
+# Dokumente lief vorher pro Doc ein 2-Sekunden-HTTP-Probe-Roundtrip — TTL
+# kappt das auf einmal pro 30s, async statt to_thread-Block.
+_reachable_cache: tuple[float, bool] | None = None
+_REACHABLE_TTL = 30.0
+
+
+async def _check_chromadb_reachable_async(settings: Settings) -> bool:
+    """Asynchroner Erreichbarkeitscheck fuer ChromaDB mit TTL-Cache."""
+    global _reachable_cache
+    import time
+    import httpx as _httpx
+
+    now = time.monotonic()
+    if _reachable_cache is not None and (now - _reachable_cache[0]) < _REACHABLE_TTL:
+        return _reachable_cache[1]
+
+    try:
+        async with _httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(
+                f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat"
+            )
+            ok = resp.status_code == 200
+    except Exception:
+        ok = False
+
+    _reachable_cache = (now, ok)
+    return ok
+
+
 def _check_chromadb_reachable(settings: Settings) -> bool:
-    """Schneller Erreichbarkeitscheck fuer ChromaDB (synchron)."""
+    """Sync-Variante fuer Aufrufe aus Threads. Nutzt eigenen HTTP-Call.
+
+    Wer im async-Kontext laeuft, soll `_check_chromadb_reachable_async`
+    verwenden — das ist deutlich effizienter und nutzt TTL-Cache.
+    """
     import httpx as _httpx
     try:
         resp = _httpx.get(
@@ -177,8 +211,8 @@ async def vectorize_document(doc: Document, settings: Settings) -> int:
     """
     doc_id = str(doc.id)
 
-    # Schneller Erreichbarkeitscheck (vermeidet teure Fehler im Thread)
-    reachable = await asyncio.to_thread(_check_chromadb_reachable, settings)
+    # T17: Async-Reachable-Check mit TTL-Cache statt to_thread pro Aufruf.
+    reachable = await _check_chromadb_reachable_async(settings)
     if not reachable:
         logger.debug("ChromaDB nicht erreichbar, ueberspringe Vektorisierung fuer %s", doc_id)
         return 0
