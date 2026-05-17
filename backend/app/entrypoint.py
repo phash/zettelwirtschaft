@@ -44,10 +44,14 @@ def _ensure_data_dirs() -> None:
 
 
 def _run_migrations() -> int:
-    """`migrate.py` ausfuehren — gleiche Logik wie im Docker-Entrypoint.
+    """Migrationen ausfuehren.
 
-    Im PyInstaller-Bundle ist `alembic` nicht als CLI verfuegbar. Wir
-    importieren die Public-API direkt.
+    Drei Faelle:
+    1. Frische DB (kein Schema): Base.metadata.create_all() + stamp auf head.
+       (Migration 001 macht ALTER ohne vorheriges CREATE — sie geht historisch
+       davon aus dass SQLAlchemy create_all schon gelaufen ist.)
+    2. Legacy-DB ohne alembic_version: detect_stamp + upgrade.
+    3. Normale DB mit alembic_version: upgrade head (no-op wenn aktuell).
     """
     # Lazy imports — sonst zieht entrypoint.py alembic schon beim --help mit.
     import sqlite3
@@ -56,13 +60,47 @@ def _run_migrations() -> int:
 
     settings = get_settings()
 
-    # DATABASE_URL aufloesen
     db_url = settings.DATABASE_URL
     db_path = db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Legacy-Stamping (analog backend/migrate.py)
-    from migrate import detect_stamp  # Top-level Modul im Bundle
+    # 1. Pruefen ob die DB komplett leer ist (keine User-Tabellen)
+    is_fresh_db = False
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
+        )
+        existing_tables = [r[0] for r in cur.fetchall()]
+        is_fresh_db = len(existing_tables) == 0
+    finally:
+        conn.close()
+
+    if is_fresh_db:
+        # Frische DB: Schema komplett ueber SQLAlchemy create_all anlegen,
+        # dann auf head stampen. Migrationen sind dann no-op.
+        import asyncio
+        from app.database import Base, engine
+
+        async def _create_schema():
+            # Alle Models importieren damit Base.metadata komplett ist
+            import app.models  # noqa: F401
+            from app.models import (  # noqa: F401
+                audit_log, chat_message, correction_mapping, document,
+                email_account, filing_scope, notification, processed_email,
+                processing_job, review_question, saved_search, warranty_info,
+            )
+            async with engine.begin() as conn_:
+                await conn_.run_sync(Base.metadata.create_all)
+            await engine.dispose()
+
+        logging.info("[migrate] Frische DB — Schema via create_all anlegen")
+        asyncio.run(_create_schema())
+
+    # 2. Legacy-Stamping (DBs ohne alembic_version)
+    from migrate import detect_stamp
 
     conn = sqlite3.connect(db_path)
     try:
@@ -75,33 +113,46 @@ def _run_migrations() -> int:
         cur.execute("SELECT version_num FROM alembic_version")
         versions = [r[0] for r in cur.fetchall()]
         if not versions:
-            stamp = detect_stamp(cur)
-            if stamp:
-                logging.info("[migrate] Legacy-DB stamping auf %s", stamp)
-                cur.execute("INSERT INTO alembic_version (version_num) VALUES (?)", (stamp,))
-                conn.commit()
+            if is_fresh_db:
+                # Eben angelegtes Schema entspricht head — direkt stampen.
+                # Holen wir den head dynamisch.
+                from alembic.script import ScriptDirectory
+                from alembic.config import Config as AlembicConfig
+                ini_path = _resolve_alembic_ini()
+                _cfg = AlembicConfig(str(ini_path))
+                if getattr(sys, "frozen", False):
+                    _cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
+                head_rev = ScriptDirectory.from_config(_cfg).get_current_head()
+                logging.info("[migrate] Frisches Schema stamping auf %s", head_rev)
+                cur.execute("INSERT INTO alembic_version (version_num) VALUES (?)", (head_rev,))
+            else:
+                stamp = detect_stamp(cur)
+                if stamp:
+                    logging.info("[migrate] Legacy-DB stamping auf %s", stamp)
+                    cur.execute("INSERT INTO alembic_version (version_num) VALUES (?)", (stamp,))
         conn.commit()
     finally:
         conn.close()
 
-    # 2. Alembic upgrade head via Public-API (keine subprocess-Calls)
+    # 3. Alembic upgrade head via Public-API (keine subprocess-Calls)
     from alembic import command
     from alembic.config import Config as AlembicConfig
 
-    # Bei PyInstaller liegt alembic.ini im _MEIPASS-Root
-    if getattr(sys, "frozen", False):
-        ini_path = Path(sys._MEIPASS) / "alembic.ini"
-    else:
-        ini_path = Path(__file__).resolve().parents[1] / "alembic.ini"
-
+    ini_path = _resolve_alembic_ini()
     cfg = AlembicConfig(str(ini_path))
-    # Alembic-Scripts-Pfad relativ aufloesen
     if getattr(sys, "frozen", False):
         cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
     cfg.set_main_option("sqlalchemy.url", db_url.replace("+aiosqlite", ""))
     command.upgrade(cfg, "head")
     logging.info("[migrate] Alembic-Migrationen abgeschlossen")
     return 0
+
+
+def _resolve_alembic_ini() -> Path:
+    """alembic.ini-Pfad — im Bundle in _MEIPASS, sonst im Dev-backend/."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "alembic.ini"
+    return Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
 def main(argv: list[str] | None = None) -> int:

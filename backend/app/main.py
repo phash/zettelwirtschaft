@@ -324,9 +324,11 @@ app.include_router(email_router, prefix="/api")
 # Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.
 # Damit entfaellt der separate nginx-Container. FRONTEND_DIST_DIR wird vom
 # Installer auf `<install-dir>/frontend/dist` gesetzt; im Dev/Docker leer.
-# WICHTIG: Mount NACH allen `/api`-Routern, sonst werden API-Calls von
-# StaticFiles abgefangen (404 oder index.html).
+# WICHTIG: Asset-Mount + SPA-Fallback NACH allen `/api`-Routern, sonst
+# werden API-Calls von StaticFiles abgefangen.
 def _mount_frontend() -> None:
+    from fastapi import Request
+    from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
     dist_dir = _settings.FRONTEND_DIST_DIR
@@ -336,9 +338,25 @@ def _mount_frontend() -> None:
     if not dist_path.exists():
         return
 
-    # html=True liefert index.html bei Pfaden ohne Endung -> SPA-Routing
-    # funktioniert (alle nicht-/api/-URLs landen im Vue-Router).
-    app.mount("/", StaticFiles(directory=str(dist_path), html=True), name="frontend")
+    index_file = dist_path / "index.html"
+    assets_dir = dist_path / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    # SPA-Fallback: liefert echte Files wenn vorhanden, sonst index.html
+    # (Vue-Router uebernimmt das Routing dann clientseitig).
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str, request: Request):
+        # /api/* wird von den Routern oben abgefangen — landet nicht hier.
+        candidate = (dist_path / full_path).resolve()
+        # Path-Traversal-Schutz: nur innerhalb dist
+        try:
+            candidate.relative_to(dist_path.resolve())
+        except ValueError:
+            return FileResponse(str(index_file))
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index_file))
 
 
 _mount_frontend()

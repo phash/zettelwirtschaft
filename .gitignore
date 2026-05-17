@@ -57,3 +57,13 @@ e2e/test-results/
 # Lokale Feedback-Screenshots / temp ZIPs
 feedback/
 zettelwirtschaft-local.zip
+
+# Native-Build-Artefakte
+# tools/ enthaelt manuell heruntergeladene Tesseract/poppler/NSSM-Binaries
+# (siehe scripts/build-native.ps1 Header) — nicht commitbar wegen Lizenzen + Groesse.
+tools/
+# PyInstaller-Spec laesst dist/zettelwirtschaft-backend/ liegen
+# (gefangen vom generischen dist/ oben).
+# Setup-EXE-Output
+*-Setup.exe
+*-Native-Setup.exe
