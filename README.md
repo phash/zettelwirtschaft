@@ -19,21 +19,43 @@ Läuft ausschließlich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 
 ## Installation (Windows)
 
-### Voraussetzungen
+Es gibt zwei Installationspfade:
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installiert und gestartet
-- Mindestens 8 GB RAM (empfohlen)
-- Mindestens 10 GB freier Festplattenspeicher
+| Pfad | Wann | Voraussetzungen |
+|---|---|---|
+| **Native** (empfohlen ab v1.3) | Setup.exe, Hintergrunddienst, kein Docker | Windows 10/11, mind. 8 GB RAM, 10 GB Plattenplatz |
+| **Docker** | Headless-Server, mehrere Plattformen | Docker Desktop, 8 GB RAM, 10 GB Plattenplatz |
 
-### Schnellstart
+### Pfad A — Native (Setup.exe)
 
-1. [Neuestes Release herunterladen](https://github.com/phash/zettelwirtschaft/releases/latest) und entpacken
-2. `install.bat` doppelklicken
-3. Den Anweisungen des Installationsassistenten folgen
+Die Setup.exe installiert Zettelwirtschaft als Windows-Dienst. Browser oeffnet sich
+am Ende, im Hintergrund laeuft der Service ohne Konsolenfenster. Aus dem LAN ist
+das System unter `http://<rechnername>:8080` erreichbar.
 
-Der Installer prüft automatisch Docker, konfiguriert Ports und LLM-Modell, und erstellt eine Desktop-Verknüpfung.
+1. [Neuestes Release herunterladen](https://github.com/phash/zettelwirtschaft/releases/latest) → `Zettelwirtschaft-<version>-Native-Setup.exe`
+2. Doppelklick. Wizard fragt: Programmordner, Datenordner (frei waehlbar — NAS,
+   externe SSD, OneDrive-Sync moeglich), Port, PIN-Auto-Generierung.
+3. Setup installiert Tesseract+poppler (gebundled), registriert den Backend-Service
+   und erlaubt den Port in der Windows-Firewall (Profil "Privat").
+4. Ollama-Installer wird im Anschluss angeboten (optional, ~600 MB Download).
+   LLM-Modell (qwen2.5:7b-instruct, ~4.5 GB) wird beim ersten Start gepullt.
 
-> **Hinweis:** Windows zeigt beim ersten Start möglicherweise eine SmartScreen-Warnung ("Der Computer wurde durch Windows geschützt"), da der Installer nicht digital signiert ist. Das ist bei Open-Source-Software normal. Zum Fortfahren: **"Weitere Informationen"** klicken → **"Trotzdem ausführen"**. Der vollständige Quellcode ist [auf GitHub](https://github.com/phash/zettelwirtschaft) einsehbar.
+Der Service heisst `ZettelwirtschaftBackend` und startet automatisch beim Login.
+Steuerbar via `services.msc` oder `net start/stop ZettelwirtschaftBackend`.
+
+Migration aus einer bestehenden Docker-Installation: Der Wizard erkennt die alte
+`.env` + Docker-Volumes und bietet eine Konvertierung an. ChromaDB-Volume wird
+beim ersten Start re-indexiert (~10 Min bei 1000 Dokumenten).
+
+Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md).
+
+### Pfad B — Docker (klassisch)
+
+1. [Docker Desktop](https://www.docker.com/products/docker-desktop/) installieren und starten
+2. Release-Archiv entpacken
+3. `install.bat` doppelklicken — Wizard prueft Docker, konfiguriert Ports und LLM-Modell.
+
+> **Hinweis:** Windows zeigt beim ersten Start moeglicherweise eine SmartScreen-Warnung ("Der Computer wurde durch Windows geschuetzt"), da der Installer nicht digital signiert ist. Das ist bei Open-Source-Software normal. Zum Fortfahren: **"Weitere Informationen"** klicken → **"Trotzdem ausfuehren"**. Der vollstaendige Quellcode ist [auf GitHub](https://github.com/phash/zettelwirtschaft) einsehbar.
 
 ### Bedienung
 
@@ -239,7 +261,7 @@ python -m pytest tests/ -v
 
 ### Releases erstellen
 
-Ein neues Release wird automatisch überGitHub Actions erstellt:
+Ein neues Release wird automatisch ueber GitHub Actions erstellt:
 
 ```bash
 git tag v1.0.0
@@ -249,6 +271,34 @@ git push origin v1.0.0
 Dies erzeugt:
 - GitHub Release mit Installer-Archiv (ZIP + tar.gz)
 - Docker Images auf `ghcr.io/phash/zettelwirtschaft/backend` und `frontend`
+
+### Native-Build (Setup.exe)
+
+Lokaler Build der `Zettelwirtschaft-<version>-Native-Setup.exe`:
+
+```powershell
+# Voraussetzungen am Build-Host:
+# - Python 3.12, Node 22, NSIS 3.x (makensis im PATH)
+# - tools/tesseract/, tools/poppler/, tools/nssm/win64/nssm.exe vorbereitet
+#   (manueller Download — siehe scripts/build-native.ps1 Header)
+
+# Build-Dependencies installieren:
+pip install -r backend/requirements.txt -r backend/requirements-build.txt
+
+# Full Build (Backend + Frontend + Installer):
+pwsh scripts/build-native.ps1
+
+# Output: Zettelwirtschaft-<version>-Native-Setup.exe im Repo-Root
+# plus dist/native/ mit dem entpackten Bundle.
+```
+
+Komponenten des Native-Builds:
+- **Backend:** PyInstaller-Onedir-Bundle (`backend/zettelwirtschaft.spec`)
+- **Frontend:** Vite-Static-Build, vom Backend ueber `FRONTEND_DIST_DIR` serviert
+- **Tesseract + poppler:** gebundled aus `tools/`
+- **NSSM:** Windows-Service-Wrapper
+- **ChromaDB:** embedded (`PersistentClient`, kein separater HTTP-Service)
+- **Konfiguration:** `config.toml` (vom Installer generiert, vom Backend via `ZETTELWIRTSCHAFT_CONFIG` env gelesen)
 
 ## Lizenz
 

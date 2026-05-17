@@ -6,12 +6,20 @@ Lokales Dokumentenmanagementsystem fuer Privathaushalte. Rechnungen, Belege und 
 
 ## Quickstart
 
+Es gibt **drei Betriebs-Modi**:
+
+| Modus | Wann | Aufruf |
+|---|---|---|
+| **Docker** | klassischer Stack, Multi-Plattform | `docker compose up -d` |
+| **Native** (ab v1.3) | Setup.exe → Windows-Service, ChromaDB embedded | siehe `planung/native-windows-konzept.md` |
+| **Dev** (lokal ohne Docker/Setup) | Entwicklung, Tests | `uvicorn app.main:app --reload` |
+
 ```bash
-# Stack hochfahren (Backend, Frontend, Ollama, ChromaDB)
+# Docker (Backend, Frontend, Ollama, ChromaDB als Container)
 docker compose up -d
 
 # Frontend: http://localhost:8080
-# Backend ist NUR intern erreichbar (siehe N-001), Aufrufe gehen ueber nginx-Proxy
+# Backend NUR intern erreichbar (N-001), Aufrufe gehen ueber nginx-Proxy
 
 # Logs / Health
 curl http://localhost:8080/api/health
@@ -33,8 +41,21 @@ npm install
 npm run dev                          # Vite Dev-Server, Port 3000
 
 # Tests
-cd backend && python -m pytest -q   # 358 Tests / 1 skipped (Tesseract)
+cd backend && python -m pytest -q   # 369 Tests / 1 skipped (Tesseract)
 cd e2e && npx playwright test --project=chromium  # 145 Tests
+```
+
+**Native-Build** (Setup.exe fuer Endkunden):
+
+```powershell
+# Voraussetzungen am Build-Host:
+#   - Python 3.12, Node 22, NSIS 3.x (makensis im PATH)
+#   - tools/tesseract/, tools/poppler/, tools/nssm/win64/nssm.exe vorbereitet
+
+pip install -r backend/requirements.txt -r backend/requirements-build.txt
+pwsh scripts/build-native.ps1
+
+# Output: Zettelwirtschaft-<version>-Native-Setup.exe + dist/native/
 ```
 
 **Lokale CI** (GitHub Actions deaktiviert, siehe `.github/workflows/ci.yml.disabled`):
@@ -70,10 +91,18 @@ bash scripts/ci-local.sh --skip-e2e          # Linux/macOS
   - Optional: LLM-Reranker + Verifier-Pass (config-flags)
 - **Frontend:** Vue.js 3.5+ (Composition API, `<script setup>`) + Vite 7 + Tailwind v4
   + Pinia 3 + vue-router 5
-- **Deployment:** Docker Compose (Backend, Frontend/Nginx, Ollama, ChromaDB 1.x)
-  - Container-Hardening: cap_drop ALL, no-new-privileges
-  - Frontend nginx als non-root, Listen 8080
-  - Backend nur intern erreichbar (expose, kein host-port-binding)
+- **Deployment:**
+  - **Docker** (Stand v1.2.x, Standard heute): Backend, Frontend/Nginx, Ollama, ChromaDB 1.x als Container
+    - Container-Hardening: cap_drop ALL, no-new-privileges
+    - Frontend nginx als non-root, Listen 8080
+    - Backend nur intern erreichbar (expose, kein host-port-binding)
+    - ChromaDB in dediziertem internem Netz (`chromadb-net`, `internal: true`)
+  - **Native Windows** (ab v1.3): Setup.exe → NSSM-Service `ZettelwirtschaftBackend`
+    - PyInstaller-Onedir-Bundle, Frontend via FastAPI `StaticFiles`
+    - **ChromaDB embedded** (`PersistentClient`, kein HTTP-Service)
+    - Tesseract + poppler gebundled in `<install>/bin/`
+    - Ollama als nativer Windows-Service (vom Ollama-Installer)
+    - Konfiguration in `config.toml` statt `.env` (Pfad via `ZETTELWIRTSCHAFT_CONFIG`)
 - **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 1.x)
 - **Vektor-Suche:** ChromaDB 1.0.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
 - **Rate-Limiting:** slowapi (200/min default, X-Real-IP-Trust nur aus Docker-Net)
@@ -332,9 +361,15 @@ User-Frage
 - Async wo sinnvoll (FastAPI async endpoints, httpx fuer Ollama)
 - Type Hints durchgehend
 - Pydantic fuer alle API-Schemas
-- Konfiguration ausschliesslich ueber Umgebungsvariablen / `.env`
+- Konfiguration: `pydantic_settings` mit drei Quellen — ENV (Docker, Tests),
+  `config.toml` via `ZETTELWIRTSCHAFT_CONFIG` (Native), `.env` (Dev).
+  Priority: ENV > TOML > .env > secrets.
 - Logging: strukturiert, JSON-Format
 - Fehlerbehandlung: Graceful Degradation (Ollama nicht erreichbar -> NEEDS_REVIEW, nicht Absturz)
+- LLM/Embedding: shared `httpx.AsyncClient` Singleton (`llm_service._get_client`).
+  Timeout pro Request, exponential Backoff (2/4/8s).
+- Decimal fuer Geldbetraege (`Document.amount`, Tax-Aggregation). Pydantic-Schemas
+  serialisieren mit `@field_serializer` als float zurueck (API-Stabilitaet).
 
 ### Frontend (Vue.js)
 - Composition API mit `<script setup>` (keine Options API)
@@ -354,6 +389,17 @@ User-Frage
 - Healthchecks fuer alle Services
 - Restart-Policy: `unless-stopped`
 - Volumes: `./data` fuer Dokumente, benanntes Volume fuer Ollama-Modelle
+- `chromadb-net` mit `internal: true` — ChromaDB nur fuer Backend-Container erreichbar
+
+### Native-Windows (ab v1.3)
+- **Build:** `pwsh scripts/build-native.ps1` (Voraussetzung: `tools/{tesseract,poppler,nssm}` vorbereitet, NSIS im PATH)
+- **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit)
+- **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
+- **bin_paths.py** wird in `main.py` SEHR FRUEH importiert (vor pdf2image/pytesseract), setzt PATH+TESSDATA_PREFIX+pytesseract.tesseract_cmd auf gebundeltes `<install>/bin/`. No-op im Dev/Docker.
+- **ChromaDB embedded:** `_get_chroma_client` schaltet via `CHROMADB_MODE` zwischen `PersistentClient(path=...)` (native) und `HttpClient` (docker).
+- **Frontend:** `app.mount("/")` mit `StaticFiles(html=True)` *nach* allen `/api`-Routern. Nur wenn `FRONTEND_DIST_DIR` gesetzt + existiert.
+- **Service:** NSSM-Wrapper, Log-Rotation, optional `DependOnService Ollama`, AutoStart.
+- **Migration aus Docker:** `scripts/Convert-Env-To-Config.ps1` mapt `.env`-Keys auf TOML.
 
 ## Qualitaetsprinzipien
 
@@ -377,17 +423,49 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
 - **Auto-Migration** beim Start (`migrate.py` + Alembic-Chain, kein init_db mehr)
 - **CI lokal** statt GitHub-Actions (`scripts/ci-local.{ps1,sh}`)
 
-**Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27, siehe
-`SECURITY_AUDIT_v3.md` + `CODE_REVIEW_v3.md` + `LLM_OPTIMIZATION.md` +
-`REVIEW_REPORT.md`):
+**Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27 + Phasen 1-6 + Re-Review):
 
-- 3 BLOCKER + 13 HIGH + 11 MEDIUM Code-Review-Findings gefixt
-- 7 von 8 SECURITY-Findings (NEW-001..009) gefixt; PIN_ENABLED-Default nur
-  als Startup-Warning (Breaking-Change-Migration noch offen)
+- 3 BLOCKER + 13 HIGH + 11 MEDIUM aus initialem Code-Review gefixt
+- 7 von 8 SECURITY-Findings (NEW-001..009) aus alten Audits gefixt
+- **Phasen 1-6 (internes Code-Review):** Top-7 Blocker + 12 High + 7 Mid +
+  alle Re-Review-Findings bis Mid (R-01 PDF-Bug, K-2 PRAGMA foreign_keys=ON,
+  K-3 Decimal-Serializer, R-06 Email-FAILED-Pfad, ChromaDB-Scope-Fallback,
+  RAG-Prompt-Injection-Sanitizer, Heartbeat fuer Stuck-Job-Recovery,
+  LLM-Service-Singleton-Client + Backoff, useFilingScopes-Composable,
+  Migration 013 FK+Indexes, Decimal-Umstellung).
+- **PIN-Schutz**: Default-PIN beim Install (auto-generierter 6-stelliger Code),
+  UI-Banner via `pin_warning`-Flag wenn deaktiviert, Cookie `Secure`+`SameSite=strict`
 - LLM-Pipeline: bge-m3, JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
   optional Reranker + Verifier
 - Lib-Stand: Vite 7, Tailwind v4, Pinia 3, vue-router 5, Node 22, ChromaDB 1.0.20,
   FastAPI 0.119+, Pillow 12.2+, axios 1.15.1+, slowapi neu
+
+**Native-Windows-Foundation (Phase 1 abgeschlossen, ab v1.3):**
+
+- Settings: `config.toml` via `pydantic_settings.TomlConfigSettingsSource`,
+  Pfad ueber `ZETTELWIRTSCHAFT_CONFIG`. ENV > TOML > .env Priority — Tests
+  + Docker unbeeintraechtigt.
+- ChromaDB: `CHROMADB_MODE` Schalter (`embedded`/`http`). Native nutzt
+  `PersistentClient(path=CHROMADB_PATH)`, spart eigenen Service + HTTP-
+  Roundtrip + Auth-Frage.
+- Frontend: `FRONTEND_DIST_DIR`-Setting + `app.mount("/")` mit
+  `StaticFiles(html=True)` — kein nginx im Native-Setup.
+- `bin_paths.py`: bei PyInstaller-frozen Bundle Tesseract + poppler aus
+  `<install>/bin/` laden, PATH erweitern.
+- `app/entrypoint.py`: Native-Entry mit `--config`/`--migrate-only`,
+  Alembic via Public-API (kein subprocess), uvicorn programmatisch.
+- `backend/zettelwirtschaft.spec`: PyInstaller-Onedir mit Hidden-Imports +
+  Data-Files (alembic, prompts, certifi, chromadb-submodules).
+- `setup-native.nsi`: NSIS-Installer ohne Docker. Custom-Page fuer Datenordner-
+  Wahl, Auto-PIN, Firewall-Rule, NSSM-Service-Install.
+- `scripts/service-install.bat`, `service-uninstall.bat`,
+  `Convert-Env-To-Config.ps1` (Migration aus Docker-Installs).
+- Build-Pipeline: `pwsh scripts/build-native.ps1` orchestriert PyInstaller +
+  Vite + Bin-Bundle + NSSM + NSIS.
+
+Naechste Phasen (2-4 laut `planung/native-windows-konzept.md`): Service-Bundle
+gegen lokales Test-Build verifizieren, Migrations-Wizard, Tray-Icon,
+Code-Signing.
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.
