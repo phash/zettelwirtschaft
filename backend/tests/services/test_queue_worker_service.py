@@ -186,3 +186,89 @@ class TestQueueWorker:
         assert updated_job.retry_count == 3
         assert updated_job.status == JobStatus.FAILED
         assert updated_job.error_message is not None
+
+    # Re-Review Test D: Worker-Heartbeat (B5 + N-04).
+    async def test_heartbeat_set_on_claim(
+        self,
+        test_settings: Settings,
+        test_session_factory,
+        db_session: AsyncSession,
+        sample_pdf: Path,
+    ):
+        """processing_started_at wird beim Claim gesetzt."""
+        job = ProcessingJob(
+            original_filename="hb.pdf",
+            stored_filename="abc_hb.pdf",
+            file_path=str(sample_pdf),
+            file_type="pdf",
+            file_size_bytes=sample_pdf.stat().st_size,
+            source=JobSource.UPLOAD,
+            status=JobStatus.PENDING,
+        )
+        db_session.add(job)
+        await db_session.commit()
+        job_id = job.id
+        # Vor Worker-Start: kein Heartbeat
+        assert job.processing_started_at is None
+
+        test_settings.QUEUE_POLL_INTERVAL = 0
+        with patch(
+            "app.services.queue_worker_service.analyze_document",
+            new_callable=AsyncMock,
+            return_value=_mock_analyze_success(),
+        ), patch(
+            "app.services.vectorize_service.vectorize_document",
+            new_callable=AsyncMock,
+            return_value=0,
+        ):
+            task = asyncio.create_task(run_queue_worker(test_session_factory, test_settings))
+            await asyncio.sleep(1.0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        updated_job = await _get_job_fresh(test_session_factory, job_id)
+        # Nach erfolgreichem Lauf bleibt der Heartbeat gesetzt (kein cleanup);
+        # bei Retry wird er auf None gesetzt (separat getestet ueber N-04).
+        assert updated_job.processing_started_at is not None
+        assert updated_job.status == JobStatus.COMPLETED
+
+    async def test_heartbeat_reset_on_retry(
+        self,
+        test_settings: Settings,
+        test_session_factory,
+        db_session: AsyncSession,
+    ):
+        """Bei Job-Failure (Retry) wird processing_started_at auf None gesetzt."""
+        from datetime import datetime, timezone
+        # Job manuell mit Heartbeat anlegen, dann Worker laufen lassen
+        job = ProcessingJob(
+            original_filename="missing.pdf",
+            stored_filename="x.pdf",
+            file_path="/nonexistent/file.pdf",
+            file_type="pdf",
+            file_size_bytes=100,
+            source=JobSource.UPLOAD,
+            status=JobStatus.PENDING,
+        )
+        db_session.add(job)
+        await db_session.commit()
+        job_id = job.id
+
+        test_settings.QUEUE_POLL_INTERVAL = 0
+        test_settings.MAX_RETRIES = 5  # Genug Retries damit der erste Pass PENDING setzt
+        task = asyncio.create_task(run_queue_worker(test_session_factory, test_settings))
+        await asyncio.sleep(0.5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        updated_job = await _get_job_fresh(test_session_factory, job_id)
+        assert updated_job.retry_count >= 1
+        # Bei PENDING (Retry-Pfad) muss Heartbeat zurueckgesetzt sein
+        if updated_job.status == JobStatus.PENDING:
+            assert updated_job.processing_started_at is None

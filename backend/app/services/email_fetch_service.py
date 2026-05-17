@@ -203,7 +203,11 @@ async def fetch_emails_for_account(
         return stats
 
     stats["total"] = len(raw_emails)
-    logger.info("%d neue E-Mails fuer %s", len(raw_emails), account.name)
+    # account.name/account.id cachen, damit Loop nach Rollback nicht in
+    # ein expired-ORM-Object reinlaeuft (MissingGreenlet bei Lazy-Reload).
+    account_id = account.id
+    account_name = account.name
+    logger.info("%d neue E-Mails fuer %s", len(raw_emails), account_name)
 
     emails_to_move: list[bytes] = []
 
@@ -223,7 +227,7 @@ async def fetch_emails_for_account(
             # Duplikat-Check
             existing = await db.execute(
                 select(ProcessedEmail).where(
-                    ProcessedEmail.email_account_id == account.id,
+                    ProcessedEmail.email_account_id == account_id,
                     ProcessedEmail.message_id == parsed["message_id"],
                 )
             )
@@ -243,7 +247,7 @@ async def fetch_emails_for_account(
 
             if not relevance["relevant"]:
                 processed = ProcessedEmail(
-                    email_account_id=account.id,
+                    email_account_id=account_id,
                     message_id=parsed["message_id"],
                     subject=parsed["subject"],
                     sender=parsed["sender"],
@@ -261,7 +265,7 @@ async def fetch_emails_for_account(
             job_ids = await _create_jobs_from_email(parsed, account, db, settings)
 
             processed = ProcessedEmail(
-                email_account_id=account.id,
+                email_account_id=account_id,
                 message_id=parsed["message_id"],
                 subject=parsed["subject"],
                 sender=parsed["sender"],
@@ -279,7 +283,7 @@ async def fetch_emails_for_account(
             # T16: Failed-Eintrag damit die E-Mail nicht beim naechsten Run
             # erneut LLM-Calls produziert. message_id ist UNIQUE pro Account.
             err_msg = str(e)[:400] or type(e).__name__
-            logger.exception("Fehler bei E-Mail %s (num=%r): %s", account.name, num, err_msg)
+            logger.exception("Fehler bei E-Mail %s (num=%r): %s", account_name, num, err_msg)
             try:
                 await db.rollback()
             except Exception:
@@ -290,15 +294,15 @@ async def fetch_emails_for_account(
             num_str = num.decode("ascii", errors="replace") if isinstance(num, bytes) else str(num)
             try:
                 if parsed is not None:
-                    msg_id = parsed.get("message_id") or f"failed-{account.id}-{num_str}"
+                    msg_id = parsed.get("message_id") or f"failed-{account_id}-{num_str}"
                     subj = parsed.get("subject")
                     sender = parsed.get("sender")
                     received = parsed.get("date")
                 else:
-                    msg_id = f"failed-{account.id}-{num_str}"
+                    msg_id = f"failed-{account_id}-{num_str}"
                     subj = sender = received = None
                 failed_record = ProcessedEmail(
-                    email_account_id=account.id,
+                    email_account_id=account_id,
                     message_id=msg_id,
                     subject=subj,
                     sender=sender,

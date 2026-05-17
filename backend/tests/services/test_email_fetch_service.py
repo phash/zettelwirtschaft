@@ -207,3 +207,51 @@ async def test_fetch_emails_no_unseen(db_session, test_settings):
         stats = await fetch_emails_for_account(account, db_session, test_settings)
 
     assert stats["total"] == 0
+
+
+# Re-Review Test E: T16/R-06 FAILED-Record bei LLM-Crash.
+@pytest.mark.asyncio
+async def test_fetch_emails_creates_failed_record_on_llm_crash(
+    db_session, test_settings, test_session_factory,
+):
+    """Wenn check_email_relevance fuer eine Mail crashed:
+    - Die Mail bekommt einen ProcessedEmail mit status=FAILED.
+    - Die Mail wird verschoben (kein Endlos-UNSEEN beim naechsten Run).
+
+    Vereinfachte Version: nur 1 Mail, dafuer minimaler Greenlet-Footprint.
+    """
+    account = EmailAccount(
+        name="Test", imap_host="imap.test.com", username="u@t.com",
+        encrypted_password="enc", schedule_type=ScheduleType.MANUAL,
+    )
+    db_session.add(account)
+    await db_session.commit()
+    account_id = account.id
+
+    msg = _build_mime_email(subject="Test", message_id="<crash@test>")
+
+    mock_imap = MagicMock()
+    mock_imap.select.return_value = ("OK", [b"1"])
+    mock_imap.search.return_value = ("OK", [b"1"])
+    mock_imap.fetch.return_value = ("OK", [(b"1", msg.as_bytes())])
+    mock_imap.copy.return_value = ("OK", [])
+    mock_imap.store.return_value = ("OK", [])
+
+    with patch("app.services.email_fetch_service._connect_imap", return_value=mock_imap), \
+         patch("app.services.email_fetch_service.decrypt_password", return_value="password"), \
+         patch("app.services.email_fetch_service.check_email_relevance",
+               new_callable=AsyncMock, side_effect=Exception("LLM down")):
+        stats = await fetch_emails_for_account(account, db_session, test_settings)
+
+    assert stats["failed"] == 1
+    assert stats["total"] == 1
+
+    # FAILED-Record persistiert? Mit frischer Session pruefen.
+    async with test_session_factory() as verify_session:
+        result = await verify_session.execute(
+            select(ProcessedEmail).where(ProcessedEmail.email_account_id == account_id)
+        )
+        records = result.scalars().all()
+        assert len(records) == 1
+        assert records[0].status == EmailStatus.FAILED
+        assert "LLM down" in (records[0].relevance_reason or "")

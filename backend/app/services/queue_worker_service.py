@@ -36,6 +36,17 @@ def is_queue_paused() -> bool:
     return _queue_paused
 
 
+async def _heartbeat(job: ProcessingJob, session: AsyncSession) -> None:
+    """N-04 (Re-Review): Heartbeat-Update zwischen Verarbeitungsphasen.
+    Stuck-Job-Recovery (main.py:STALE_MINUTES=10) setzt Jobs zurueck deren
+    Heartbeat aelter als 10 Min ist. Ohne Update lief der Heartbeat genau einmal
+    beim Claim — bei langen Ollama-Calls (>10 Min) wurde der Job faelschlich
+    als steckengeblieben markiert.
+    """
+    job.processing_started_at = datetime.now(timezone.utc)
+    await session.flush()
+
+
 async def _process_job(
     job: ProcessingJob,
     settings: Settings,
@@ -58,6 +69,7 @@ async def _process_job(
 
     # Thumbnail generieren
     thumbnail_path = await generate_thumbnail(file_path, job.file_type, job.id, settings)
+    await _heartbeat(job, session)
 
     # OCR + KI-Analyse — Session uebergeben damit CorrectionMappings als
     # Few-Shot-Examples in den Prompt injiziert werden koennen.
@@ -68,6 +80,7 @@ async def _process_job(
         filing_scopes=filing_scopes, session=session,
         pre_ocr_text=job.ocr_text,
     )
+    await _heartbeat(job, session)
 
     # OCR-Ergebnisse im Job speichern
     if ocr_result:

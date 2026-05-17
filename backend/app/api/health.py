@@ -1,4 +1,5 @@
 import shutil
+import time
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -12,6 +13,32 @@ from app.database import get_db
 from fastapi import Request
 
 router = APIRouter()
+
+
+# M-2 (Re-Review): Ollama-Subcheck mit TTL-Cache. Docker-Healthcheck feuert
+# alle 30s pro Container + Frontend-Polling — jeder Probe ohne Cache wuerde
+# Ollama mit HTTP-Calls beschaeftigen. 5s-TTL ist deutlich kuerzer als
+# Ollama-Failure-Window, schont das Backend trotzdem.
+_ollama_cache: tuple[float, str, str | None] | None = None  # (timestamp, status, message)
+_OLLAMA_TTL = 5.0
+
+
+async def _ollama_status(settings: Settings) -> tuple[str, str | None]:
+    global _ollama_cache
+    now = time.monotonic()
+    if _ollama_cache is not None and (now - _ollama_cache[0]) < _OLLAMA_TTL:
+        return _ollama_cache[1], _ollama_cache[2]
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            if resp.status_code == 200:
+                status, msg = "ok", None
+            else:
+                status, msg = "warning", f"Ollama antwortet mit Status {resp.status_code}"
+    except Exception:
+        status, msg = "warning", "Ollama nicht erreichbar"
+    _ollama_cache = (now, status, msg)
+    return status, msg
 
 
 class ComponentStatus(BaseModel):
@@ -67,22 +94,9 @@ async def health_check(
     except Exception as e:
         components["storage"] = ComponentStatus(status="error", message=str(e))
 
-    # Ollama
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-            if resp.status_code == 200:
-                components["ollama"] = ComponentStatus(status="ok")
-            else:
-                components["ollama"] = ComponentStatus(
-                    status="warning",
-                    message=f"Ollama antwortet mit Status {resp.status_code}",
-                )
-    except Exception:
-        components["ollama"] = ComponentStatus(
-            status="warning",
-            message="Ollama nicht erreichbar",
-        )
+    # Ollama (M-2: TTL-Cache, siehe _ollama_status)
+    ollama_status, ollama_msg = await _ollama_status(settings)
+    components["ollama"] = ComponentStatus(status=ollama_status, message=ollama_msg)
 
     # Gesamtstatus
     statuses = [c.status for c in components.values()]
