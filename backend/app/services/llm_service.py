@@ -10,6 +10,38 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
+# H-BE-1: Singleton-Client statt pro-Aufruf neuem AsyncClient. Spart TCP +
+# TLS-Handshakes (qwen2.5+verifier+reranker = bis zu 4 Calls pro Dokument).
+# Lazy-Init mit aktuellem Timeout. Beim ersten Aufruf mit neuem Timeout-Wert
+# wird der Client neu gebaut.
+_client: httpx.AsyncClient | None = None
+_client_timeout: float | None = None
+
+
+def _get_client(timeout: float) -> httpx.AsyncClient:
+    global _client, _client_timeout
+    if _client is None or _client_timeout != timeout:
+        if _client is not None:
+            # Alten Client schliessen, nicht via Event-Loop sondern best-effort.
+            try:
+                _client._transport.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        _client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        _client_timeout = timeout
+    return _client
+
+
+async def aclose_client() -> None:
+    """Sauberes Schliessen beim Shutdown — vom lifespan-Hook aus aufrufbar."""
+    global _client, _client_timeout
+    if _client is not None:
+        try:
+            await _client.aclose()
+        finally:
+            _client = None
+            _client_timeout = None
+
 
 def load_prompt_template(name: str) -> str:
     """Laedt ein Prompt-Template aus dem prompts-Verzeichnis.
@@ -27,6 +59,11 @@ def load_prompt_template(name: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Prompt-Template nicht gefunden: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """H-BE-8: Exponentielles Backoff 2s, 4s, 8s, ... Cap bei 30s."""
+    return min(2.0 * (2 ** attempt), 30.0)
 
 
 async def _call_ollama(
@@ -66,49 +103,49 @@ async def _call_ollama(
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     label = "Schema" if isinstance(response_format, dict) else ("JSON" if response_format else "Text")
 
-    for attempt in range(settings.OLLAMA_MAX_RETRIES + 1):
+    client = _get_client(settings.OLLAMA_TIMEOUT)
+    max_retries = settings.OLLAMA_MAX_RETRIES
+
+    # H-BE-8: einheitlicher Retry-Loop fuer ConnectError/TimeoutException/5xx.
+    last_error: str = ""
+    for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT)
-            ) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
 
-                data = response.json()
-                content = data.get("message", {}).get("content", "")
-                if content:
-                    logger.info("LLM-%s-Antwort erhalten (%d Zeichen)", label, len(content))
-                    return content
-
-                logger.warning("LLM-%s-Antwort leer", label)
-                return None
-
-        except httpx.ConnectError:
-            if attempt < settings.OLLAMA_MAX_RETRIES:
-                logger.warning(
-                    "Ollama nicht erreichbar (Versuch %d/%d), warte 2s...",
-                    attempt + 1, settings.OLLAMA_MAX_RETRIES + 1,
+            data = response.json()
+            content = data.get("message", {}).get("content", "")
+            if content:
+                logger.info(
+                    "LLM-%s-Antwort erhalten (%d Zeichen, Modell %s)",
+                    label, len(content), settings.OLLAMA_MODEL,
                 )
-                await asyncio.sleep(2)
-            else:
-                logger.error("Ollama nicht erreichbar nach %d Versuchen", settings.OLLAMA_MAX_RETRIES + 1)
-                return None
+                return content
 
-        except httpx.TimeoutException:
-            if attempt < settings.OLLAMA_MAX_RETRIES:
+            logger.warning("LLM-%s-Antwort leer", label)
+            return None
+
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            last_error = type(e).__name__
+            if attempt < max_retries:
+                wait = _backoff_seconds(attempt)
                 logger.warning(
-                    "Ollama Timeout (Versuch %d/%d), warte 2s...",
-                    attempt + 1, settings.OLLAMA_MAX_RETRIES + 1,
+                    "Ollama %s (Versuch %d/%d), warte %.1fs...",
+                    last_error, attempt + 1, max_retries + 1, wait,
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(wait)
             else:
-                logger.error("Ollama Timeout nach %d Versuchen", settings.OLLAMA_MAX_RETRIES + 1)
+                logger.error("Ollama %s nach %d Versuchen", last_error, max_retries + 1)
                 return None
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code >= 500 and attempt < settings.OLLAMA_MAX_RETRIES:
-                logger.warning("Ollama HTTP %d, Retry %d/%d...", e.response.status_code, attempt + 1, settings.OLLAMA_MAX_RETRIES)
-                await asyncio.sleep(2)
+            if e.response.status_code >= 500 and attempt < max_retries:
+                wait = _backoff_seconds(attempt)
+                logger.warning(
+                    "Ollama HTTP %d, Retry %d/%d, warte %.1fs...",
+                    e.response.status_code, attempt + 1, max_retries + 1, wait,
+                )
+                await asyncio.sleep(wait)
                 continue
             logger.error("Ollama HTTP-Fehler: %s", e)
             return None
@@ -152,6 +189,8 @@ async def check_ollama_available(settings: Settings) -> bool:
         True wenn Ollama antwortet, False sonst.
     """
     try:
+        # Separater Client mit kurzem Timeout — Health-Probe darf nicht den
+        # 300s-Hauptclient blockieren.
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
             resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
             return resp.status_code == 200

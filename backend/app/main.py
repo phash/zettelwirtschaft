@@ -227,6 +227,10 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*background_tasks, return_exceptions=True)
     logger.info("Background-Tasks beendet")
 
+    # H-BE-1: Singleton-LLM-Client sauber schliessen.
+    from app.services.llm_service import aclose_client as aclose_llm_client
+    await aclose_llm_client()
+
 
 app = FastAPI(
     title="Zettelwirtschaft",

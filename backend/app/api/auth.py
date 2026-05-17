@@ -100,11 +100,16 @@ async def auth_login(
         token = uuid.uuid4().hex
         expiry = now + timedelta(minutes=settings.PIN_SESSION_TIMEOUT_MINUTES)
         _sessions[token] = expiry
+        # F-05: Secure-Flag dynamisch — bei TLS-Setup wird er aktiv, ohne
+        # bricht der HTTP-Default nicht. SameSite=strict, weil kein externer
+        # Cross-Site-POST-Workflow erwartet wird (internes Tool).
+        is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
         response.set_cookie(
             key=SESSION_COOKIE,
             value=token,
             httponly=True,
-            samesite="lax",
+            samesite="strict",
+            secure=is_https,
             max_age=settings.PIN_SESSION_TIMEOUT_MINUTES * 60,
         )
         return {"success": True}

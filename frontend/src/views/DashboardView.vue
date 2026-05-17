@@ -52,7 +52,10 @@ async function loadData() {
       }
     }).catch(() => { /* E-Mail nicht konfiguriert, ignorieren */ })
 
-    if (processingJobs.value.length > 0 && !pollTimer) {
+    // H-FE-2: Polling pausiert wenn der Tab im Hintergrund ist
+    // (siehe visibilitychange-Handler unten). Beim Sichtbarwerden wird ein
+    // sofortiges loadData() ausgeloest, das den Timer dann ggf. wieder setzt.
+    if (processingJobs.value.length > 0 && !pollTimer && document.visibilityState === 'visible') {
       pollTimer = setInterval(loadData, 3000)
     } else if (processingJobs.value.length === 0 && pollTimer) {
       clearInterval(pollTimer)
@@ -116,8 +119,19 @@ function copyForClaude(job) {
   navigator.clipboard.writeText(text).then(() => notify.success('Fehlerinfo kopiert.'))
 }
 
+// H-FE-2: Polling pausieren wenn Tab im Hintergrund, beim Re-Show neu laden.
+function onVisibility() {
+  if (document.visibilityState === 'hidden') {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  } else if (document.visibilityState === 'visible') {
+    loadData()
+  }
+}
+document.addEventListener('visibilitychange', onVisibility)
+
 onUnmounted(() => {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 
 async function handleDrop(e) {

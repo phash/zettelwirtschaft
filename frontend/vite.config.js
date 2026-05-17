@@ -80,6 +80,10 @@ export default defineConfig({
     }),
   ],
   server: {
+    // F-09: Dev-Server bindet nur an localhost (statt 0.0.0.0). Verhindert
+    // versehentliches Exponieren des unhardened Vite-Dev-Servers im LAN.
+    // Wer im LAN testen will: explizit `npm run dev -- --host 0.0.0.0`.
+    host: '127.0.0.1',
     port: 3000,
     proxy: {
       '/api': {
@@ -87,5 +91,11 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    // F-09: Production-Builds ohne Source-Maps. Source-Maps geben den
+    // kompletten Original-Code preis (auch wenn der ohnehin Open-Source ist —
+    // Defense-in-Depth: weniger Angriffsflaeche fuer XSS/Reverse-Engineering).
+    sourcemap: false,
   },
 })

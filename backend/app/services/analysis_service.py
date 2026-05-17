@@ -495,6 +495,7 @@ async def analyze_document(
     settings: Settings,
     filing_scopes: list[dict] | None = None,
     session=None,
+    pre_ocr_text: str | None = None,
 ) -> tuple[OcrResult | None, AnalysisResult | None]:
     """Fuehrt die vollstaendige Dokumentenanalyse durch.
 
@@ -508,19 +509,26 @@ async def analyze_document(
         filing_scopes: Verfuegbare Ablagebereiche fuer LLM-Zuweisung.
         session: Optionale DB-Session — wenn vorhanden werden CorrectionMappings
             als Few-Shot-Examples in den Prompt injiziert (Lerneffekt).
+        pre_ocr_text: F-07: vorher bekannter Text (z.B. E-Mail-Body). Wenn
+            gesetzt, wird OCR uebersprungen und der Text direkt verwendet.
+            Konfidenz wird auf 1.0 angenommen.
 
     Returns:
         Tuple aus (OcrResult, AnalysisResult).
         Beide koennen None sein bei Fehler.
     """
-    # 1. OCR
-    ocr_result = await extract_text(file_path, file_type, settings)
-    if not ocr_result or not ocr_result.full_text.strip():
-        logger.warning("OCR hat keinen Text extrahiert fuer: %s", file_path.name)
-        return ocr_result, AnalysisResult(
-            needs_review=True,
-            review_questions=["OCR konnte keinen Text extrahieren. Bitte Dokument manuell pruefen."],
-        )
+    # 1. OCR (oder Skip wenn Text bereits vorhanden)
+    if pre_ocr_text and pre_ocr_text.strip():
+        ocr_result = OcrResult(full_text=pre_ocr_text, average_confidence=1.0, pages=[])
+        logger.info("OCR uebersprungen (pre_ocr_text vorhanden, %d Zeichen)", len(pre_ocr_text))
+    else:
+        ocr_result = await extract_text(file_path, file_type, settings)
+        if not ocr_result or not ocr_result.full_text.strip():
+            logger.warning("OCR hat keinen Text extrahiert fuer: %s", file_path.name)
+            return ocr_result, AnalysisResult(
+                needs_review=True,
+                review_questions=["OCR konnte keinen Text extrahieren. Bitte Dokument manuell pruefen."],
+            )
 
     # 2. Text kuerzen fuer LLM
     truncated_text = _truncate_text(ocr_result.full_text)

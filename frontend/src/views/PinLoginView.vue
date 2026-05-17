@@ -54,12 +54,23 @@ onMounted(() => {
   pinInput.value?.focus()
 })
 
+// H-FE-1: redirect-Param muss einem internen Pfad entsprechen. Werte wie
+// `https://evil.com`, `//evil.com/x`, oder `javascript:` werden ignoriert und
+// fallen auf `/` zurueck. Vue-Router interpretiert "//evil" als Pfad, aber
+// das LAN-Risiko reicht fuer die Whitelist-Pruefung.
+function safeRedirect(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return '/'
+  if (!raw.startsWith('/')) return '/'
+  if (raw.startsWith('//')) return '/'
+  if (raw.startsWith('/\\')) return '/'
+  return raw
+}
+
 async function handleLogin() {
   error.value = ''
   const result = await auth.login(pin.value)
   if (result.success) {
-    const redirect = router.currentRoute.value.query.redirect || '/'
-    router.replace(redirect)
+    router.replace(safeRedirect(router.currentRoute.value.query.redirect))
   } else {
     error.value = result.detail
     pin.value = ''

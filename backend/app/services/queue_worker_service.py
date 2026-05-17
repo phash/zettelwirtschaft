@@ -61,8 +61,12 @@ async def _process_job(
 
     # OCR + KI-Analyse — Session uebergeben damit CorrectionMappings als
     # Few-Shot-Examples in den Prompt injiziert werden koennen.
+    # F-07: bei E-Mail-Body ist ocr_text vorab am Job gesetzt; analyze_document
+    # ueberspringt dann die OCR-Phase.
     ocr_result, analysis_result = await analyze_document(
-        file_path, job.file_type, settings, filing_scopes=filing_scopes, session=session,
+        file_path, job.file_type, settings,
+        filing_scopes=filing_scopes, session=session,
+        pre_ocr_text=job.ocr_text,
     )
 
     # OCR-Ergebnisse im Job speichern

@@ -51,104 +51,89 @@ class TestCallLlm:
         """Erfolgreicher LLM-Aufruf gibt Antwort zurueck."""
         mock_response = _make_response(200, mock_ollama_response)
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             result = await call_llm("Analysiere dieses Dokument", test_settings)
 
-            assert result is not None
-            data = json.loads(result)
-            assert data["document_type"] == "RECHNUNG"
-            assert data["confidence"] == 0.92
+        assert result is not None
+        data = json.loads(result)
+        assert data["document_type"] == "RECHNUNG"
+        assert data["confidence"] == 0.92
 
     async def test_connection_error_retries(self, test_settings: Settings):
         """Bei ConnectError wird wiederholt versucht."""
         test_settings.OLLAMA_MAX_RETRIES = 1
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        # H-BE-1: Singleton-Client wird ueber _get_client geholt. Test patcht
+        # die Factory statt httpx.AsyncClient direkt, damit der Mock unabhaengig
+        # vom Singleton-Cache greift.
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             with patch("app.services.llm_service.asyncio.sleep", new_callable=AsyncMock):
                 result = await call_llm("Test", test_settings)
 
-            assert result is None
-            # 1 initial + 1 retry = 2 Aufrufe
-            assert mock_client.post.call_count == 2
+        assert result is None
+        # 1 initial + 1 retry = 2 Aufrufe
+        assert mock_client.post.call_count == 2
 
     async def test_timeout_retries(self, test_settings: Settings):
         """Bei Timeout wird wiederholt versucht."""
         test_settings.OLLAMA_MAX_RETRIES = 1
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("Timeout"))
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             with patch("app.services.llm_service.asyncio.sleep", new_callable=AsyncMock):
                 result = await call_llm("Test", test_settings)
 
-            assert result is None
-            assert mock_client.post.call_count == 2
+        assert result is None
+        assert mock_client.post.call_count == 2
 
     async def test_http_error_no_retry(self, test_settings: Settings):
         """Bei HTTP-Fehler (z.B. 500) wird nicht wiederholt."""
         mock_response = _make_response(500)
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             result = await call_llm("Test", test_settings)
 
-            assert result is None
+        assert result is None
 
     async def test_empty_response(self, test_settings: Settings):
         """Leere LLM-Antwort gibt None zurueck."""
         mock_response = _make_response(200, {"message": {"role": "assistant", "content": ""}})
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             result = await call_llm("Test", test_settings)
 
-            assert result is None
+        assert result is None
 
     async def test_system_prompt_included(self, test_settings: Settings, mock_ollama_response: dict):
         """System-Prompt wird in Messages aufgenommen."""
         mock_response = _make_response(200, mock_ollama_response)
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             await call_llm("User prompt", test_settings, system_prompt="System prompt")
 
-            call_args = mock_client.post.call_args
-            payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            messages = payload["messages"]
-            assert len(messages) == 2
-            assert messages[0]["role"] == "system"
-            assert messages[0]["content"] == "System prompt"
+        call_args = mock_client.post.call_args
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        messages = payload["messages"]
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "System prompt"
 
 
 class TestCheckOllamaAvailable:
@@ -217,27 +202,24 @@ class TestCallLlmText:
             },
         })
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             await call_llm_text(
                 "User prompt",
                 test_settings,
                 system_prompt="Du bist ein hilfreicher Assistent.",
             )
 
-            call_args = mock_client.post.call_args
-            payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            messages = payload["messages"]
-            assert len(messages) == 2
-            assert messages[0]["role"] == "system"
-            assert messages[0]["content"] == "Du bist ein hilfreicher Assistent."
-            assert messages[1]["role"] == "user"
-            assert messages[1]["content"] == "User prompt"
+        call_args = mock_client.post.call_args
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        messages = payload["messages"]
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "Du bist ein hilfreicher Assistent."
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "User prompt"
 
     async def test_call_llm_text_no_json_format(self, test_settings: Settings):
         """Freitext-Aufruf sendet KEIN format:json im Payload."""
@@ -249,15 +231,12 @@ class TestCallLlmText:
             },
         })
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             await call_llm_text("Beschreibe das Dokument", test_settings)
 
-            call_args = mock_client.post.call_args
-            payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert "format" not in payload, "call_llm_text darf kein 'format' im Payload senden"
+        call_args = mock_client.post.call_args
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "format" not in payload, "call_llm_text darf kein 'format' im Payload senden"

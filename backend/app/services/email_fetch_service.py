@@ -341,8 +341,10 @@ async def _create_jobs_from_email(
         job_ids.append(job.id)
         logger.info("E-Mail-Anhang als Job erstellt: %s -> %s", filename, job.id)
 
-    # Body als .txt wenn substanziell und keine Anhaenge verarbeitet
-    # (intern erzeugt, keine ALLOWED_FILE_TYPES-Pruefung noetig)
+    # F-07: Body als .txt-File, aber ocr_text vorab am Job gesetzt. Damit
+    # wird OCR-Tesseract uebersprungen (Body ist bereits Text), und der
+    # file_type="txt"-Pfad geht durch keine ALLOWED_FILE_TYPES-Schwelle die
+    # ausserhalb der intern erzeugten E-Mail-Quelle relevant waere.
     body = parsed.get("body", "").strip()
     if body and len(body) > 100 and not job_ids:
         txt_filename = f"email_{parsed['subject'][:50]}.txt".replace("/", "_").replace("\\", "_")
@@ -359,6 +361,10 @@ async def _create_jobs_from_email(
             source=JobSource.EMAIL,
             status=JobStatus.PENDING,
             email_account_id=account.id,
+            # F-07: Body ist bereits sauberer Text — OCR ueberspringen,
+            # Konfidenz 1.0 (keine Erkennungs-Unsicherheit).
+            ocr_text=body,
+            ocr_confidence=1.0,
         )
         db.add(job)
         await db.flush()
