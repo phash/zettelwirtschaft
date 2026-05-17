@@ -2,3 +2,10 @@
 # Wird zusaetzlich zu requirements.txt installiert wenn pyinstaller laeuft.
 
 pyinstaller>=6.6,<7
+
+# Native-Mode nutzt ChromaDB-PersistentClient (embedded) statt HttpClient.
+# Das volle `chromadb` enthaelt den PersistentClient, der HTTP-only
+# `chromadb-client` aus requirements.txt nicht. Beide nutzen den gleichen
+# Modulnamespace `chromadb`, also Konflikt — vor PyInstaller-Build muss
+# chromadb-client deinstalliert sein (siehe build-native.ps1).
+chromadb>=1.0,<2

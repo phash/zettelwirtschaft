@@ -41,6 +41,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DistRoot "bin") | Out-Null
 Write-Host "==> [1/5] PyInstaller Backend-Bundle" -ForegroundColor Yellow
 Push-Location (Join-Path $RepoRoot "backend")
 try {
+    # Native braucht chromadb (full) statt chromadb-client (HTTP-only).
+    # Beide installiert -> Namespace-Konflikt im Bundle, PersistentClient
+    # crasht zur Laufzeit mit "http-only client mode".
+    Write-Host "  Sicherstellen: chromadb-client deinstalliert" -ForegroundColor DarkGray
+    python -m pip uninstall -y chromadb-client 2>&1 | Out-Null
+    python -m pip install -r requirements-build.txt 2>&1 | Select-Object -Last 3
+
     pyinstaller zettelwirtschaft.spec --clean --noconfirm
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
     Copy-Item -Recurse -Force "dist\zettelwirtschaft-backend" (Join-Path $DistRoot "backend")
