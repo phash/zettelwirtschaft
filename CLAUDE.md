@@ -66,6 +66,44 @@ pwsh scripts/ci-local.ps1 -SkipE2E -SkipDocker
 bash scripts/ci-local.sh --skip-e2e          # Linux/macOS
 ```
 
+## Native-Service-Ops
+
+**Service-Steuerung** (NSSM-managed):
+
+```powershell
+sc query ZettelwirtschaftBackend     # Status (RUNNING/STOPPED)
+sc query Ollama                      # gleiches fuer LLM-Backend
+sc start ZettelwirtschaftBackend     # braucht Admin
+sc stop ZettelwirtschaftBackend      # braucht Admin
+# GUI: services.msc -> "Zettelwirtschaft" / "Ollama"
+```
+
+Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
+
+**Migration Docker → Native** (Bestandskunden, getestet 2026-05):
+
+1. **Backup** (Pflicht vor Migration):
+   ```powershell
+   $bak = "$env:USERPROFILE\Documents\Zettelwirtschaft-Backups"
+   Compress-Archive "$env:LOCALAPPDATA\Zettelwirtschaft\data","$env:LOCALAPPDATA\Zettelwirtschaft\.env" `
+       -DestinationPath "$bak\pre-native_$(Get-Date -f yyyyMMdd_HHmmss).zip"
+   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v "${bak}:/dst" alpine `
+       tar czf /dst/chromadb-volume.tar.gz -C /src .
+   ```
+2. **Daten kopieren** in Native-Datenordner (`robocopy` mit `/E`):
+   `robocopy %LOCALAPPDATA%\Zettelwirtschaft\data ~/Documents/Zettelwirtschaft/data /E`
+3. **config.toml generieren** aus alter `.env`:
+   `pwsh scripts/Convert-Env-To-Config.ps1 -EnvPath ... -OutPath ... -DataDir ...`
+4. **Docker stoppen**: `docker compose down` im alten AppData-Ordner.
+5. **ChromaDB-Volume migrieren** ueber `C:\Temp`-Zwischenstation (Docker kann User-Pfade auf Windows nicht direkt mounten):
+   ```
+   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v C:\Temp\chroma:/dst alpine cp -r /src/. /dst/
+   robocopy C:\Temp\chroma ~/Documents/Zettelwirtschaft/data/chromadb /E
+   ```
+   Alternativ: leerer Ordner → Backend re-indexiert beim ersten Start (~ 30s pro 1000 Docs).
+6. **Service installieren** (Admin): `scripts/service-install.bat <install-dir> <config> <log-dir>`.
+7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder per `ollama pull bge-m3` + `ollama pull qwen2.5:7b` neu ziehen.
+
 ## Memory Files — Read Before Working on a Topic
 
 | File | Read when working on… |
@@ -178,7 +216,7 @@ zettelwirtschaft/
       core/
         file_utils.py            # Dateinamen-Sanitizing, Magic-Bytes, UUID-Prefix
       prompts/                   # LLM-Prompt-Templates (Textdateien, inkl. rag_answer.txt, email_relevance.txt)
-    alembic/                     # DB-Migrationen (001-009)
+    alembic/                     # DB-Migrationen (001-013)
     requirements.txt
     Dockerfile
   frontend/
@@ -207,7 +245,8 @@ zettelwirtschaft/
         ChatView.vue             # RAG-Chat mit Verlauf, Scope-Filter, Beispielfragen
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
-      stores/                    # Pinia Stores (documents, notifications, auth)
+      stores/                    # Pinia Stores (notifications, auth) — documents-Store entfernt in Phase 5 (toter Code)
+      composables/               # useFilingScopes (shared cache + inflight-Token, ersetzt 7 duplizierte Loads)
     vite.config.js
     tailwind.config.js
     nginx.conf                   # SPA-Routing + API-Proxy
@@ -393,13 +432,20 @@ User-Frage
 
 ### Native-Windows (ab v1.3)
 - **Build:** `pwsh scripts/build-native.ps1` (Voraussetzung: `tools/{tesseract,poppler,nssm}` vorbereitet, NSIS im PATH)
-- **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit)
-- **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
+- **Tools-Bootstrap:** `pwsh scripts/fetch-build-tools.ps1` laed poppler+NSSM+Tesseract idempotent in `tools/`.
+- **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit). Bundle ist ~187 MB / 1842 Files.
+- **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`, `--version`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
 - **bin_paths.py** wird in `main.py` SEHR FRUEH importiert (vor pdf2image/pytesseract), setzt PATH+TESSDATA_PREFIX+pytesseract.tesseract_cmd auf gebundeltes `<install>/bin/`. No-op im Dev/Docker.
 - **ChromaDB embedded:** `_get_chroma_client` schaltet via `CHROMADB_MODE` zwischen `PersistentClient(path=...)` (native) und `HttpClient` (docker).
-- **Frontend:** `app.mount("/")` mit `StaticFiles(html=True)` *nach* allen `/api`-Routern. Nur wenn `FRONTEND_DIST_DIR` gesetzt + existiert.
-- **Service:** NSSM-Wrapper, Log-Rotation, optional `DependOnService Ollama`, AutoStart.
+- **Frontend:** `app.mount("/assets")` + Catch-All-Route `@app.get("/{full_path:path}")` mit `FileResponse(index.html)` als Fallback (SPA-Routing fuer `/dokumente` usw.). Nur aktiv wenn `FRONTEND_DIST_DIR` gesetzt + existiert.
+- **Service:** NSSM-Wrapper (`scripts/service-install.bat`), Log-Rotation 10 MB, `DependOnService Ollama` (wenn vorhanden), AutoStart.
 - **Migration aus Docker:** `scripts/Convert-Env-To-Config.ps1` mapt `.env`-Keys auf TOML.
+
+**Kritische Build-Gotchas:**
+- **chromadb vs chromadb-client:** PyInstaller braucht `chromadb` (full mit `PersistentClient`), NICHT `chromadb-client` (HTTP-only). Beide nutzen den `chromadb`-Namespace — Konflikt. `build-native.ps1` deinstalliert chromadb-client und installiert `chromadb` aus `requirements-build.txt`. Symptom bei Fehler: `RuntimeError: Chroma is running in http-only client mode`.
+- **PRAGMA foreign_keys=ON:** siehe Alembic-Sektion oben. Ohne den Event-Listener sind FK-Constraints zur Laufzeit wirkungslos.
+- **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. `entrypoint.py:_run_migrations` macht `Base.metadata.create_all` bei leerer DB + Stamp auf head (Migrationen sind dann no-op).
+- **SPA-Routing:** `StaticFiles(html=True)` deckt nur Ordner-Index ab. `/dokumente` wuerde sonst 404 geben — der Catch-All-Route ist notwendig.
 
 ## Qualitaetsprinzipien
 
@@ -440,32 +486,26 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
 - Lib-Stand: Vite 7, Tailwind v4, Pinia 3, vue-router 5, Node 22, ChromaDB 1.0.20,
   FastAPI 0.119+, Pillow 12.2+, axios 1.15.1+, slowapi neu
 
-**Native-Windows-Foundation (Phase 1 abgeschlossen, ab v1.3):**
+**Native-Windows (Phasen 1+2 abgeschlossen + Migrations-Pfad verifiziert, ab v1.3):**
 
-- Settings: `config.toml` via `pydantic_settings.TomlConfigSettingsSource`,
-  Pfad ueber `ZETTELWIRTSCHAFT_CONFIG`. ENV > TOML > .env Priority — Tests
-  + Docker unbeeintraechtigt.
-- ChromaDB: `CHROMADB_MODE` Schalter (`embedded`/`http`). Native nutzt
-  `PersistentClient(path=CHROMADB_PATH)`, spart eigenen Service + HTTP-
-  Roundtrip + Auth-Frage.
-- Frontend: `FRONTEND_DIST_DIR`-Setting + `app.mount("/")` mit
-  `StaticFiles(html=True)` — kein nginx im Native-Setup.
-- `bin_paths.py`: bei PyInstaller-frozen Bundle Tesseract + poppler aus
-  `<install>/bin/` laden, PATH erweitern.
-- `app/entrypoint.py`: Native-Entry mit `--config`/`--migrate-only`,
-  Alembic via Public-API (kein subprocess), uvicorn programmatisch.
-- `backend/zettelwirtschaft.spec`: PyInstaller-Onedir mit Hidden-Imports +
-  Data-Files (alembic, prompts, certifi, chromadb-submodules).
-- `setup-native.nsi`: NSIS-Installer ohne Docker. Custom-Page fuer Datenordner-
-  Wahl, Auto-PIN, Firewall-Rule, NSSM-Service-Install.
-- `scripts/service-install.bat`, `service-uninstall.bat`,
-  `Convert-Env-To-Config.ps1` (Migration aus Docker-Installs).
-- Build-Pipeline: `pwsh scripts/build-native.ps1` orchestriert PyInstaller +
-  Vite + Bin-Bundle + NSSM + NSIS.
+Foundation (siehe `### Native-Windows`-Sektion oben und
+`planung/native-windows-konzept.md`):
+- Settings via TOML, ChromaDB embedded-Modus, Frontend StaticFiles + SPA-Catch-All,
+  bin_paths.py fuer Tesseract+poppler, programmatischer uvicorn-Start,
+  Fresh-DB-create_all, PRAGMA foreign_keys=ON Event-Listener.
 
-Naechste Phasen (2-4 laut `planung/native-windows-konzept.md`): Service-Bundle
-gegen lokales Test-Build verifizieren, Migrations-Wizard, Tray-Icon,
-Code-Signing.
+Build + Install:
+- `scripts/build-native.ps1` end-to-end getestet: 187 MB Bundle, alle Endpoints OK.
+- `scripts/fetch-build-tools.ps1` idempotenter Tool-Download (poppler, NSSM, Tesseract).
+- `setup-native.nsi` NSIS-Installer mit Datenordner-Wahl, Auto-PIN, Firewall-Rule.
+- Service-Install via `scripts/service-install.bat` (NSSM, Admin) — registriert
+  `ZettelwirtschaftBackend` mit AutoStart + Log-Rotation + Dependency auf Ollama.
+
+Migration aus Docker (auf echter Installation mit 35 Dokumenten + 29 MB Archive
+durchgespielt): siehe `## Native-Service-Ops` oben.
+
+Naechste Phasen (3-4 laut Konzept): Migrations-Wizard im NSIS-Installer integrieren
+(aktuell manueller PowerShell-Flow), Tray-Icon, Code-Signing (Authenticode-Cert).
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.
@@ -485,23 +525,38 @@ Code-Signing.
 - `009_add_email_accounts` - EmailAccount + ProcessedEmail Tabellen, email_account_id auf ProcessingJob
 - `010_fix_email_filing_scope_fk_type` - FK-Typ-Fix EmailAccount.filing_scope_id Integer -> String(36)
 - `011_add_performance_indexes` - Indizes auf Notification.is_read, ProcessingJob.created_at/status, ReviewQuestion.is_answered (idempotent: `CREATE INDEX IF NOT EXISTS`)
+- `012_add_processing_started_at` - Heartbeat-Spalte fuer Stuck-Job-Recovery (B5 Re-Review)
+- `013_fk_indexes_consistency` - chat_messages.filing_scope_id FK (ON DELETE SET NULL) + 4 Indizes auf email_accounts.filing_scope_id, processing_jobs.email_account_id, processed_emails.processing_job_id (H-ARCH-1/3/4)
 
 `migrate.py` setzt `init_db()` nicht mehr aufruft — Schema kommt komplett aus
 der Alembic-Chain. `detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
-auch fuer 010 (FK-Typ) + 011 (Index-Existenz).
+auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013).
+
+**Native-Pfad** (`app/entrypoint.py`): Bei leerer DB → `Base.metadata.create_all`
++ Stamp auf head. Migration 001 ist `ALTER TABLE processing_jobs` ohne
+vorheriges `CREATE` — sie war historisch angewiesen auf `init_db()`. Ohne den
+Fresh-DB-Pfad crasht der erste Native-Start.
+
+**SQLite FK-Enforcement** (`app/database.py` + `alembic/env.py`): Event-Listener
+setzt `PRAGMA foreign_keys=ON` pro Connection. **Ohne ihn sind ALLE
+`ondelete=SET NULL/CASCADE`-Constraints zur Laufzeit wirkungslos** — SQLite-Default
+ist OFF. Migration 013 verlaesst sich darauf.
 
 ### Tests
 > Read `memory/e2e-tests.md` before writing or running E2E tests.
 
-- **Backend: 358 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
+- **Backend: 369 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
   + Model-Tests + Core-Tests + Phase-8-Tests fuer Reranker, Verifier,
-  Trusted-Client-IP.
+  Trusted-Client-IP + Re-Review-Tests (PIN-Lockout, Sanitizer, Scope-Fallback,
+  Heartbeat, Email-FAILED-Record).
 - **E2E: 145 Tests** (Playwright + TypeScript), 13 Testdateien. API-Response-Mocking
   via `page.route()` — Frontend-only-Run ohne Backend moeglich.
 - **CI lokal**: GitHub-Actions deaktiviert (`.github/workflows/ci.yml.disabled`),
   Lauf via `pwsh scripts/ci-local.ps1` bzw. `bash scripts/ci-local.sh`.
 
-### Optional Settings (.env)
+### Optional Settings (.env / config.toml)
+
+Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` > secrets.
 
 | Variable | Default | Effekt |
 |---|---|---|
@@ -510,8 +565,19 @@ auch fuer 010 (FK-Typ) + 011 (Index-Existenz).
 | `RAG_USE_RERANKER` | `false` | LLM-Score-Reranker zwischen Hybrid-Retrieval und Antwort |
 | `LLM_USE_VERIFIER` | `false` | Zweiter LLM-Pass validiert Erst-Pass-Felder bei niedriger Konfidenz |
 | `LLM_VERIFIER_THRESHOLD` | `0.5` | Confidence-Schwelle (`<=`) ab der der Verifier feuert |
-| `PIN_ENABLED` | `false` | Optionaler Web-PIN-Schutz; Backend warnt im Startup-Log wenn aus |
+| `PIN_ENABLED` | `false` | Optionaler Web-PIN-Schutz; Backend warnt im Startup-Log + UI-Banner wenn aus |
 | `EMAIL_ENCRYPTION_KEY` | (Pflicht fuer E-Mail) | Fernet-Key, vom Installer auto-generiert |
+
+### Native-only Settings (config.toml)
+
+| Variable | Default | Effekt |
+|---|---|---|
+| `SERVER_HOST` | `0.0.0.0` | HTTP-Bind. `127.0.0.1` = nur lokal, `0.0.0.0` = LAN |
+| `SERVER_PORT` | `8080` | HTTP-Port (Native uvicorn). Docker nutzt `FRONTEND_PORT` |
+| `CHROMADB_MODE` | `http` | `embedded` = `PersistentClient(path=...)`, `http` = Docker-Container |
+| `CHROMADB_PATH` | (auto: `<ARCHIVE_DIR>/../chromadb`) | Pfad fuer Embedded-Mode |
+| `FRONTEND_DIST_DIR` | `""` | Wenn gesetzt + existiert: Backend mountet `dist/` als `/` (Native, kein nginx). Leer = Docker-Pfad |
+| `ZETTELWIRTSCHAFT_CONFIG` (Env) | (none) | Pfad zur `config.toml` — von NSSM-Service in AppEnvironmentExtra gesetzt |
 
 ## Planungsdokumente
 
