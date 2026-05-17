@@ -238,7 +238,14 @@ async def reanalyze_document(
     if analysis.sender:
         doc.issuer = analysis.sender
     if analysis.document_date:
-        doc.document_date = analysis.document_date
+        # N-02 (Re-Review): document_date kommt als String aus dem LLM.
+        # Mapped[date | None] erwartet date — sonst landet ein String in
+        # der DATE-Spalte (SQLite-TEXT-affinity schluckt's, aber date-Methoden
+        # crashen spaeter).
+        from app.services.archive_service import _parse_document_date
+        parsed_date = _parse_document_date(analysis.document_date)
+        if parsed_date:
+            doc.document_date = parsed_date
     if analysis.amount is not None:
         doc.amount = analysis.amount
     if analysis.currency:
@@ -338,9 +345,15 @@ async def _update_field_from_answer(
             await _record_correction(session, field, str(old_value), answer)
 
     elif field == "amount":
+        # M-2 (Re-Review): Decimal statt float — Document.amount ist
+        # Mapped[Decimal | None], float-Zuweisung verlaesst sich auf
+        # SQLAlchemy-Implicit-Conversion und produziert Rundungsfehler
+        # bei Aggregation. Decimal() wirft InvalidOperation bei nicht-numerischen
+        # Strings — gleicher No-Op-Fall wie der alte ValueError-Pfad.
+        from decimal import Decimal, InvalidOperation
         try:
-            doc.amount = float(answer.replace(",", ".").replace(" ", ""))
-        except ValueError:
+            doc.amount = Decimal(answer.replace(",", ".").replace(" ", ""))
+        except (ValueError, InvalidOperation):
             pass
 
     elif field == "document_date":

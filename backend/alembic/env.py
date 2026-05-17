@@ -2,7 +2,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import event, pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
@@ -46,6 +46,19 @@ async def run_async_migrations() -> None:
         settings.DATABASE_URL,
         poolclass=pool.NullPool,
     )
+
+    # K-2 (Re-Review): SQLite ignoriert FK-Constraints (z.B. ondelete=SET NULL)
+    # solange "PRAGMA foreign_keys=ON" nicht pro Verbindung gesetzt wird.
+    # batch_alter_table-Migrationen brauchen FK-Enforcement, damit die Tabellen-
+    # Rebuilds bestehende Refs konsistent halten.
+    if settings.DATABASE_URL.startswith("sqlite"):
+        @event.listens_for(connectable.sync_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_conn, _):  # noqa: ARG001
+            cursor = dbapi_conn.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

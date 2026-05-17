@@ -188,16 +188,15 @@ onMounted(async () => {
               Keine Dokumente gefunden.
             </td>
           </tr>
+          <!-- Re-Review #3: Tabellen-Semantik bleibt erhalten (kein role="link" auf
+               <tr>). Klick auf die Zeile navigiert weiter; Tab-Reihenfolge fokussiert
+               den echten <router-link> in der Titel-Spalte fuer Screen-Reader und
+               middle-click/Strg+Klick im neuen Tab. Die Checkbox bleibt eigener Stop. -->
           <tr
             v-for="doc in documents"
             :key="doc.id"
-            role="link"
-            tabindex="0"
-            :aria-label="`Dokument ${doc.title || doc.original_filename} oeffnen`"
-            class="cursor-pointer hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-inset"
+            class="cursor-pointer hover:bg-gray-50 transition-colors"
             @click="router.push(`/dokumente/${doc.id}`)"
-            @keydown.enter.prevent="router.push(`/dokumente/${doc.id}`)"
-            @keydown.space.prevent="router.push(`/dokumente/${doc.id}`)"
           >
             <td class="px-4 py-3">
               <div class="flex h-8 w-8 items-center justify-center rounded bg-gray-100 text-[10px] font-medium text-gray-500">
@@ -205,8 +204,15 @@ onMounted(async () => {
               </div>
             </td>
             <td class="px-4 py-3">
-              <p class="text-sm font-medium text-gray-900 truncate max-w-xs">{{ doc.title }}</p>
-              <p class="text-xs text-gray-400">{{ doc.original_filename }}</p>
+              <router-link
+                :to="`/dokumente/${doc.id}`"
+                class="block no-underline text-inherit focus:outline-none focus:ring-2 focus:ring-primary-500 rounded"
+                :aria-label="`Dokument ${doc.title || doc.original_filename} oeffnen`"
+                @click.stop
+              >
+                <p class="text-sm font-medium text-gray-900 truncate max-w-xs">{{ doc.title }}</p>
+                <p class="text-xs text-gray-400">{{ doc.original_filename }}</p>
+              </router-link>
             </td>
             <td class="px-4 py-3"><DocTypeBadge :type="doc.document_type" /></td>
             <td class="px-4 py-3 text-sm text-gray-600">{{ formatDate(doc.document_date) }}</td>

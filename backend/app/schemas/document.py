@@ -1,9 +1,17 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from app.models.document import DocumentStatus, DocumentType, ReviewStatus, TaxCategory
+
+
+# K-3 (Re-Review): Pydantic v2 serialisiert Decimal standardmaessig als String
+# ("119.99"). Existierende API-Konsumenten (Frontend Tests, externe Clients)
+# erwarten JSON-Numbers. Wir geben Decimal explizit als float zurueck, ohne
+# die DB-Praezision zu opfern (Aggregation laeuft weiterhin als Decimal).
+def _decimal_to_float(value):
+    return float(value) if value is not None else None
 
 
 class TagResponse(BaseModel):
@@ -101,6 +109,10 @@ class DocumentResponse(BaseModel):
     title: str
     document_date: date | None = None
     amount: Decimal | None = None
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return _decimal_to_float(v)
     currency: str
     issuer: str | None = None
     recipient: str | None = None
@@ -149,6 +161,10 @@ class DocumentListItem(BaseModel):
     tags: list[TagResponse] = []
 
     resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return _decimal_to_float(v)
 
 
 class PaginatedDocumentsResponse(BaseModel):

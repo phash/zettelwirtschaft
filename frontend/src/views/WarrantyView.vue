@@ -88,16 +88,12 @@ onMounted(loadData)
 
       <!-- Garantie-Liste -->
       <div v-else class="space-y-3">
-        <div
+        <router-link
           v-for="w in warranties"
           :key="w.id"
-          role="link"
-          tabindex="0"
+          :to="`/dokumente/${w.document_id}`"
           :aria-label="`Garantie ${w.product_name} oeffnen`"
-          class="card !p-4 cursor-pointer hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-primary-500"
-          @click="goToDocument(w.document_id)"
-          @keydown.enter.prevent="goToDocument(w.document_id)"
-          @keydown.space.prevent="goToDocument(w.document_id)"
+          class="card !p-4 block cursor-pointer no-underline text-inherit hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-primary-500"
         >
           <div class="flex items-start gap-4">
             <div class="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-500 flex-shrink-0">
@@ -127,7 +123,7 @@ onMounted(loadData)
               </div>
             </div>
           </div>
-        </div>
+        </router-link>
       </div>
     </template>
   </div>

@@ -1,12 +1,15 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 
-# H-ARCH-2: Decimal statt float bei Geldbetraegen. Pydantic v2 serialisiert
-# Decimal standardmaessig als JSON-String — Frontend formatAmount() macht
-# parseFloat, daher kompatibel ohne Anpassung.
+# H-ARCH-2: Decimal intern (Aggregation), float ueber JSON (API-Stabilitaet,
+# Frontend-Kompatibilitaet — siehe K-3 Re-Review).
+
+
+def _decimal_to_float(value):
+    return float(value) if value is not None else None
 
 
 class TaxCategorySummary(BaseModel):
@@ -15,6 +18,10 @@ class TaxCategorySummary(BaseModel):
     document_count: int
     total_amount: Decimal
 
+    @field_serializer("total_amount")
+    def _ser_total(self, v):
+        return _decimal_to_float(v)
+
 
 class TaxYearSummary(BaseModel):
     year: int
@@ -22,6 +29,10 @@ class TaxYearSummary(BaseModel):
     total_amount: Decimal
     categories: list[TaxCategorySummary]
     warnings: list[str] = []
+
+    @field_serializer("total_amount")
+    def _ser_total(self, v):
+        return _decimal_to_float(v)
 
 
 class TaxExportRequest(BaseModel):
@@ -48,3 +59,7 @@ class TaxDocumentItem(BaseModel):
     issuer: str | None = None
     tax_category: str | None = None
     file_type: str
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return _decimal_to_float(v)

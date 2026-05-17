@@ -31,13 +31,17 @@ def _cleanup_expired() -> None:
     expired = [k for k, v in _sessions.items() if v <= now]
     for k in expired:
         del _sessions[k]
-    # Login-Attempts: abgelaufene Lockouts vollstaendig entfernen
-    # (Counter MUSS mit zurueckgesetzt werden, sonst lockt jeder weitere Fehlversuch
-    # fuer weitere LOCKOUT_SECONDS — Self-DoS-Vektor.)
-    stale = [
-        ip for ip, (count, lockout) in _login_attempts.items()
-        if lockout and lockout <= now
-    ]
+    # Login-Attempts: abgelaufene Lockouts entfernen.
+    # NEW-B (Re-Review): Wenn fail_count >= MAX aber lockout=None (Race bei
+    # paralleler Last), wurde nach altem Code der Eintrag nie aufgeraeumt.
+    # Jetzt cleanen wir auch solche "verwaisten" Counter nach 5min Idle.
+    stale = []
+    for ip, (count, lockout) in _login_attempts.items():
+        if lockout and lockout <= now:
+            stale.append(ip)
+        elif count >= MAX_LOGIN_ATTEMPTS and lockout is None:
+            # Counter haengt ohne Lockout — als Self-DoS-Schutz aufraeumen
+            stale.append(ip)
     for ip in stale:
         del _login_attempts[ip]
 
@@ -103,7 +107,15 @@ async def auth_login(
         # F-05: Secure-Flag dynamisch — bei TLS-Setup wird er aktiv, ohne
         # bricht der HTTP-Default nicht. SameSite=strict, weil kein externer
         # Cross-Site-POST-Workflow erwartet wird (internes Tool).
-        is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        # R-07 (Re-Review): X-Forwarded-Proto nur akzeptieren wenn die
+        # TCP-Verbindung aus einem trusted Proxy-Netz kommt — sonst kann
+        # ein LAN-Angreifer den Header faken und Secure=true erzwingen, was
+        # bei HTTP-Setup das Cookie unbenutzbar macht (Login-DoS).
+        from app.core.rate_limit import _is_trusted_proxy
+        client_host = request.client.host if request.client else None
+        is_trusted_proxy = client_host is not None and _is_trusted_proxy(client_host)
+        proto_header = request.headers.get("x-forwarded-proto") if is_trusted_proxy else None
+        is_https = request.url.scheme == "https" or proto_header == "https"
         response.set_cookie(
             key=SESSION_COOKIE,
             value=token,

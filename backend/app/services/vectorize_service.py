@@ -133,8 +133,12 @@ def _build_metadata_chunk(doc: Document) -> str:
 # T17: Erreichbarkeitscheck mit TTL-Cache. Bei initial-Vectorize ueber tausende
 # Dokumente lief vorher pro Doc ein 2-Sekunden-HTTP-Probe-Roundtrip — TTL
 # kappt das auf einmal pro 30s, async statt to_thread-Block.
+# R-05 (Re-Review): negative Antworten nur kurz cachen, damit ein gerade
+# gestartetes ChromaDB beim Initial-Vectorize nicht 30s lang als "down"
+# behandelt wird.
 _reachable_cache: tuple[float, bool] | None = None
-_REACHABLE_TTL = 30.0
+_REACHABLE_TTL_POSITIVE = 30.0
+_REACHABLE_TTL_NEGATIVE = 3.0
 
 
 async def _check_chromadb_reachable_async(settings: Settings) -> bool:
@@ -144,8 +148,11 @@ async def _check_chromadb_reachable_async(settings: Settings) -> bool:
     import httpx as _httpx
 
     now = time.monotonic()
-    if _reachable_cache is not None and (now - _reachable_cache[0]) < _REACHABLE_TTL:
-        return _reachable_cache[1]
+    if _reachable_cache is not None:
+        cached_at, cached_ok = _reachable_cache
+        ttl = _REACHABLE_TTL_POSITIVE if cached_ok else _REACHABLE_TTL_NEGATIVE
+        if (now - cached_at) < ttl:
+            return cached_ok
 
     try:
         async with _httpx.AsyncClient(timeout=2.0) as client:

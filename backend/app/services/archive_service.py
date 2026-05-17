@@ -328,8 +328,13 @@ async def archive_document(
             )
             session.add(question)
 
-    # Review-Frage bei unsicherer Scope-Zuordnung oder neuem Scope-Vorschlag
-    if filing_scopes and (new_scope_suggestion or analysis.filing_scope_confidence < 0.7):
+    # Review-Frage bei unsicherer Scope-Zuordnung oder neuem Scope-Vorschlag.
+    # M-05 (Re-Review): nur fragen wenn das LLM tatsaechlich einen Scope
+    # vorgeschlagen hat (filing_scope gesetzt). Wenn das LLM `filing_scope=None`
+    # liefert (keine Vermutung), war confidence=0.0 — kein falsch-positives
+    # Review-Question fuer jedes Default-Scope-Dokument.
+    has_lowconf_scope = analysis.filing_scope and analysis.filing_scope_confidence < 0.7
+    if filing_scopes and (new_scope_suggestion or has_lowconf_scope):
         scope_names = [s["name"] for s in filing_scopes]
         if new_scope_suggestion:
             # Neuen Vorschlag als erste Option mit "NEU: " Prefix

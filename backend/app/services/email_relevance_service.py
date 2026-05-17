@@ -9,6 +9,19 @@ from app.services.llm_service import call_llm, load_prompt_template
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_email_field(text: str) -> str:
+    """F-11 (Re-Review): Entschaerft die <email_data>-Delimiter-Tags damit
+    ein Absender/Betreff mit `</email_data>...neue Anweisung...<email_data>`
+    nicht aus dem Wrap ausbrechen kann.
+    """
+    if not text:
+        return ""
+    return (
+        text.replace("<email_data>", "&lt;email_data&gt;")
+        .replace("</email_data>", "&lt;/email_data&gt;")
+    )
+
+
 async def check_email_relevance(
     sender: str,
     subject: str,
@@ -24,10 +37,12 @@ async def check_email_relevance(
     """
     template = load_prompt_template("email_relevance.txt")
     prompt = template.format(
-        sender=sender or "unbekannt",
-        subject=subject or "(kein Betreff)",
-        body_snippet=(body_snippet or "")[:1000],
-        attachment_names=", ".join(attachment_names) if attachment_names else "keine",
+        sender=_sanitize_email_field(sender) or "unbekannt",
+        subject=_sanitize_email_field(subject) or "(kein Betreff)",
+        body_snippet=_sanitize_email_field((body_snippet or "")[:1000]),
+        attachment_names=_sanitize_email_field(
+            ", ".join(attachment_names) if attachment_names else "keine"
+        ),
     )
 
     try:

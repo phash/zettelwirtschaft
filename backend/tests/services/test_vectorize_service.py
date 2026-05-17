@@ -139,10 +139,11 @@ class TestVectorizeDocument:
         doc.tax_category = None
         doc.tags = []
 
-        with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.side_effect = [True, None]  # reachable + delete
-            result = await vectorize_document(doc, test_settings)
-            assert result == 0
+        # R-04 (Re-Review): reachable-Probe ist async, nicht mehr to_thread.
+        with patch("app.services.vectorize_service._check_chromadb_reachable_async", new_callable=AsyncMock, return_value=True):
+            with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock):
+                result = await vectorize_document(doc, test_settings)
+                assert result == 0
 
     @pytest.mark.asyncio
     async def test_vectorize_embedding_fails(self, test_settings):
@@ -160,12 +161,13 @@ class TestVectorizeDocument:
         doc.tax_category = None
         doc.tags = []
 
-        with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.side_effect = [True, None]  # reachable + delete
-            with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
-                mock_embed.return_value = None
-                result = await vectorize_document(doc, test_settings)
-                assert result == 0
+        # R-04 (Re-Review): reachable-Probe ist async, nicht mehr to_thread.
+        with patch("app.services.vectorize_service._check_chromadb_reachable_async", new_callable=AsyncMock, return_value=True):
+            with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock):
+                with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
+                    mock_embed.return_value = None
+                    result = await vectorize_document(doc, test_settings)
+                    assert result == 0
 
 
 class TestSearchSimilarChunks:
@@ -203,6 +205,50 @@ class TestSearchSimilarChunks:
         with patch("app.services.vectorize_service._get_collection_sync", return_value=mock_collection):
             results = search_similar_chunks([0.1, 0.2], test_settings)
             assert results == []
+
+    def test_scope_filter_fallback_to_no_filter(self, test_settings):
+        """B7 (Re-Review Test C): Bei leerem Scope-Filter-Result wird ein
+        Fallback ohne Filter versucht (alte Chunks ohne filing_scope_id-Metadata).
+        """
+        mock_collection = MagicMock()
+        # 1. Aufruf mit where -> leer; 2. Aufruf ohne where (Fallback) -> Treffer
+        mock_collection.query.side_effect = [
+            {"ids": [[]], "documents": [[]], "distances": [[]], "metadatas": [[]]},
+            {
+                "ids": [["old_chunk_0"]],
+                "documents": [["alter Chunk ohne Scope-Metadata"]],
+                "distances": [[0.5]],
+                "metadatas": [[{"doc_id": "old-doc", "chunk_type": "text"}]],
+            },
+        ]
+
+        with patch("app.services.vectorize_service._get_collection_sync", return_value=mock_collection):
+            results = search_similar_chunks([0.1], test_settings, filing_scope_id="scope-1")
+
+        assert len(results) == 1
+        assert results[0]["doc_id"] == "old-doc"
+        # 2 Aufrufe: erster mit where, zweiter ohne
+        assert mock_collection.query.call_count == 2
+        # Erster Call hat where-Filter
+        assert mock_collection.query.call_args_list[0].kwargs["where"] == {"filing_scope_id": "scope-1"}
+        # Zweiter Call ohne where-Filter
+        assert mock_collection.query.call_args_list[1].kwargs["where"] is None
+
+    def test_scope_filter_no_fallback_if_results(self, test_settings):
+        """Bei Scope-Match wird kein Fallback ausgeloest (nur 1 Query)."""
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "ids": [["doc1_chunk_0"]],
+            "documents": [["Treffer im Scope"]],
+            "distances": [[0.1]],
+            "metadatas": [[{"doc_id": "doc1", "filing_scope_id": "scope-1"}]],
+        }
+
+        with patch("app.services.vectorize_service._get_collection_sync", return_value=mock_collection):
+            results = search_similar_chunks([0.1], test_settings, filing_scope_id="scope-1")
+
+        assert len(results) == 1
+        assert mock_collection.query.call_count == 1
 
 
 class TestGetCollectionCount:

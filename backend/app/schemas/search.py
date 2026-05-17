@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class SearchResultItem(BaseModel):
@@ -11,6 +11,10 @@ class SearchResultItem(BaseModel):
     document_type: str
     document_date: date | None = None
     amount: Decimal | None = None
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return float(v) if v is not None else None
     currency: str = "EUR"
     issuer: str | None = None
     thumbnail_path: str | None = None

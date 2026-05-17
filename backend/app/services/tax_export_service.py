@@ -289,12 +289,14 @@ def _create_overview_pdf(year: int, by_category: dict, all_rows: list[dict]) -> 
     elements.append(Spacer(1, 0.5 * cm))
 
     # Tabelle pro Kategorie
+    # R-01: by_category enthaelt Dicts (siehe _build_zip_sync), keine ORM-Objekte.
+    # Vorher wurden d.amount/d.title/etc. attributiv geholt -> AttributeError beim PDF-Export.
     for cat_key in TaxCategory:
         if cat_key not in by_category:
             continue
         cat_label = TAX_CATEGORY_LABELS.get(cat_key, cat_key)
         cat_docs = by_category[cat_key]
-        cat_total = sum(float(d.amount or 0) for d in cat_docs)
+        cat_total = sum(float(d["amount"] or 0) for d in cat_docs)
 
         elements.append(Paragraph(
             f"{cat_label} ({len(cat_docs)} Belege, {cat_total:,.2f} EUR)",
@@ -304,10 +306,10 @@ def _create_overview_pdf(year: int, by_category: dict, all_rows: list[dict]) -> 
         table_data = [["Datum", "Titel", "Aussteller", "Betrag"]]
         for d in cat_docs:
             table_data.append([
-                str(d.document_date or "-"),
-                (d.title or "-")[:40],
-                (d.issuer or "-")[:30],
-                f"{float(d.amount):.2f} {d.currency}" if d.amount is not None else "-",
+                str(d["document_date"] or "-"),
+                (d["title"] or "-")[:40],
+                (d["issuer"] or "-")[:30],
+                f"{float(d['amount']):.2f} {d['currency']}" if d["amount"] is not None else "-",
             ])
 
         t = Table(table_data, colWidths=[3 * cm, 7 * cm, 4 * cm, 3 * cm])

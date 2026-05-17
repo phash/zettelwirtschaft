@@ -213,6 +213,10 @@ async def fetch_emails_for_account(
         # eine separate kleine Transaktion festschreiben — verhindert dass
         # ein einziger LLM-Crash 30 schon gefetchte E-Mails kostet UND dass
         # die gleiche E-Mail beim naechsten Run wieder LLM-Calls produziert.
+        # R-06 (Re-Review): parsed-Dict im outer scope, damit der FAILED-Pfad
+        # nicht erneut parse_email_message aufrufen muss (kann beim selben
+        # raw_bytes wieder crashen -> endlos UNSEEN).
+        parsed: dict | None = None
         try:
             parsed = parse_email_message(raw)
 
@@ -273,36 +277,47 @@ async def fetch_emails_for_account(
 
         except Exception as e:
             # T16: Failed-Eintrag damit die E-Mail nicht beim naechsten Run
-            # erneut LLM-Calls produziert. message_id ist UNIQUE pro Account,
-            # also keine Doppel-Inserts moeglich.
+            # erneut LLM-Calls produziert. message_id ist UNIQUE pro Account.
             err_msg = str(e)[:400] or type(e).__name__
             logger.exception("Fehler bei E-Mail %s (num=%r): %s", account.name, num, err_msg)
             try:
                 await db.rollback()
             except Exception:
                 logger.exception("Rollback nach E-Mail-Fehler fehlgeschlagen")
+            # R-06 (Re-Review): parsed wiederverwenden statt re-parsen.
+            # Wenn das initiale parse_email_message selbst gecrasht ist,
+            # ist parsed=None - dann synthetischen Identifier nutzen.
+            num_str = num.decode("ascii", errors="replace") if isinstance(num, bytes) else str(num)
             try:
-                # Versuch der message_id Extraktion fuer Dedup — wenn das auch scheitert,
-                # ueberspringen wir den Failed-Eintrag (E-Mail wird ggf. erneut versucht).
-                parsed_for_fail = parse_email_message(raw)
+                if parsed is not None:
+                    msg_id = parsed.get("message_id") or f"failed-{account.id}-{num_str}"
+                    subj = parsed.get("subject")
+                    sender = parsed.get("sender")
+                    received = parsed.get("date")
+                else:
+                    msg_id = f"failed-{account.id}-{num_str}"
+                    subj = sender = received = None
                 failed_record = ProcessedEmail(
                     email_account_id=account.id,
-                    message_id=parsed_for_fail.get("message_id") or f"failed-{num!r}",
-                    subject=parsed_for_fail.get("subject"),
-                    sender=parsed_for_fail.get("sender"),
-                    received_at=parsed_for_fail.get("date"),
+                    message_id=msg_id,
+                    subject=subj,
+                    sender=sender,
+                    received_at=received,
                     status=EmailStatus.FAILED,
                     relevance_reason=err_msg,
                 )
                 db.add(failed_record)
                 await db.commit()
-                emails_to_move.append(num)  # auch FAILED verschieben — sonst Endlos-Retry
             except Exception:
                 logger.exception("Konnte FAILED-Eintrag nicht speichern")
                 try:
                     await db.rollback()
                 except Exception:
                     pass
+            # R-06: auch bei Storage-Fehler verschieben — sonst beleibt
+            # die E-Mail UNSEEN und produziert beim naechsten Run wieder
+            # einen LLM-Call.
+            emails_to_move.append(num)
             stats["failed"] += 1
 
     account.last_checked_at = datetime.now(timezone.utc)
@@ -383,7 +398,11 @@ async def _create_jobs_from_email(
     # ausserhalb der intern erzeugten E-Mail-Quelle relevant waere.
     body = parsed.get("body", "").strip()
     if body and len(body) > 100 and not job_ids:
-        txt_filename = f"email_{parsed['subject'][:50]}.txt".replace("/", "_").replace("\\", "_")
+        # M-03 (Re-Review): Windows-Reserved-Characters (<>:"|?*) + Control-Chars
+        # entschaerfen, sonst legt OneDrive-Sync/SMB-Share das File nicht an.
+        import re
+        safe_subject = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (parsed.get("subject") or "")[:50])
+        txt_filename = f"email_{safe_subject}.txt"
         stored_name = generate_stored_filename(txt_filename)
         dest_path = upload_dir / stored_name
         dest_path.write_text(body, encoding="utf-8")

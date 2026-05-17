@@ -12,35 +12,29 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 # H-BE-1: Singleton-Client statt pro-Aufruf neuem AsyncClient. Spart TCP +
 # TLS-Handshakes (qwen2.5+verifier+reranker = bis zu 4 Calls pro Dokument).
-# Lazy-Init mit aktuellem Timeout. Beim ersten Aufruf mit neuem Timeout-Wert
-# wird der Client neu gebaut.
+# R-03 (Re-Review): Timeout wird per Request gesetzt, NICHT am Client
+# festgeschrieben. Damit braucht es keine Re-Builds (Private-API _transport.close
+# entfaellt) und in-flight Requests bleiben unbeeintraechtigt.
 _client: httpx.AsyncClient | None = None
-_client_timeout: float | None = None
 
 
-def _get_client(timeout: float) -> httpx.AsyncClient:
-    global _client, _client_timeout
-    if _client is None or _client_timeout != timeout:
-        if _client is not None:
-            # Alten Client schliessen, nicht via Event-Loop sondern best-effort.
-            try:
-                _client._transport.close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
-        _client_timeout = timeout
+def _get_client(timeout: float = 0.0) -> httpx.AsyncClient:
+    """Singleton-Client. Timeout-Argument bleibt fuer Backwards-Compat im Test,
+    wird aber ignoriert — Timeouts werden pro Request gesetzt."""
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient()
     return _client
 
 
 async def aclose_client() -> None:
     """Sauberes Schliessen beim Shutdown — vom lifespan-Hook aus aufrufbar."""
-    global _client, _client_timeout
+    global _client
     if _client is not None:
         try:
             await _client.aclose()
         finally:
             _client = None
-            _client_timeout = None
 
 
 def load_prompt_template(name: str) -> str:
@@ -103,14 +97,15 @@ async def _call_ollama(
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     label = "Schema" if isinstance(response_format, dict) else ("JSON" if response_format else "Text")
 
-    client = _get_client(settings.OLLAMA_TIMEOUT)
+    client = _get_client()
     max_retries = settings.OLLAMA_MAX_RETRIES
+    request_timeout = httpx.Timeout(settings.OLLAMA_TIMEOUT)
 
     # H-BE-8: einheitlicher Retry-Loop fuer ConnectError/TimeoutException/5xx.
     last_error: str = ""
     for attempt in range(max_retries + 1):
         try:
-            response = await client.post(url, json=payload)
+            response = await client.post(url, json=payload, timeout=request_timeout)
             response.raise_for_status()
 
             data = response.json()

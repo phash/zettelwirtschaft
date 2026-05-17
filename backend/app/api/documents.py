@@ -264,7 +264,13 @@ async def delete_document(
     # FTS-Index bereinigen
     await db.execute(text("DELETE FROM documents_fts WHERE doc_id = :doc_id"), {"doc_id": document_id})
 
-    # Vektoren asynchron loeschen (non-blocking)
+    # R-02 (Re-Review): DB-Commit zuerst (get_db commit-at-yield), DANN
+    # Vektoren loeschen. Sonst Inkonsistenz: Vektoren weg, Document noch
+    # ACTIVE wenn der Commit fehlschlaegt.
+    await db.commit()
+
+    # Vektoren best-effort post-commit (orphan-Vektoren sind tolerierbar,
+    # `rag_service` filtert sie via DB-Join sowieso aus).
     try:
         from app.services.vectorize_service import delete_document_vectors
         settings = get_settings()

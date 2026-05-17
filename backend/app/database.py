@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -11,6 +12,21 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
 )
+
+
+# K-2 (Re-Review): SQLite ignoriert ondelete=SET NULL/CASCADE per Default,
+# bis "PRAGMA foreign_keys=ON" pro Verbindung gesetzt wird. Ohne diesen
+# Listener waren die FK-Constraints aus Migration 013 (chat_messages,
+# documents.filing_scope_id, document_tags, email_accounts etc.) auf
+# Schema-Ebene korrekt, aber zur Laufzeit wirkungslos.
+if settings.DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_conn, _):  # noqa: ARG001
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
 
 async_session_factory = async_sessionmaker(
     engine,

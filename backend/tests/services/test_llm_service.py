@@ -179,18 +179,15 @@ class TestCallLlmText:
             },
         })
 
-        with patch("app.services.llm_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
 
+        with patch("app.services.llm_service._get_client", return_value=mock_client):
             result = await call_llm_text("Beschreibe dieses Dokument", test_settings)
 
-            assert result is not None
-            assert "Rechnung" in result
-            assert "Firma Muster GmbH" in result
+        assert result is not None
+        assert "Rechnung" in result
+        assert "Firma Muster GmbH" in result
 
     async def test_call_llm_text_with_system_prompt(self, test_settings: Settings):
         """System-Prompt wird in der Anfrage mitgesendet."""

@@ -6,6 +6,7 @@ import logging
 import httpx
 
 from app.config import Settings
+from app.services.llm_service import _backoff_seconds, _get_client
 
 logger = logging.getLogger("zettelwirtschaft.embedding")
 
@@ -47,55 +48,42 @@ async def embed_texts(
         "input": texts,
     }
 
-    for attempt in range(settings.OLLAMA_MAX_RETRIES + 1):
+    # N-01 (Re-Review): nutzt jetzt den shared Singleton-Client und das
+    # exponentielle Backoff aus llm_service. Bei Initial-Vectorize ueber
+    # 1000+ Chunks spart das pro-call TCP+TLS-Setup.
+    client = _get_client()
+    request_timeout = httpx.Timeout(settings.OLLAMA_TIMEOUT)
+    max_retries = settings.OLLAMA_MAX_RETRIES
+
+    for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(settings.OLLAMA_TIMEOUT)
-            ) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
+            response = await client.post(url, json=payload, timeout=request_timeout)
+            response.raise_for_status()
 
-                data = response.json()
-                embeddings = data.get("embeddings", [])
-                if embeddings:
-                    logger.info(
-                        "Embeddings erzeugt: %d Texte, Dimension %d",
-                        len(embeddings),
-                        len(embeddings[0]),
-                    )
-                    return embeddings
+            data = response.json()
+            embeddings = data.get("embeddings", [])
+            if embeddings:
+                logger.info(
+                    "Embeddings erzeugt: %d Texte, Dimension %d",
+                    len(embeddings),
+                    len(embeddings[0]),
+                )
+                return embeddings
 
-                logger.warning("Embedding-Antwort leer")
-                return None
+            logger.warning("Embedding-Antwort leer")
+            return None
 
-        except httpx.ConnectError:
-            if attempt < settings.OLLAMA_MAX_RETRIES:
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            err = type(e).__name__
+            if attempt < max_retries:
+                wait = _backoff_seconds(attempt)
                 logger.warning(
-                    "Ollama nicht erreichbar fuer Embedding (Versuch %d/%d), warte 2s...",
-                    attempt + 1,
-                    settings.OLLAMA_MAX_RETRIES + 1,
+                    "Ollama %s bei Embedding (Versuch %d/%d), warte %.1fs...",
+                    err, attempt + 1, max_retries + 1, wait,
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(wait)
             else:
-                logger.error(
-                    "Ollama nicht erreichbar nach %d Versuchen (Embedding)",
-                    settings.OLLAMA_MAX_RETRIES + 1,
-                )
-                return None
-
-        except httpx.TimeoutException:
-            if attempt < settings.OLLAMA_MAX_RETRIES:
-                logger.warning(
-                    "Ollama Timeout bei Embedding (Versuch %d/%d), warte 2s...",
-                    attempt + 1,
-                    settings.OLLAMA_MAX_RETRIES + 1,
-                )
-                await asyncio.sleep(2)
-            else:
-                logger.error(
-                    "Ollama Timeout nach %d Versuchen (Embedding)",
-                    settings.OLLAMA_MAX_RETRIES + 1,
-                )
+                logger.error("Ollama %s nach %d Versuchen (Embedding)", err, max_retries + 1)
                 return None
 
         except httpx.HTTPStatusError as e:

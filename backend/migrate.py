@@ -38,6 +38,19 @@ def has_index(cur: sqlite3.Cursor, name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def has_fk(cur: sqlite3.Cursor, table: str, column: str) -> bool:
+    """Prueft ob auf der Spalte ein FK-Constraint existiert (PRAGMA foreign_key_list)."""
+    try:
+        cur.execute(f"PRAGMA foreign_key_list({table})")
+        for row in cur.fetchall():
+            # row: (id, seq, table, from, to, on_update, on_delete, match)
+            if row[3] == column:
+                return True
+    except sqlite3.OperationalError:
+        return False
+    return False
+
+
 def column_type(cur: sqlite3.Cursor, table: str, column: str) -> str | None:
     cur.execute(f"PRAGMA table_info({table})")
     for row in cur.fetchall():
@@ -53,8 +66,10 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
-    # H-ARCH: 013 prüft ob die FK + Indizes für chat_messages.filing_scope_id existieren.
-    if has_index(cur, "ix_chat_messages_filing_scope_id"):
+    # H-ARCH: 013 prüft an der **FK-Existenz** (nicht nur Index) — sonst stempelt
+    # ein Legacy-Schema, dessen Index zufaellig via create_all entstanden ist,
+    # auf 013 und die Migration legt den FK nie an (K-1 Re-Review).
+    if has_fk(cur, "chat_messages", "filing_scope_id"):
         return "013_fk_indexes_consistency"
     # B5: 012 prüft Heartbeat-Spalte auf processing_jobs.
     if has_column(cur, "processing_jobs", "processing_started_at"):

@@ -131,6 +131,19 @@ class AnalysisResult:
         }
 
 
+def _sanitize_ocr_for_prompt(text: str) -> str:
+    """NEW-A (Re-Review): Entschaerft die <document_ocr>-Delimiter-Tags damit
+    ein OCR-Text mit `</document_ocr>...Anweisung...<document_ocr>` nicht aus
+    dem Wrap ausbrechen kann. Wirkt zusaetzlich zu der `Wichtig`-Anweisung
+    im Template."""
+    if not text:
+        return ""
+    return (
+        text.replace("<document_ocr>", "&lt;document_ocr&gt;")
+        .replace("</document_ocr>", "&lt;/document_ocr&gt;")
+    )
+
+
 def _truncate_text(text: str, max_chars: int = 4000) -> str:
     """Kuerzt langen OCR-Text: erste 2000 + letzte 2000 Zeichen."""
     if len(text) <= max_chars:
@@ -531,7 +544,9 @@ async def analyze_document(
             )
 
     # 2. Text kuerzen fuer LLM
-    truncated_text = _truncate_text(ocr_result.full_text)
+    # NEW-A (Re-Review): Sanitizer fuer <document_ocr>-Delimiter, damit E-Mail-
+    # Body oder OCR-Output mit den Tags den Wrap nicht aufbrechen koennen.
+    truncated_text = _sanitize_ocr_for_prompt(_truncate_text(ocr_result.full_text))
     logger.info(
         "OCR abgeschlossen: %d Zeichen (gekuerzt: %d), starte LLM-Analyse...",
         len(ocr_result.full_text),

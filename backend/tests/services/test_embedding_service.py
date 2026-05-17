@@ -21,25 +21,20 @@ class TestEmbedText:
         mock_embedding = [0.1, 0.2, 0.3, 0.4, 0.5]
         mock_resp = _make_response(200, {"embeddings": [mock_embedding]})
 
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             result = await embed_text("Test text", test_settings)
             assert result == mock_embedding
 
     @pytest.mark.asyncio
     async def test_embed_text_returns_none_on_error(self, test_settings):
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        # N-01 (Re-Review): nutzt jetzt shared Singleton-Client via _get_client.
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             test_settings.OLLAMA_MAX_RETRIES = 0
             result = await embed_text("Test", test_settings)
             assert result is None
@@ -51,13 +46,10 @@ class TestEmbedTexts:
         embeddings = [[0.1, 0.2], [0.3, 0.4]]
         mock_resp = _make_response(200, {"embeddings": embeddings})
 
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             result = await embed_texts(["Text 1", "Text 2"], test_settings)
             assert result == embeddings
             assert len(result) == 2
@@ -71,13 +63,10 @@ class TestEmbedTexts:
     async def test_embed_texts_empty_response(self, test_settings):
         mock_resp = _make_response(200, {"embeddings": []})
 
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             result = await embed_texts(["Test"], test_settings)
             assert result is None
 
@@ -87,15 +76,12 @@ class TestEmbedTexts:
         embeddings = [[0.1, 0.2]]
         mock_resp = _make_response(200, {"embeddings": embeddings})
 
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(
-                side_effect=[httpx.TimeoutException("timeout"), mock_resp]
-            )
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(
+            side_effect=[httpx.TimeoutException("timeout"), mock_resp]
+        )
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             with patch("app.services.embedding_service.asyncio.sleep", new_callable=AsyncMock):
                 result = await embed_texts(["Test"], test_settings)
                 assert result == embeddings
@@ -104,13 +90,10 @@ class TestEmbedTexts:
     async def test_embed_texts_http_error(self, test_settings):
         mock_resp = _make_response(500, {"error": "internal"})
 
-        with patch("app.services.embedding_service.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
 
+        with patch("app.services.embedding_service._get_client", return_value=mock_client):
             result = await embed_texts(["Test"], test_settings)
             assert result is None
 

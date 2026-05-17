@@ -165,3 +165,41 @@ async def test_login_when_pin_disabled(client):
     resp = await client.post("/api/auth/login", json={"pin": "anything"})
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+# Re-Review Test A: PIN Rate-Limit + Lockout (5/30s) war seit erster Runde ungetestet.
+@pytest.mark.asyncio
+async def test_pin_lockout_after_5_failures(pin_client):
+    """Nach MAX_LOGIN_ATTEMPTS Fehlversuchen wird die IP fuer LOCKOUT_SECONDS gesperrt."""
+    from app.api.auth import _login_attempts
+    _login_attempts.clear()
+
+    # 5 falsche Versuche -> 401, kein Lockout
+    for i in range(5):
+        r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+        assert r.status_code == 401, f"Versuch {i + 1} sollte 401 sein"
+
+    # 6. Versuch (selbst mit korrektem PIN!) -> 429 Lockout
+    r = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    assert r.status_code == 429
+    detail = r.json()["detail"].lower()
+    assert "warten" in detail or "lockout" in detail
+
+    _login_attempts.clear()
+
+
+@pytest.mark.asyncio
+async def test_pin_lockout_clears_on_success_before_lockout(pin_client):
+    """4 Fehlversuche + 1 Erfolg loescht den Counter."""
+    from app.api.auth import _login_attempts
+    _login_attempts.clear()
+
+    for _ in range(4):
+        r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+        assert r.status_code == 401
+
+    # Korrekter PIN -> Erfolg, Counter weg
+    r = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    assert r.status_code == 200
+    assert len(_login_attempts) == 0
+    _login_attempts.clear()

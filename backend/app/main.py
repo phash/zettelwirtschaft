@@ -287,6 +287,11 @@ _cors_origins = [
     "http://localhost:8080",
     "http://localhost:8000",
 ]
+# M-1 (Re-Review): CORS-Regex auf private RFC1918-Bereiche.
+# Hinweis: `allow_credentials=True` + breite Origin-Regex bedeutet, dass jede
+# Seite im selben LAN, die Cookies von zettelwirtschaft.local hat, Requests
+# senden kann. Im Heim-LAN akzeptabel, im Firmennetz problematisch — siehe
+# README/CLAUDE.md fuer den Trade-off.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

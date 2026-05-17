@@ -684,9 +684,12 @@ function Phase-Backup {
         Log "  Konfiguration gesichert"
     }
 
-    # Auf API-Backup versuchen (falls Backend noch laeuft)
+    # Auf API-Backup versuchen (falls Backend noch laeuft).
+    # F-02-Pendant (Re-Review): Backend ist seit N-001 nur ueber Frontend-Port
+    # erreichbar. Port aus Config nehmen statt hardcoded 8000.
+    $apiPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
     try {
-        $null = Invoke-WebRequest -Uri "http://localhost:8000/api/system/backup" -Method POST -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        $null = Invoke-WebRequest -Uri "http://localhost:$apiPort/api/system/backup" -Method POST -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
         Log "  API-Backup erstellt"
     } catch {
         Log "  API-Backup uebersprungen (Backend nicht erreichbar)"
@@ -816,11 +819,15 @@ function Phase-Health {
     Set-StepStatus 3 "active"
     Log "Warte auf Backend..."
     $script:progressBar.Value = if ($script:IsUpdate) { 75 } else { 70 }
-    $script:Job = Start-Job -ScriptBlock {
+    # F-02-Pendant: Health-Check ueber Frontend-Port (nginx-Proxy), nicht
+    # direkt auf 8000.
+    $healthPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
+    $script:Job = Start-Job -ArgumentList $healthPort -ScriptBlock {
+        param($port)
         $elapsed = 0
         while ($elapsed -lt 120) {
             try {
-                $null = Invoke-WebRequest -Uri "http://localhost:8000/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+                $null = Invoke-WebRequest -Uri "http://localhost:$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
                 Write-Output "Backend ist bereit."; return
             } catch {}
             Start-Sleep -Seconds 3; $elapsed += 3
