@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -84,7 +85,10 @@ class Document(Base):
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="Unbekanntes Dokument")
     document_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
-    amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # H-ARCH-2: Decimal statt float — vermeidet IEEE-754-Rundungsfehler bei
+    # Aggregationen (Tax-Year-Summary, Sonderausgaben). DB-Storage ist
+    # Numeric(12,2), SQLAlchemy mapped es jetzt nach Decimal statt float.
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
     issuer: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
     recipient: Mapped[str | None] = mapped_column(String(500), nullable=True)

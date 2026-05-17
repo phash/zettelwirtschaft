@@ -54,16 +54,22 @@ async def get_tax_summary(session: AsyncSession, year: int, filing_scope_id: str
     result = await session.execute(stmt)
     docs = result.scalars().all()
 
+    # H-ARCH-2: Aggregation mit Decimal statt float — sonst sind Summen von
+    # 1000 Belegen ungenau (IEEE-754-Drift). Quantisierung auf 2 Nachkomma-
+    # stellen am Ende fuer DB-konsistentes Format.
+    from decimal import Decimal, ROUND_HALF_UP
+    Q = Decimal("0.01")
+
     categories: dict[str, dict] = {}
     warnings: list[str] = []
 
     for doc in docs:
         cat = doc.tax_category or TaxCategory.KEINE
         if cat not in categories:
-            categories[cat] = {"count": 0, "total": 0.0}
+            categories[cat] = {"count": 0, "total": Decimal("0")}
         categories[cat]["count"] += 1
         if doc.amount is not None:
-            categories[cat]["total"] += float(doc.amount)
+            categories[cat]["total"] += doc.amount
 
         # Warnungen
         if doc.amount is None:
@@ -78,13 +84,15 @@ async def get_tax_summary(session: AsyncSession, year: int, filing_scope_id: str
                 "category": cat_key,
                 "label": TAX_CATEGORY_LABELS.get(cat_key, cat_key),
                 "document_count": categories[cat_key]["count"],
-                "total_amount": round(categories[cat_key]["total"], 2),
+                "total_amount": categories[cat_key]["total"].quantize(Q, rounding=ROUND_HALF_UP),
             })
+
+    total_amount = sum((d.amount for d in docs if d.amount is not None), Decimal("0"))
 
     return {
         "year": year,
         "total_documents": len(docs),
-        "total_amount": round(sum(float(d.amount or 0) for d in docs), 2),
+        "total_amount": total_amount.quantize(Q, rounding=ROUND_HALF_UP),
         "categories": cat_summaries,
         "warnings": warnings,
     }

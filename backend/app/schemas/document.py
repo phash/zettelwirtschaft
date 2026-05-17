@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -99,7 +100,7 @@ class DocumentResponse(BaseModel):
     document_type: DocumentType
     title: str
     document_date: date | None = None
-    amount: float | None = None
+    amount: Decimal | None = None
     currency: str
     issuer: str | None = None
     recipient: str | None = None
@@ -134,7 +135,7 @@ class DocumentListItem(BaseModel):
     document_type: DocumentType
     title: str
     document_date: date | None = None
-    amount: float | None = None
+    amount: Decimal | None = None
     currency: str
     issuer: str | None = None
     tax_relevant: bool
@@ -161,7 +162,7 @@ class DocumentUpdate(BaseModel):
     title: str | None = None
     document_type: DocumentType | None = None
     document_date: date | None = None
-    amount: float | None = None
+    amount: Decimal | None = None
     currency: str | None = None
     issuer: str | None = None
     recipient: str | None = None

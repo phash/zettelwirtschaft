@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -9,7 +10,7 @@ class SearchResultItem(BaseModel):
     title: str
     document_type: str
     document_date: date | None = None
-    amount: float | None = None
+    amount: Decimal | None = None
     currency: str = "EUR"
     issuer: str | None = None
     thumbnail_path: str | None = None
