@@ -1,27 +1,27 @@
-fastapi>=0.119,<0.137
-uvicorn[standard]>=0.34,<0.47
-sqlalchemy[asyncio]>=2.0.49,<2.1
-aiosqlite>=0.20,<0.23
-alembic>=1.14,<1.19
-pydantic-settings>=2.7,<2.15
+fastapi>=0.137,<0.140
+uvicorn[standard]>=0.49,<0.50
+sqlalchemy[asyncio]>=2.0.51,<2.1
+aiosqlite>=0.22,<0.23
+alembic>=1.18,<1.19
+pydantic-settings>=2.14,<2.15
 httpx>=0.28,<0.29
-python-dotenv>=1.1,<1.3
+python-dotenv>=1.2,<1.3
 # python-multipart < 0.0.18 hat CVE-2024-53981 (DoS), 0.0.20 zusaetzlich CVE-2026-24486 + 40347
-python-multipart>=0.0.26,<0.1
+python-multipart>=0.0.32,<0.1
 watchdog>=6,<7
 # Pillow < 12.2.0 hat CVE-2026-40192 (FITS-Decompression-Bomb DoS)
 Pillow>=12.2,<13
 pdf2image>=1.17,<2
-pytesseract>=0.3,<0.4
-pdfplumber>=0.11,<0.13
-reportlab>=4.2,<4.6
-chromadb-client>=1.0,<2
-cryptography>=44,<49
-croniter>=6,<7
+pytesseract>=0.3.13,<0.4
+pdfplumber>=0.11.10,<0.13
+reportlab>=4.5,<4.6
+chromadb-client>=1.5,<2
+cryptography>=49,<50
+croniter>=6.2,<7
 
 # Rate-Limiting (Defense-in-Depth, ergaenzt das Auth-spezifische Limit)
-slowapi>=0.1.9,<0.2
+slowapi>=0.1.10,<0.2
 
 # Testing
-pytest>=8,<10
-pytest-asyncio>=0.25,<2
+pytest>=9,<10
+pytest-asyncio>=1.0,<2
