@@ -146,10 +146,22 @@ function applySavedSearch(search) {
 
 watch(page, doSearch)
 
+// FE-L2: route.query.q kann string | null | string[] sein -> auf string verengen.
+function queryFromRoute() {
+  return typeof route.query.q === 'string' ? route.query.q : ''
+}
+
+// FE-M1: Die Header-Suche navigiert mit ?q=... Ist man bereits auf /suche, wird
+// die View-Instanz wiederverwendet (kein erneutes onMounted) — ohne Watcher
+// aenderte sich die URL, aber Eingabefeld und Ergebnisse blieben stehen.
+watch(() => route.query.q, () => {
+  query.value = queryFromRoute()
+  page.value = 1
+  doSearch()
+})
+
 onMounted(async () => {
-  if (route.query.q) {
-    query.value = route.query.q
-  }
+  query.value = queryFromRoute()
   await ensureScopesLoaded()
   doSearch()
   loadSavedSearches()

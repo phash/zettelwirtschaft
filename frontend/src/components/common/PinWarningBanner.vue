@@ -33,7 +33,9 @@ const dismissed = ref(false)
         <p class="mt-1">
           Das System l&auml;uft ohne Passwort &mdash; jedes Ger&auml;t im Heimnetz kann Dokumente
           sehen, l&ouml;schen oder exportieren.
-          Aktivierung: in der <code class="rounded bg-amber-100 px-1 font-mono text-xs">.env</code>
+          Aktivierung: in der Konfiguration
+          (<code class="rounded bg-amber-100 px-1 font-mono text-xs">.env</code> bzw. bei der
+          Native-Installation <code class="rounded bg-amber-100 px-1 font-mono text-xs">config.toml</code>)
           <code class="rounded bg-amber-100 px-1 font-mono text-xs">PIN_ENABLED=true</code> und
           <code class="rounded bg-amber-100 px-1 font-mono text-xs">PIN_CODE=&lt;4-6 Stellen&gt;</code>
           setzen, danach Backend neu starten.

@@ -158,6 +158,12 @@ def _apply_rrf(
     Score(chunk) = 1/(k + vec_rank) + 1/(k + fts_rank_of_its_doc)
     Boost laesst Chunks aus Dokumenten, die FTS5 hoch gewichtet, ueber
     semantisch nahen aber thematisch fernen Chunks emporsteigen.
+
+    L1: Annotiert jeden Chunk IN PLACE mit dem Schluessel "_rrf_score". Das ist
+    bewusst Teil des Datenflusses — `_llm_rerank` liest diesen Score und erhoeht
+    ihn additiv, die finale Sortierung nutzt ihn ebenfalls. Der Aufrufer uebergibt
+    frische Chunk-Dicts pro Request (keine Wiederverwendung/kein Caching), daher
+    ist die In-Place-Mutation sicher.
     """
     if not fts_doc_ids:
         return chunks[:target_k]

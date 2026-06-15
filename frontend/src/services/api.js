@@ -1,4 +1,13 @@
 import axios from 'axios'
+// FE-EXTRA: auth store UND router statisch importieren. Beide loesten als
+// dynamischer Import in Vite 8 die INEFFECTIVE_DYNAMIC_IMPORT-Warnung aus, weil
+// sie anderswo (PinWarningBanner/main.js) statisch geladen werden. Es gibt
+// keinen Eval-Zyklus: der auth store nutzt rohes axios (kein api.js), und
+// router/index.js laedt seine Views nur lazy (() => import(...)) — der Pfad
+// api.js -> router -> views -> api.js entsteht also erst zur Laufzeit, nicht
+// beim Modul-Eval.
+import { useAuthStore } from '../stores/auth'
+import router from '../router/index'
 
 const api = axios.create({
   baseURL: '/api',
@@ -10,10 +19,8 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      const { useAuthStore } = await import('../stores/auth')
       const auth = useAuthStore()
       auth.reset()
-      const { default: router } = await import('../router/index')
       const currentPath = router.currentRoute.value.fullPath
       if (currentPath !== '/pin') {
         router.replace({ name: 'pin-login', query: { redirect: currentPath } })
@@ -21,7 +28,9 @@ api.interceptors.response.use(
       return Promise.reject(error)
     }
     const message = error.response?.data?.detail || error.message || 'Ein Fehler ist aufgetreten'
-    console.error('API-Fehler:', message)
+    // FE-L1: API-Fehler nur im Dev-Build loggen — im Prod-Build sind sie Rauschen
+    // (erwartete 404/Health-Fehler) und duplizieren die User-Toasts.
+    if (import.meta.env.DEV) console.error('API-Fehler:', message)
     return Promise.reject(error)
   }
 )

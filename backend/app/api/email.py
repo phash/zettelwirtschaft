@@ -19,7 +19,7 @@ from app.schemas.email import (
     EmailTestResult,
     ProcessedEmailResponse,
 )
-from app.services.crypto_service import decrypt_password, encrypt_password, generate_encryption_key
+from app.services.crypto_service import decrypt_password, encrypt_password
 from app.services.email_fetch_service import fetch_emails_for_account, test_imap_connection
 
 logger = logging.getLogger(__name__)

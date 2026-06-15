@@ -2,7 +2,16 @@ import asyncio
 import logging
 from pathlib import Path
 
+from PIL import Image as _PILImage
+
 from app.config import Settings
+
+# S-LOW3: Decompression-Bomb-Schutz. Pillow warnt per Default nur ab ~178 Mpx,
+# wirft aber nicht. Hartes Limit setzen -> Image.open() wirft oberhalb eine
+# DecompressionBombError, die in den Thumbnail/OCR-Pfaden als Fehler (None)
+# abgefangen wird. Schuetzt die 8-GB-Zielhardware vor Mini-Files, die zu
+# hunderten Megapixeln dekomprimieren.
+_PILImage.MAX_IMAGE_PIXELS = 64_000_000
 
 logger = logging.getLogger("zettelwirtschaft.thumbnail")
 

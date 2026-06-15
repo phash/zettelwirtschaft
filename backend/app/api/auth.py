@@ -14,10 +14,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # In-memory session store: token -> expiry
 _sessions: dict[str, datetime] = {}
 
-# Rate limiting: IP -> (fail_count, lockout_until)
-_login_attempts: dict[str, tuple[int, datetime | None]] = {}
+# Rate limiting: IP -> (fail_count, lockout_until, last_seen)
+_login_attempts: dict[str, tuple[int, datetime | None, datetime]] = {}
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_SECONDS = 30
+# S-MED1: Deckel fuer den exponentiellen Lockout-Backoff und Idle-Fenster, nach
+# dem ein Attempt-Counter ganz vergessen wird (1h).
+MAX_LOCKOUT_SECONDS = 3600
+ATTEMPT_FORGIVE_SECONDS = 3600
 
 SESSION_COOKIE = "zw_session"
 
@@ -31,18 +35,23 @@ def _cleanup_expired() -> None:
     expired = [k for k, v in _sessions.items() if v <= now]
     for k in expired:
         del _sessions[k]
-    # Login-Attempts: abgelaufene Lockouts entfernen.
-    # NEW-B (Re-Review): Wenn fail_count >= MAX aber lockout=None (Race bei
-    # paralleler Last), wurde nach altem Code der Eintrag nie aufgeraeumt.
-    # Jetzt cleanen wir auch solche "verwaisten" Counter nach 5min Idle.
-    stale = []
-    for ip, (count, lockout) in _login_attempts.items():
-        if lockout and lockout <= now:
-            stale.append(ip)
-        elif count >= MAX_LOGIN_ATTEMPTS and lockout is None:
-            # Counter haengt ohne Lockout — als Self-DoS-Schutz aufraeumen
-            stale.append(ip)
-    for ip in stale:
+    # Login-Attempts: S-MED1 — Counter NICHT mehr beim Ablauf des Lockouts
+    # loeschen. Frueher setzte das fail_count auf 0 zurueck, sodass ein Angreifer
+    # alle LOCKOUT_SECONDS frische MAX_LOGIN_ATTEMPTS Versuche bekam (kein
+    # Eskalationseffekt). Jetzt: abgelaufenen Lockout nur entsperren (fail_count
+    # bleibt fuer den exponentiellen Backoff erhalten) und Eintraege erst nach
+    # laengerer Inaktivitaet (ATTEMPT_FORGIVE_SECONDS) ganz vergessen — das
+    # begrenzt zugleich das Memory-Wachstum.
+    forgiven = []
+    for ip, (count, lockout, last_seen) in list(_login_attempts.items()):
+        if lockout is not None and now < lockout:
+            continue  # noch gesperrt
+        if (now - last_seen).total_seconds() >= ATTEMPT_FORGIVE_SECONDS:
+            forgiven.append(ip)
+        elif lockout is not None:
+            # Lockout abgelaufen -> entsperren, fail_count behalten.
+            _login_attempts[ip] = (count, None, last_seen)
+    for ip in forgiven:
         del _login_attempts[ip]
 
 
@@ -90,7 +99,7 @@ async def auth_login(
     from app.core.rate_limit import trusted_client_ip
     client_ip = trusted_client_ip(request)
     now = datetime.now(timezone.utc)
-    fail_count, lockout_until = _login_attempts.get(client_ip, (0, None))
+    fail_count, lockout_until, _last_seen = _login_attempts.get(client_ip, (0, None, now))
     if lockout_until and now < lockout_until:
         remaining = int((lockout_until - now).total_seconds())
         return JSONResponse(
@@ -126,10 +135,17 @@ async def auth_login(
         )
         return {"success": True}
 
-    # Fehlversuch zaehlen
+    # Fehlversuch zaehlen — S-MED1: ab MAX_LOGIN_ATTEMPTS exponentieller Backoff
+    # (30s, 60s, 120s, ... gedeckelt auf MAX_LOCKOUT_SECONDS), damit wiederholte
+    # Lockout-Runden den Brute-Force-Durchsatz progressiv senken statt sich alle
+    # LOCKOUT_SECONDS zurueckzusetzen.
     fail_count += 1
-    lockout = now + timedelta(seconds=LOCKOUT_SECONDS) if fail_count >= MAX_LOGIN_ATTEMPTS else None
-    _login_attempts[client_ip] = (fail_count, lockout)
+    lockout = None
+    if fail_count >= MAX_LOGIN_ATTEMPTS:
+        overflow = fail_count - MAX_LOGIN_ATTEMPTS
+        lockout_seconds = min(LOCKOUT_SECONDS * (2 ** overflow), MAX_LOCKOUT_SECONDS)
+        lockout = now + timedelta(seconds=lockout_seconds)
+    _login_attempts[client_ip] = (fail_count, lockout, now)
     return JSONResponse(status_code=401, content={"success": False, "detail": "Falscher PIN"})
 
 

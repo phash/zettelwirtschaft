@@ -93,15 +93,15 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     if has_table(cur, "filing_scopes"):
         return "005_add_filing_scopes"
     if has_table(cur, "notifications"):
-        return "004_add_notifications_corrections_review_ext"
+        return "004_notifications_corrections"
     if has_table(cur, "documents_fts"):
-        return "003_add_fts5_and_saved_searches"
+        return "003_add_fts5_saved"
     if has_table(cur, "documents"):
         return "002_add_document_models"
     if has_table(cur, "processing_jobs") and has_column(
         cur, "processing_jobs", "ocr_text"
     ):
-        return "001_add_ocr_analysis_columns"
+        return "001_add_ocr_analysis"
     return None
 
 
@@ -138,7 +138,11 @@ def fix_alembic_version() -> None:
 
 
 def run_alembic() -> None:
-    result = subprocess.run(["alembic", "upgrade", "head"], cwd="/app")
+    # M6: cwd aus dem Skript-Pfad ableiten (alembic.ini liegt neben migrate.py)
+    # statt "/app" hartzucodieren — laeuft so auch ausserhalb des Docker-Image.
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"], cwd=str(Path(__file__).resolve().parent)
+    )
     if result.returncode != 0:
         print("[migrate] FEHLER: alembic upgrade head fehlgeschlagen", file=sys.stderr)
         sys.exit(result.returncode)

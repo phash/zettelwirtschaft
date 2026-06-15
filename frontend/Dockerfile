@@ -1,9 +1,11 @@
 # Build stage
-# Node 22 LTS (Node 20 EOL April 2026, Vite 7 erfordert Node 20.19+)
+# Node 22 LTS (Node 20 EOL April 2026; Vite 8 erfordert Node ^20.19 || >=22.12)
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+# FE-L4: npm ci statt npm install — reproduzierbarer Build streng nach Lockfile
+# (npm install kann das Lockfile mutieren und andere Versionen aufloesen).
+RUN npm ci
 COPY . .
 RUN npm run build
 

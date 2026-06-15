@@ -46,11 +46,13 @@ async def process_upload(
     upload_dir.mkdir(parents=True, exist_ok=True)
     dest_path = upload_dir / stored_name
 
-    # Datei kopieren/verschieben
-    if source == JobSource.WATCH_FOLDER:
-        shutil.move(str(file_path), str(dest_path))
-    else:
-        shutil.copy2(str(file_path), str(dest_path))
+    # M4: IMMER kopieren (auch Watch-Ordner) und die Quelldatei erst NACH
+    # erfolgreichem DB-Commit durch den Aufrufer loeschen — rollback-sicher,
+    # analog zur "copy+delete"-Disziplin im archive_service. Frueher wurde fuer
+    # WATCH_FOLDER `shutil.move` genutzt: schlug der Commit fehl, war die
+    # Originaldatei weg UND kein Job angelegt (Datei verwaist, und
+    # _move_to_rejected lief auf einen nicht mehr existenten Pfad).
+    shutil.copy2(str(file_path), str(dest_path))
 
     # Queue-Eintrag erstellen
     job = ProcessingJob(

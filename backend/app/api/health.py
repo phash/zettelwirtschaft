@@ -1,3 +1,4 @@
+import logging
 import shutil
 import time
 
@@ -13,6 +14,7 @@ from app.database import get_db
 from fastapi import Request
 
 router = APIRouter()
+logger = logging.getLogger("zettelwirtschaft.health")
 
 
 # M-2 (Re-Review): Ollama-Subcheck mit TTL-Cache. Docker-Healthcheck feuert
@@ -74,8 +76,11 @@ async def health_check(
     try:
         await db.execute(text("SELECT 1"))
         components["database"] = ComponentStatus(status="ok")
-    except Exception as e:
-        components["database"] = ComponentStatus(status="error", message=str(e))
+    except Exception:
+        # S-LOW5: /api/health ist unauthentifiziert — keine internen
+        # Exception-Details (Pfade/Treiber) nach aussen geben, nur generisch.
+        logger.exception("Health-Check: Datenbank nicht erreichbar")
+        components["database"] = ComponentStatus(status="error", message="Datenbankfehler")
 
     # Speicherplatz
     try:

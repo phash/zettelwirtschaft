@@ -26,7 +26,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico'],
+      includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Zettelwirtschaft',
         short_name: 'Zettel',
@@ -60,15 +60,18 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
-            urlPattern: /^\/api\/.*\/file$/,
+            // FE-H1: Function-Matcher gegen url.pathname. Ein RegExp-urlPattern
+            // matcht in Workbox gegen url.href (inkl. Origin "https://host"),
+            // sodass ein mit ^\/api\/ verankertes Muster NIE greift und die
+            // gesamte Caching-Policy still wirkungslos war. Binaer-Endpunkte
+            // (file/thumbnail) duerfen nicht gecacht werden, sonst liefert der
+            // Service-Worker index.html statt der Datei (iframe-Vorschau bricht).
+            // NetworkOnly MUSS vor der breiten /api/-Regel stehen.
+            urlPattern: ({ url }) => /\/api\/.*\/(file|thumbnail)$/.test(url.pathname),
             handler: 'NetworkOnly',
           },
           {
-            urlPattern: /^\/api\/.*\/thumbnail$/,
-            handler: 'NetworkOnly',
-          },
-          {
-            urlPattern: /^\/api\//,
+            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

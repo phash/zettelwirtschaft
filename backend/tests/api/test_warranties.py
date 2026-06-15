@@ -276,3 +276,8 @@ class TestWarrantyUpdate:
         data = resp.json()
         assert data["notes"] == "Garantie beim Haendler verlaengert"
         assert data["product_name"] == "Update-Produkt"
+        # H3-Guard: document_title wird aus der lazy="raise"-Relationship
+        # warranty.document gelesen. Frueher stand hier ein blanket
+        # session.refresh(warranty) — die Antwort muss das Feld liefern, ohne
+        # einen InvalidRequestError/MissingGreenlet auszuloesen.
+        assert "document_title" in data

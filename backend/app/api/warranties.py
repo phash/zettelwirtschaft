@@ -108,7 +108,12 @@ async def update_warranty(
         setattr(warranty, field, value)
 
     await session.flush()
-    await session.refresh(warranty)
+    # H3: KEIN blanket session.refresh(warranty) — WarrantyInfo.document ist
+    # lazy="raise"; refresh wuerde die per selectinload geladene Relationship
+    # expiren und der Zugriff unten (warranty.document.title) liefe in einen
+    # InvalidRequestError/MissingGreenlet. WarrantyInfo hat keine server-seitigen
+    # onupdate-Spalten, die nach flush nachgeladen werden muessten — die per
+    # setattr gesetzten Werte liegen bereits im Objekt vor (analog Listen-Endpoint).
 
     item = WarrantyListItem.model_validate(warranty)
     item.days_remaining = _days_remaining(warranty.warranty_end_date)

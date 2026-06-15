@@ -70,7 +70,7 @@ class TestProcessUpload:
                 db=db_session,
             )
 
-    async def test_watch_folder_moves_file(
+    async def test_watch_folder_copies_file_until_commit(
         self,
         sample_jpg: Path,
         test_settings: Settings,
@@ -88,7 +88,10 @@ class TestProcessUpload:
             db=db_session,
         )
 
-        # Originaldatei wurde verschoben
-        assert not original_path.exists()
-        # Neue Datei existiert im Upload-Dir
+        # M4: process_upload kopiert jetzt auch fuer WATCH_FOLDER (statt move).
+        # Die Quelldatei bleibt bis nach dem DB-Commit erhalten und wird erst
+        # vom Aufrufer (watch_folder_service._safe_unlink) geloescht —
+        # rollback-sicher, sonst waere die Datei bei Commit-Fehler verloren.
+        assert original_path.exists()
+        # Kopie existiert im Upload-Dir
         assert Path(job.file_path).exists()

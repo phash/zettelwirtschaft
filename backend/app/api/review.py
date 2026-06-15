@@ -247,7 +247,9 @@ async def reanalyze_document(
         if parsed_date:
             doc.document_date = parsed_date
     if analysis.amount is not None:
-        doc.amount = analysis.amount
+        # M1: float -> Decimal am Schreib-Rand (Document.amount ist Numeric(12,2)).
+        from app.services.archive_service import coerce_decimal_amount
+        doc.amount = coerce_decimal_amount(analysis.amount)
     if analysis.currency:
         doc.currency = analysis.currency
     if analysis.summary:
@@ -282,6 +284,23 @@ async def reanalyze_document(
 
     logger.info("Re-Analyse fuer Dokument %s erfolgreich: Typ=%s, Konfidenz=%.0f%%",
                 doc.id, doc.document_type, analysis.confidence * 100)
+
+    # H2: Suche + RAG synchron halten. Die Re-Analyse hat title/issuer/summary
+    # ueberschrieben — ohne Re-Index liefern Volltextsuche und Chat dauerhaft die
+    # alten Metadaten (anders als update_document, das den FTS-Index pflegt).
+    from app.services.search_service import index_document
+    tags_str = " ".join(t.name for t in doc.tags) if doc.tags else ""
+    await index_document(session, doc.id, doc.title or "", doc.ocr_text or "", doc.issuer, doc.summary, tags_str)
+
+    # Commit zuerst, dann Vektoren neu aufbauen (post-commit, best-effort) —
+    # analog zu archive_document/delete_document. expire_on_commit=False, also
+    # bleibt `doc` nach dem Commit nutzbar. Vektorfehler blockieren nicht.
+    await session.commit()
+    try:
+        from app.services.vectorize_service import vectorize_document
+        await vectorize_document(doc, settings)
+    except Exception:
+        logger.warning("Re-Vektorisierung nach Re-Analyse fehlgeschlagen fuer %s", doc.id, exc_info=True)
 
     return {
         "ok": True,

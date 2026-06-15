@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from sqlalchemy import select
@@ -20,6 +21,22 @@ from app.services.ocr_service import OcrResult
 from app.services.search_service import index_document
 
 logger = logging.getLogger("zettelwirtschaft.archive")
+
+
+def coerce_decimal_amount(value) -> Decimal | None:
+    """M1: float/str -> Decimal(2 Nachkommastellen) am Schreib-Rand von
+    Document.amount (Numeric(12,2)).
+
+    AnalysisResult.amount bleibt float (es wird als JSON in
+    ProcessingJob.analysis_result serialisiert). Erst beim Persistieren in die
+    Decimal-Spalte wird sauber quantisiert — sonst landet ein IEEE-754-float im
+    In-Memory-Objekt und untergraebt die Decimal-Pipeline (H-ARCH-2)."""
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def _compute_file_hash(file_path: Path) -> str:
@@ -255,7 +272,7 @@ async def archive_document(
         document_type=doc_type,
         title=analysis.title or original_filename,
         document_date=doc_date,
-        amount=analysis.amount,
+        amount=coerce_decimal_amount(analysis.amount),
         currency=analysis.currency or "EUR",
         issuer=analysis.sender,
         recipient=analysis.recipient,

@@ -222,17 +222,24 @@ async def system_health(
     except Exception:
         components["ollama"] = {"status": "offline", "message": "Nicht erreichbar"}
 
-    # ChromaDB
+    # ChromaDB (H1: Native/embedded hat keinen HTTP-Service — sonst meldet der
+    # Health-Check dauerhaft "offline"/"degraded", obwohl die Vektorsuche laeuft)
+    from app.services.vectorize_service import get_collection_count
     try:
-        import httpx as _httpx
-        async with _httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat")
-            if resp.status_code == 200:
-                from app.services.vectorize_service import get_collection_count
-                vec_count = get_collection_count(settings)
-                components["chromadb"] = {"status": "ok", "vectors": vec_count}
-            else:
-                components["chromadb"] = {"status": "error", "message": f"HTTP {resp.status_code}"}
+        if settings.CHROMADB_MODE == "embedded":
+            # In-process: Erreichbarkeit ueber den Collection-Count (blockierend
+            # -> to_thread), analog zu _check_chromadb_reachable_async.
+            vec_count = await asyncio.to_thread(get_collection_count, settings)
+            components["chromadb"] = {"status": "ok", "vectors": vec_count}
+        else:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat")
+                if resp.status_code == 200:
+                    vec_count = await asyncio.to_thread(get_collection_count, settings)
+                    components["chromadb"] = {"status": "ok", "vectors": vec_count}
+                else:
+                    components["chromadb"] = {"status": "error", "message": f"HTTP {resp.status_code}"}
     except Exception:
         components["chromadb"] = {"status": "offline", "message": "Nicht erreichbar"}
 
@@ -427,7 +434,26 @@ async def rebuild_vectors(
         raise HTTPException(409, "Rebuild laeuft bereits — Status via GET /system/maintenance/rebuild-vectors/status")
 
     request.app.state.rebuild_status = {"in_progress": True, "total": 0, "processed": 0, "chunks": 0}
-    asyncio.create_task(_run_rebuild_vectors(request.app, settings))
+    # M2: starke Referenz halten — asyncio haelt nur eine schwache Referenz auf
+    # Tasks, sodass der GC einen fire-and-forget-Task mitten im Lauf einsammeln
+    # kann. Das wuerde den Rebuild abbrechen und in_progress dauerhaft True
+    # lassen (409-Guard blockiert dann jeden Neustart).
+    task = asyncio.create_task(_run_rebuild_vectors(request.app, settings))
+    request.app.state.rebuild_task = task
+
+    def _on_rebuild_done(t: asyncio.Task) -> None:
+        request.app.state.rebuild_task = None
+        st = getattr(request.app.state, "rebuild_status", None)
+        # Nur eingreifen, wenn der Task unerwartet endete (GC/Cancel) bevor
+        # _run_rebuild_vectors seinen eigenen Status-Reset erreicht hat.
+        if st and st.get("in_progress"):
+            exc = t.exception() if not t.cancelled() else None
+            request.app.state.rebuild_status = {
+                "in_progress": False,
+                "error": str(exc) if exc else "abgebrochen",
+            }
+
+    task.add_done_callback(_on_rebuild_done)
     return {"started": True, "message": "Vektor-Rebuild im Hintergrund gestartet"}
 
 

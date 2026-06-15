@@ -3,7 +3,13 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from PIL import Image as _PILImage
+
 from app.config import Settings
+
+# S-LOW3: Decompression-Bomb-Schutz (siehe thumbnail_service). Hartes Pixel-Limit
+# fuer alle Pillow-Operationen inkl. des 2x-Upscale in _preprocess_for_ocr.
+_PILImage.MAX_IMAGE_PIXELS = 64_000_000
 
 logger = logging.getLogger(__name__)
 

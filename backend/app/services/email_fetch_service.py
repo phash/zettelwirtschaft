@@ -116,7 +116,15 @@ async def test_imap_connection(account: EmailAccount, settings: Settings) -> dic
         password = decrypt_password(account.encrypted_password, key)
         return await asyncio.to_thread(_test_imap_sync, account, password)
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        # S-LOW4: rohen Verbindungsfehler nur serverseitig loggen; dem Client eine
+        # gekuerzte, generische Meldung geben (kein praeziser Recon-Oracle ueber
+        # interne Hosts/Ports, wenn PIN aus ist). Bewusst KEIN IP-Denylist —
+        # interne LAN-Mailserver (NAS o.ae.) sind ein legitimer On-Prem-Fall.
+        logger.warning("IMAP-Verbindungstest fehlgeschlagen fuer %s: %s", account.imap_host, e)
+        return {
+            "success": False,
+            "error": "Verbindung fehlgeschlagen — Host, Port, SSL und Zugangsdaten pruefen.",
+        }
 
 
 def _fetch_raw_emails_sync(account: EmailAccount, password: str) -> list[tuple[bytes, bytes]]:

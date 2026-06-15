@@ -87,6 +87,8 @@ class _WatchHandler(FileSystemEventHandler):
                     db=session,
                 )
                 await session.commit()
+                # M4: Quelldatei erst NACH erfolgreichem Commit entfernen.
+                await asyncio.to_thread(_safe_unlink, file_path)
                 logger.info("Watch-Ordner-Datei eingereicht: %s", original_name)
 
         except FileValidationError as e:
@@ -110,16 +112,31 @@ def _move_to_rejected(file_path: Path, settings: Settings) -> None:
         logger.exception("Fehler beim Verschieben nach rejected: %s", file_path.name)
 
 
+def _safe_unlink(file_path: Path) -> None:
+    """Loescht die Quelldatei best-effort (nach erfolgreichem Commit, M4)."""
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Quelldatei konnte nicht entfernt werden: %s", file_path, exc_info=True)
+
+
 async def _scan_existing_files(
     session_factory, settings: Settings, watch_dir: Path
 ) -> None:
     """Verarbeitet beim Start alle vorhandenen Dateien im Watch-Ordner."""
     allowed_exts = set(settings.allowed_file_types_list)
 
-    files = [
-        f for f in watch_dir.iterdir()
-        if f.is_file() and get_file_extension(f.name) in allowed_exts
-    ]
+    # M5: Verzeichnis-Walk + stat() sind blockierend — im Thread ausfuehren,
+    # damit der Event-Loop beim Start (langsamer USB-Stick/Netzwerk-Share) nicht
+    # haengt. Der Runtime-Pfad (_handle_new_file) wrappt stat() bereits in
+    # to_thread; der Startup-Scan zog hier historisch nicht nach.
+    def _list_files() -> list[Path]:
+        return [
+            f for f in watch_dir.iterdir()
+            if f.is_file() and get_file_extension(f.name) in allowed_exts
+        ]
+
+    files = await asyncio.to_thread(_list_files)
 
     if not files:
         return
@@ -128,16 +145,19 @@ async def _scan_existing_files(
 
     for file_path in files:
         try:
+            file_size = await asyncio.to_thread(lambda p=file_path: p.stat().st_size)
             async with session_factory() as session:
                 await process_upload(
                     file_path=file_path,
                     original_name=file_path.name,
-                    file_size=file_path.stat().st_size,
+                    file_size=file_size,
                     source=JobSource.WATCH_FOLDER,
                     settings=settings,
                     db=session,
                 )
                 await session.commit()
+                # M4: Quelldatei erst NACH erfolgreichem Commit entfernen.
+                await asyncio.to_thread(_safe_unlink, file_path)
                 logger.info("Watch-Ordner-Startup: Datei eingereicht: %s", file_path.name)
 
         except FileValidationError as e:

@@ -52,7 +52,9 @@ async def chat(
     )
     session.add(user_msg)
 
-    # Antwort speichern (1 Sekunde spaeter fuer korrekte Sortierung)
+    # Antwort 1ms nach der Frage stempeln. L2: ChatMessage.id ist eine zufaellige
+    # UUID und taugt NICHT als Tiebreaker — der Verlauf sortiert primaer nach
+    # created_at, daher der explizite Offset, damit die Frage vor der Antwort steht.
     from datetime import timedelta
     assistant_msg = ChatMessage(
         role=MessageRole.ASSISTANT,

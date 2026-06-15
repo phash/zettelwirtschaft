@@ -145,11 +145,30 @@ def _sanitize_ocr_for_prompt(text: str) -> str:
 
 
 def _truncate_text(text: str, max_chars: int = 4000) -> str:
-    """Kuerzt langen OCR-Text: erste 2000 + letzte 2000 Zeichen."""
+    """Kuerzt langen OCR-Text: erste ~2000 + letzte ~2000 Zeichen.
+
+    L3: Schnittkanten an Whitespace ausrichten, damit kein Wort/keine Zahl mitten
+    durchtrennt wird (sonst sieht der LLM ggf. halbe Betraege/Datumsangaben).
+    Faellt auf den harten Schnitt zurueck, wenn keine nahe Whitespace-Grenze
+    existiert.
+    """
     if len(text) <= max_chars:
         return text
     half = max_chars // 2
-    return text[:half] + "\n\n[...Text gekuerzt...]\n\n" + text[-half:]
+    head = text[:half]
+    tail = text[-half:]
+    # Kopf am letzten Whitespace beenden (nur wenn nicht zu viel verloren geht).
+    cut = max(head.rfind(" "), head.rfind("\n"))
+    if cut >= half // 2:
+        head = head[:cut]
+    # Schwanz erst nach dem ersten Whitespace beginnen lassen.
+    start = tail.find(" ")
+    nl = tail.find("\n")
+    if nl != -1 and (start == -1 or nl < start):
+        start = nl
+    if 0 <= start <= half // 2:
+        tail = tail[start + 1:]
+    return head + "\n\n[...Text gekuerzt...]\n\n" + tail
 
 
 def _parse_analysis_json(raw: str) -> dict | None:

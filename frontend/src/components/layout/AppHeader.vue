@@ -138,8 +138,8 @@ onUnmounted(() => {
       <!-- Autocomplete dropdown -->
       <div v-if="showSuggestions" class="absolute z-50 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg">
         <button
-          v-for="s in suggestions"
-          :key="s"
+          v-for="(s, i) in suggestions"
+          :key="`${i}-${s}`"
           class="block w-full px-4 py-2 text-left text-sm hover:bg-gray-50"
           @mousedown.prevent="selectSuggestion(s)"
         >

@@ -2,14 +2,18 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  total: Number,
-  page: Number,
-  pageSize: Number,
+  total: { type: Number, default: 0 },
+  page: { type: Number, default: 1 },
+  pageSize: { type: Number, default: 25 },
 })
 
 const emit = defineEmits(['update:page'])
 
-const totalPages = computed(() => Math.ceil(props.total / props.pageSize))
+// FE-M3: Division gegen 0/undefined absichern — sonst NaN/Infinity, falls die
+// Komponente vor gesetztem pageSize gerendert wird.
+const totalPages = computed(() =>
+  props.pageSize > 0 ? Math.ceil(props.total / props.pageSize) : 0
+)
 
 const pages = computed(() => {
   const items = []

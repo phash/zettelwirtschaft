@@ -267,8 +267,15 @@ class PinAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
+        # S-MED2: Nur die /api/-Daten-Endpunkte schuetzen. Die statische
+        # Frontend-Shell (Native-Mode: vom Backend via _mount_frontend
+        # ausgeliefert — index.html, /assets/*, SPA-Routen) sowie Health/Auth
+        # muessen ohne Session erreichbar sein, sonst laesst sich im Native-Mode
+        # bei aktivem PIN die Login-Seite selbst nicht laden (Fail-closed-DoS).
+        # In Docker sieht das Backend ohnehin nur /api/* (nginx liefert die SPA).
         if (
-            path.startswith("/api/health")
+            not path.startswith("/api/")
+            or path.startswith("/api/health")
             or path.startswith("/api/auth")
         ):
             return await call_next(request)
