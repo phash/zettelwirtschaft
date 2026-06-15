@@ -38,8 +38,13 @@ test.describe('Search', () => {
     await searchInput.fill('test');
     await searchInput.press('Enter');
 
-    // Should show "2" results or similar count
-    await expect(page.locator(`text=${MOCK_SEARCH_RESULTS.total}`).first()).toBeVisible();
+    // Ergebnis-Zaehler gezielt pruefen. Frueher: locator(`text=2`).first() —
+    // das matchte ein beliebiges "2" und landete auf der Versionsnummer
+    // (z.B. "v1.2.2") in der Sidebar: auf Desktop zufaellig sichtbar (Test gruen,
+    // aber ohne den Zaehler je zu pruefen), auf Mobile ausgeblendet -> Fehlschlag.
+    await expect(
+      page.getByText(new RegExp(`${MOCK_SEARCH_RESULTS.total}\\s+Ergebnis`)).first()
+    ).toBeVisible();
   });
 
   test('Search result is clickable', async ({ page }) => {
