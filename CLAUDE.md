@@ -41,7 +41,7 @@ npm install
 npm run dev                          # Vite Dev-Server, Port 3000
 
 # Tests
-cd backend && python -m pytest -q   # 369 Tests / 1 skipped (Tesseract)
+cd backend && python -m pytest -q   # 374 Tests / 1 skipped (Tesseract)
 cd e2e && npx playwright test --project=chromium  # 145 Tests
 ```
 
@@ -118,7 +118,7 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
 
 ## Technologie-Stack
 
-- **Backend:** Python 3.12 / FastAPI 0.119+ / SQLAlchemy 2.0 async / Pydantic v2
+- **Backend:** Python 3.12 / FastAPI 0.137+ / SQLAlchemy 2.0 async / Pydantic v2
 - **Datenbank:** SQLite (via SQLAlchemy + Alembic, Migrationen via `migrate.py`)
 - **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs), Pillow 12.x
   - Pre-Processing: Auto-Upscale 2x bei kleinen Bildern, MedianFilter Denoising,
@@ -127,7 +127,7 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
   - JSON-Schema-constrained Generation (Ollama 0.5+)
   - Few-Shot aus CorrectionMappings
   - Optional: LLM-Reranker + Verifier-Pass (config-flags)
-- **Frontend:** Vue.js 3.5+ (Composition API, `<script setup>`) + Vite 7 + Tailwind v4
+- **Frontend:** Vue.js 3.5+ (Composition API, `<script setup>`) + Vite 8 + Tailwind v4
   + Pinia 3 + vue-router 5
 - **Deployment:**
   - **Docker** (Stand v1.2.x, Standard heute): Backend, Frontend/Nginx, Ollama, ChromaDB 1.x als Container
@@ -483,8 +483,10 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   UI-Banner via `pin_warning`-Flag wenn deaktiviert, Cookie `Secure`+`SameSite=strict`
 - LLM-Pipeline: bge-m3, JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
   optional Reranker + Verifier
-- Lib-Stand: Vite 7, Tailwind v4, Pinia 3, vue-router 5, Node 22, ChromaDB 1.0.20,
-  FastAPI 0.119+, Pillow 12.2+, axios 1.15.1+, slowapi neu
+- Lib-Stand (v1.3.0, aggressive Migration): Vite 8, TypeScript 6, Tailwind v4,
+  Pinia 3, vue-router 5.1, Node 22/24, ChromaDB 1.5, FastAPI 0.137, uvicorn 0.49,
+  cryptography 49, SQLAlchemy 2.0.51, pytest 9 / pytest-asyncio 1.x, Pillow 12.2,
+  axios 1.18, slowapi 0.1.10
 
 **Native-Windows (Phasen 1+2 abgeschlossen + Migrations-Pfad verifiziert, ab v1.3):**
 
@@ -545,7 +547,7 @@ ist OFF. Migration 013 verlaesst sich darauf.
 ### Tests
 > Read `memory/e2e-tests.md` before writing or running E2E tests.
 
-- **Backend: 369 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
+- **Backend: 374 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
   + Model-Tests + Core-Tests + Phase-8-Tests fuer Reranker, Verifier,
   Trusted-Client-IP + Re-Review-Tests (PIN-Lockout, Sanitizer, Scope-Fallback,
   Heartbeat, Email-FAILED-Record).

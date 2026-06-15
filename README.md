@@ -131,6 +131,16 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.3.0
+- **Native-Windows-Modus (Foundation):** Setup.exe → NSSM-Service `ZettelwirtschaftBackend`, PyInstaller-Onedir-Bundle, Frontend über FastAPI `StaticFiles`, ChromaDB embedded (`PersistentClient`), Tesseract + poppler gebündelt, Konfiguration über `config.toml`. Migrationspfad Docker → Native dokumentiert und getestet.
+- **Aggressive Abhängigkeits-Migration auf neueste Stable-Versionen:** Frontend **Vite 7 → 8** und **TypeScript 5 → 6** (Major), vue-router 5.1, Pinia 3.0.4, Vue 3.5.38, Tailwind 4.3; Backend FastAPI 0.137, uvicorn 0.49, cryptography 49, SQLAlchemy 2.0.51, pytest 9 / pytest-asyncio 1.x, chromadb 1.5. Plugin-Peer-Kompatibilität für Vite 8 vorab verifiziert (kein `--legacy-peer-deps`).
+- **Code-Review-Hardening (Blocker → Low):**
+  - Fix (Blocker): `migrate.detect_stamp()` lieferte drei nicht existierende Alembic-Revisions-IDs (001/003/004) → `alembic upgrade head` brach bei alten Legacy-DBs ab und die App startete nicht. Korrigiert + Guard-Test.
+  - Fix (High): System-Health prüfte ChromaDB im Native/embedded-Modus fälschlich per HTTP (Status dauerhaft „degraded"); Re-Analyse aktualisiert jetzt FTS-Index + Vektoren (Suche/Chat waren veraltet); Garantie-Update ohne riskanten `session.refresh()` auf einer `lazy="raise"`-Relationship.
+  - Fix (Medium): PIN-Lockout mit exponentiellem Backoff statt Reset alle 30 s; statische Frontend-Shell im Native-Modus auch bei aktivem PIN erreichbar (Login-Seite ladbar); Watch-Ordner kopiert und löscht die Quelldatei erst nach DB-Commit (rollback-sicher); Decimal-Konvertierung am Schreib-Rand von `Document.amount`; Vektor-Rebuild-Task mit starker Referenz.
+  - Fix (Low): Pillow-Decompression-Bomb-Schutz, gehärtete IMAP-Test-Fehlermeldung, `/api/health` gibt keine DB-Exception-Details mehr preis; Frontend: PWA-Runtime-Caching griff nie (Match gegen `url.href` statt `pathname`), Header-Suche aktualisiert Ergebnisse auch auf der Suchseite, StatCard-Icons in Steuer/Garantie, statischer Auth-/Router-Import (Vite-8-Build ohne Warnungen) und weitere Robustheits-/Hygiene-Fixes.
+- Tests: Backend **374** (1 übersprungen), E2E **145** (chromium) grün.
+
 ### v1.2.2
 - Feature: „Erneut analysieren"-Button bei fehlgeschlagener LLM-Analyse (z.B. wenn Ollama beim Dokumentimport nicht erreichbar war)
 - Neuer Endpunkt `POST /api/review/documents/{id}/reanalyze` — führt LLM-Analyse mit vorhandenem OCR-Text erneut durch
