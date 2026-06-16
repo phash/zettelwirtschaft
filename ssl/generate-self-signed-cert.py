@@ -125,11 +125,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    # Der Docker-Frontend-Container laeuft als non-root (USER nginx). Damit der
-    # gemountete Key lesbar ist, 0644 statt 0600 — vertretbar fuer ein
-    # selbstsigniertes LAN-Zertifikat auf demselben Host. (Native: ACL erbt.)
+    # Private Key owner-only (0600); das oeffentliche Cert darf 0644 sein.
+    # Der gemountete Key wird vom nginx-MASTER gelesen, der im SSL-Overlay als
+    # root laeuft (Standard-TLS-Modell) — die Worker bleiben non-root. So muss
+    # der Key NICHT world-readable sein. (Windows: ACL erbt vom Verzeichnis.)
     if platform.system() != "Windows":
-        os.chmod(key_path, 0o644)
+        os.chmod(key_path, 0o600)
         os.chmod(cert_path, 0o644)
 
     san_repr = ", ".join(

@@ -41,9 +41,11 @@ else
     python3 "$SCRIPT_DIR/generate-self-signed-cert.py" "$SERVER_IP" "$SCRIPT_DIR"
 fi
 
-# 0644 statt 0600: der non-root Frontend-Container (USER nginx) muss den
-# gemounteten Key lesen koennen. Selbstsigniertes LAN-Cert auf demselben Host.
-chmod 0644 "$SCRIPT_DIR/key.pem" "$SCRIPT_DIR/cert.pem" 2>/dev/null || true
+# Private Key owner-only (0600); nur das oeffentliche Cert ist world-readable.
+# Den Key liest der nginx-MASTER (laeuft im SSL-Overlay als root), nicht die
+# non-root Worker — deshalb muss er nicht world-readable sein.
+chmod 0600 "$SCRIPT_DIR/key.pem" 2>/dev/null || true
+chmod 0644 "$SCRIPT_DIR/cert.pem" 2>/dev/null || true
 
 echo ""
 echo "Zertifikat erstellt:"

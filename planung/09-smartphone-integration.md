@@ -150,9 +150,10 @@ Da kein HTTPS im LAN (ohne eigene Zertifikate):
   **✅ UMGESETZT (v1.4.1):** `ssl/generate-self-signed-cert.py` (RSA-2048,
   serverAuth-EKU, SAN für localhost/127.0.0.1/LAN-IP/Hostname, 10 J.) +
   `ssl/generate-cert.sh` (openssl-Wrapper) + `ssl/nginx-ssl.conf` (HTTP→HTTPS-
-  Redirect + TLS auf 8443, non-root) + `docker-compose.ssl.yml` (Overlay,
-  Host-Ports 80/443). Native: `SERVER_SSL_CERTFILE`/`SERVER_SSL_KEYFILE` →
-  uvicorn-TLS. Siehe README „HTTPS für den Smartphone-Scan".
+  Redirect + TLS auf 443; nginx-Master root, Worker non-root; Key 0600) +
+  `docker-compose.ssl.yml` (Overlay, Host-Ports 80/443). Native:
+  `SERVER_SSL_CERTFILE`/`SERVER_SSL_KEYFILE` → uvicorn-TLS. Siehe README
+  „HTTPS für den Smartphone-Scan".
 - Kein Authentifizierungssystem noetig (privates Netzwerk), aber:
   - Optional: Einfacher PIN-Schutz (4-6 Ziffern) als Barriere gegen versehentlichen Zugriff
 

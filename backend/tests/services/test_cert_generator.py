@@ -55,6 +55,13 @@ def test_generates_valid_server_cert(tmp_path):
     span = cert.not_valid_after_utc - cert.not_valid_before_utc
     assert span.days > 3640
 
+    # Private Key owner-only (0600), oeffentliches Cert 0644 — kein world-readable Key
+    import sys
+
+    if sys.platform != "win32":
+        assert (key_pem.stat().st_mode & 0o777) == 0o600
+        assert (cert_pem.stat().st_mode & 0o777) == 0o644
+
 
 @pytest.mark.skipif(not GEN.exists(), reason="ssl/generate-self-signed-cert.py nicht im Kontext")
 def test_generates_without_ip_argument(tmp_path):
