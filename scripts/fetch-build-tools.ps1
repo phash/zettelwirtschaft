@@ -143,105 +143,87 @@ if ($Components -contains "tesseract") {
     if ((Test-Path $tessExe) -and (Test-Path (Join-Path $tessData "deu.traineddata")) -and -not $Force) {
         Write-Host "  bereits installiert: $tessExe + deu.traineddata" -ForegroundColor DarkGreen
     } else {
-        # Tesseract wird als InnoSetup-Installer ausgeliefert. Drei Optionen:
-        # 1. winget                — schnell + offiziell, aber Endkunden-Verzeichnis
-        # 2. innounp.exe            — extrahiert ohne Installation (~ 1 MB Tool)
-        # 3. Silent install nach %TEMP%, kopieren, deinstallieren
-        #
-        # Wir nehmen Option 3: das ist robust und braucht nichts Externes.
-        # Wer schon eine Tesseract-Installation hat, kann das umgehen indem er
-        # `tools/tesseract/` einfach manuell ausfuellt.
+        # Das UB-Mannheim-Setup ist ein NSIS-Installer. Wir laden es vom Mirror und
+        # ENTPACKEN es mit 7-Zip (kein Admin noetig, kein Raten von Silent-Flags) und
+        # ergaenzen die deutschen Sprachdaten. Wer schon eine Tesseract-Installation
+        # hat, kann das umgehen indem er `tools/tesseract/` einfach manuell ausfuellt.
 
-        $tessSetupUrl = "https://github.com/UB-Mannheim/tesseract/wiki"
-        Write-Host "  Quelle: $tessSetupUrl" -ForegroundColor DarkGray
-        Write-Host "  Pruefe Setup-EXE (Pinned-Version)..." -ForegroundColor DarkGray
+        Write-Host "  Quelle: https://github.com/UB-Mannheim/tesseract/wiki (Mirror digi.bib.uni-mannheim.de)" -ForegroundColor DarkGray
 
-        # Pinned auf eine bekannte gute Version. Bei Bedarf updaten.
-        # UB-Mannheim haengt das Setup-EXE als GitHub-Release-Asset an.
-        $tessVersion = "5.5.0.20241111"
+        # Version dynamisch aus dem Mirror-Listing aufloesen statt hart zu pinnen:
+        # eine feste Pin rottet, sobald der Mirror sie entfernt (digi.bib haelt nur
+        # neuere Builds vor; die alte Pin 5.5.0.20241111 liefert mittlerweile 404).
+        # Fallback auf eine bekannte gute Version, wenn das Listing nicht erreichbar ist.
+        $tessMirror   = "https://digi.bib.uni-mannheim.de/tesseract/"
+        $tessFallback = "5.4.0.20240606"
+        $tessVersion  = $tessFallback
+        try {
+            $listing = Invoke-WebRequest -Uri $tessMirror -UseBasicParsing -TimeoutSec 30
+            # Nur saubere X.Y.Z.YYYYMMDD-Builds (keine alpha/-gHASH-Snapshots).
+            $vers = [regex]::Matches($listing.Content, 'tesseract-ocr-w64-setup-(\d+\.\d+\.\d+\.\d{8})\.exe') |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+            if ($vers) {
+                # Neueste = hoechste [version] (Datums-Suffix als Tiebreaker).
+                $tessVersion = ($vers | Sort-Object { [version]($_ -replace '\.\d{8}$', '') }, { $_ })[-1]
+            }
+        } catch {
+            Write-Warning "  Mirror-Listing nicht erreichbar - nutze Fallback $tessFallback"
+        }
+        Write-Host "  Version: $tessVersion" -ForegroundColor DarkGray
+
         $tessSetupName = "tesseract-ocr-w64-setup-$tessVersion.exe"
-        $tessSetupCandidates = @(
-            "https://digi.bib.uni-mannheim.de/tesseract/$tessSetupName"
-        )
-
-        $tessSetup = Join-Path $TmpDir $tessSetupName
-        $downloaded = $false
-        foreach ($u in $tessSetupCandidates) {
-            try {
-                Get-FileIfMissing -Url $u -OutFile $tessSetup
-                $downloaded = $true
-                break
-            } catch {
-                Write-Warning "  Download fehlgeschlagen: $u`n  $($_.Exception.Message)"
-            }
-        }
-        if (-not $downloaded) {
-            Write-Host ""
-            Write-Host "  [MANUELL] Tesseract-Download fehlgeschlagen." -ForegroundColor Red
-            Write-Host "  Bitte runterladen: https://github.com/UB-Mannheim/tesseract/wiki" -ForegroundColor Red
-            Write-Host "  Setup-EXE installieren mit 'Additional language data (download)':" -ForegroundColor Red
-            Write-Host "    - German" -ForegroundColor Red
-            Write-Host "    - English (Standard)" -ForegroundColor Red
-            Write-Host "  Danach kopieren:" -ForegroundColor Red
-            Write-Host "    Copy-Item -Recurse 'C:\Program Files\Tesseract-OCR\*' '$tessTarget'" -ForegroundColor Red
-            throw "Tesseract-Download benoetigt manuelle Aktion"
-        }
-
-        # Silent-Install nach Temp-Verzeichnis
-        $tessInstall = Join-Path $TmpDir "tesseract-install"
-        if (Test-Path $tessInstall) { Remove-Item -Recurse -Force $tessInstall }
-        New-Item -ItemType Directory -Path $tessInstall | Out-Null
-
-        Write-Host "  Silent-Install nach $tessInstall ..." -ForegroundColor DarkGray
-        # /TASKS="!japanese" als Beispiel — wir wollen aber Sprachpakete deu+eng.
-        # /COMPONENTS verlangt eine genaue Liste — wir nehmen Default + spr_deu.
-        # Tesseract-InnoSetup unterstuetzt:
-        #   /COMPONENTS="main,langdata/deu,langdata/eng"
-        # /VERYSILENT laesst keinen Fortschritt sehen, /SUPPRESSMSGBOXES blockiert nichts
-        $args = @(
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/SP-",
-            "/DIR=`"$tessInstall`""
-        )
-        $p = Start-Process -FilePath $tessSetup -ArgumentList $args -Wait -PassThru -NoNewWindow
-        if ($p.ExitCode -ne 0) {
-            throw "Tesseract-Installer schlug fehl (ExitCode $($p.ExitCode))"
-        }
-
-        # Kopieren in unser tools/ — nur das Noetigste, deu+eng+osd.
-        if (Test-Path $tessTarget) { Remove-Item -Recurse -Force $tessTarget }
-        New-Item -ItemType Directory -Path $tessTarget | Out-Null
-
-        Copy-Item -Path (Join-Path $tessInstall "tesseract.exe") -Destination $tessTarget
-        # Alle .dll
-        Get-ChildItem -Path $tessInstall -Filter "*.dll" | Copy-Item -Destination $tessTarget
-
-        # tessdata: deu + eng + osd
-        $srcData = Join-Path $tessInstall "tessdata"
-        if (-not (Test-Path $srcData)) {
-            throw "tessdata-Verzeichnis nicht gefunden: $srcData"
-        }
-        New-Item -ItemType Directory -Path $tessData -Force | Out-Null
-        $needed = @("deu.traineddata", "eng.traineddata", "osd.traineddata")
-        foreach ($n in $needed) {
-            $src = Join-Path $srcData $n
-            if (Test-Path $src) {
-                Copy-Item -Path $src -Destination $tessData
+        $tessSetup     = Join-Path $TmpDir $tessSetupName
+        try {
+            Get-FileIfMissing -Url "$tessMirror$tessSetupName" -OutFile $tessSetup
+        } catch {
+            if ($tessVersion -ne $tessFallback) {
+                Write-Warning "  $tessVersion nicht ladbar - versuche Fallback $tessFallback"
+                $tessVersion   = $tessFallback
+                $tessSetupName = "tesseract-ocr-w64-setup-$tessVersion.exe"
+                $tessSetup     = Join-Path $TmpDir $tessSetupName
+                Get-FileIfMissing -Url "$tessMirror$tessSetupName" -OutFile $tessSetup
             } else {
-                Write-Warning "  Sprachpaket fehlt: $n (im Tesseract-Installer nicht ausgewaehlt?)"
+                throw "Tesseract-Download fehlgeschlagen. Manuell: https://github.com/UB-Mannheim/tesseract/wiki -> tools/tesseract fuellen."
             }
         }
-        # Configs/tessconfig-Dateien werden vom OCR-Engine benoetigt
-        $srcConfigs = Join-Path $srcData "configs"
-        if (Test-Path $srcConfigs) {
-            Copy-Item -Recurse -Path $srcConfigs -Destination $tessData
+
+        # Das UB-Mannheim-Setup ist ein NSIS-Installer und braucht zum Ausfuehren
+        # Admin. Wir EXTRAHIEREN es stattdessen mit 7-Zip (kein Admin, und robuster
+        # als Silent-Install-Flags zu raten). 7-Zip ist auf Build-Hosts ueblich.
+        $sevenZip = @(
+            (Get-Command 7z -ErrorAction SilentlyContinue).Source,
+            "$env:ProgramFiles\7-Zip\7z.exe",
+            "${env:ProgramFiles(x86)}\7-Zip\7z.exe"
+        ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $sevenZip) {
+            throw "7-Zip nicht gefunden (zum Entpacken des Tesseract-Setups). 7-Zip installieren oder tools/tesseract manuell fuellen."
         }
 
-        # Tesseract-Installer raeumt nicht automatisch auf — die Test-Install-Dir
-        # ist halt unter %TEMP%, wird vom OS irgendwann geloescht.
-        Write-Host "  installiert: $tessExe ($tessVersion)" -ForegroundColor DarkGreen
+        $tessExtract = Join-Path $TmpDir "tesseract-extract"
+        if (Test-Path $tessExtract) { Remove-Item -Recurse -Force $tessExtract }
+        Write-Host "  Entpacke mit 7-Zip ..." -ForegroundColor DarkGray
+        & $sevenZip x $tessSetup "-o$tessExtract" -y *> $null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $tessExtract "tesseract.exe"))) {
+            throw "Tesseract-Extraktion fehlgeschlagen (7z ExitCode $LASTEXITCODE)"
+        }
+
+        # tools/tesseract neu aufbauen: tesseract.exe + alle DLLs + tessdata.
+        if (Test-Path $tessTarget) { Remove-Item -Recurse -Force $tessTarget }
+        New-Item -ItemType Directory -Path $tessData -Force | Out-Null
+        Copy-Item -Path (Join-Path $tessExtract "tesseract.exe") -Destination $tessTarget
+        Get-ChildItem -Path $tessExtract -Filter "*.dll" | Copy-Item -Destination $tessTarget
+        Copy-Item -Path (Join-Path $tessExtract "tessdata\*") -Destination $tessData -Recurse -Force
+
+        # deu nachladen, falls das Setup es nicht mitbringt: UB-Mannheim bundlet nur
+        # eng+osd, German ist ein optionaler On-Demand-Download. Ohne diesen Schritt
+        # waere die OCR-Pipeline (deu+eng) unvollstaendig.
+        $deuFile = Join-Path $tessData "deu.traineddata"
+        if (-not (Test-Path $deuFile)) {
+            Write-Host "  Lade deu.traineddata (nicht im Setup gebundelt) ..." -ForegroundColor DarkGray
+            Get-FileIfMissing -Url "https://github.com/tesseract-ocr/tessdata/raw/main/deu.traineddata" -OutFile $deuFile
+        }
+
+        Write-Host "  installiert: $tessExe ($tessVersion, deu+eng+osd)" -ForegroundColor DarkGreen
     }
     Write-Host ""
 }
