@@ -189,7 +189,22 @@ def main(argv: list[str] | None = None) -> int:
     from app.config import get_settings
 
     settings = get_settings()
-    logging.info("Starte Backend auf %s:%s", settings.SERVER_HOST, settings.SERVER_PORT)
+
+    # Optionales TLS (Native-HTTPS) — nur wenn beide Pfade gesetzt sind und
+    # existieren. Ermoeglicht Smartphone-Scan + PWA im LAN (Secure Context).
+    ssl_kwargs: dict = {}
+    cert, key = settings.SERVER_SSL_CERTFILE, settings.SERVER_SSL_KEYFILE
+    if cert and key:
+        if Path(cert).exists() and Path(key).exists():
+            ssl_kwargs = {"ssl_certfile": cert, "ssl_keyfile": key}
+            logging.info("TLS aktiv (Cert: %s)", cert)
+        else:
+            logging.warning(
+                "SERVER_SSL_CERTFILE/KEYFILE gesetzt, aber Datei fehlt — starte ohne TLS (HTTP)."
+            )
+
+    scheme = "https" if ssl_kwargs else "http"
+    logging.info("Starte Backend auf %s://%s:%s", scheme, settings.SERVER_HOST, settings.SERVER_PORT)
     uvicorn.run(
         "app.main:app",
         host=settings.SERVER_HOST,
@@ -199,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         # und PIN-Sessions sind in-memory (siehe N-06).
         reload=False,
         workers=1,
+        **ssl_kwargs,
     )
     return 0
 

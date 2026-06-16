@@ -58,6 +58,9 @@ e2e/test-results/
 feedback/
 zettelwirtschaft-local.zip
 
+# Selbstsignierte TLS-Zertifikate (lokal generiert, NIE committen)
+ssl/*.pem
+
 # Native-Build-Artefakte
 # tools/ enthaelt manuell heruntergeladene Tesseract/poppler/NSSM-Binaries
 # (siehe scripts/build-native.ps1 Header) — nicht commitbar wegen Lizenzen + Groesse.
