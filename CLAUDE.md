@@ -41,7 +41,7 @@ npm install
 npm run dev                          # Vite Dev-Server, Port 3000
 
 # Tests
-cd backend && python -m pytest -q   # 374 Tests / 1 skipped (Tesseract)
+cd backend && python -m pytest -q   # 391 Tests / 1 skipped (Tesseract)
 cd e2e && npx playwright test --project=chromium  # 145 Tests
 ```
 
@@ -457,6 +457,7 @@ User-Frage
 ### Native-Windows (ab v1.3)
 - **Build:** `pwsh scripts/build-native.ps1` (Voraussetzung: `tools/{tesseract,poppler,nssm}` vorbereitet, NSIS im PATH)
 - **Tools-Bootstrap:** `pwsh scripts/fetch-build-tools.ps1` laed poppler+NSSM+Tesseract idempotent in `tools/`.
+  Tesseract-Version wird dynamisch vom Mirror aufgeloest und per **7-Zip** entpackt (7-Zip muss vorhanden sein); `deu.traineddata` wird separat nachgeladen.
 - **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit). Bundle ist ~187 MB / 1842 Files.
 - **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`, `--version`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
 - **bin_paths.py** wird in `main.py` SEHR FRUEH importiert (vor pdf2image/pytesseract), setzt PATH+TESSDATA_PREFIX+pytesseract.tesseract_cmd auf gebundeltes `<install>/bin/`. No-op im Dev/Docker.
@@ -493,6 +494,12 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
 - **E-Mail-Anbindung** (IMAP-Polling, LLM-Relevanzpruefung, Fernet-verschluesselte Passwoerter)
 - **Auto-Migration** beim Start (`migrate.py` + Alembic-Chain, kein init_db mehr)
 - **CI lokal** statt GitHub-Actions (`scripts/ci-local.{ps1,sh}`)
+- **In-App-Update-Pruefung** (opt-in, v1.4.1): Manifest-Check + Banner
+  (`update_service.py`, `system.py`, `UpdateCheck.vue`)
+- **HTTPS** (v1.4.1): selbstsigniertes Zertifikat fuer Smartphone-Scan im LAN
+  (`ssl/generate-self-signed-cert.py`, `docker-compose.ssl.yml`)
+- **Native Update/Backup/Restore** (v1.4.1): GUI-Update-Wizard, `backup.bat`/`/full`,
+  `restore-backup.bat`, Backup-before-uninstall (siehe `## Native-Service-Ops`)
 
 **Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27 + Phasen 1-6 + Re-Review):
 
@@ -572,7 +579,7 @@ ist OFF. Migration 013 verlaesst sich darauf.
 ### Tests
 > Read `memory/e2e-tests.md` before writing or running E2E tests.
 
-- **Backend: 374 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
+- **Backend: 391 Tests** (1 skipped fuer Tesseract). API-Tests + Service-Tests
   + Model-Tests + Core-Tests + Phase-8-Tests fuer Reranker, Verifier,
   Trusted-Client-IP + Re-Review-Tests (PIN-Lockout, Sanitizer, Scope-Fallback,
   Heartbeat, Email-FAILED-Record).
