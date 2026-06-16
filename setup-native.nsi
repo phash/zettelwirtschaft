@@ -153,6 +153,11 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\config.toml.example"
     File "${DIST}\VERSION"
     File "scripts\Convert-Env-To-Config.ps1"
+    File "${DIST}\update-wizard.bat"
+    File "${DIST}\update-wizard.ps1"
+    File "${DIST}\backup.bat"
+    File "${DIST}\restore-backup.bat"
+    File "${DIST}\restore-backup.ps1"
 
     ; FRONTEND_DIST_PATH fuer config.toml
     StrCpy $FRONTEND_DIST_PATH "$INSTDIR\frontend"
@@ -236,6 +241,12 @@ Section "Zettelwirtschaft" SecMain
         "$DATA_DIR\logs"
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Deinstallieren.lnk" \
         "$INSTDIR\Uninstall.exe"
+    CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Update.lnk" \
+        "$INSTDIR\update-wizard.bat" "" "$SYSDIR\shell32.dll" 46
+    CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Backup jetzt.lnk" \
+        "$INSTDIR\backup.bat" "" "$SYSDIR\shell32.dll" 45
+    CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Backup wiederherstellen.lnk" \
+        "$INSTDIR\restore-backup.bat" "" "$SYSDIR\shell32.dll" 238
 SectionEnd
 
 ; --- Browser oeffnen ---
@@ -310,6 +321,14 @@ FunctionEnd
 
 ; --- Uninstall ---
 Section "Uninstall"
+    ; Sicherungs-Backup vor dem Entfernen (best-effort, Dienst laeuft ggf. noch)
+    ReadRegStr $1 HKLM "Software\Zettelwirtschaft" "ConfigPath"
+    ${If} ${FileExists} "$INSTDIR\backend\zettelwirtschaft-backend.exe"
+    ${AndIf} $1 != ""
+        DetailPrint "Erstelle Sicherungs-Backup vor Deinstallation..."
+        nsExec::ExecToLog '"$INSTDIR\backend\zettelwirtschaft-backend.exe" --config "$1" --backup'
+    ${EndIf}
+
     ; Service entfernen
     nsExec::ExecToLog '"$INSTDIR\service-uninstall.bat" "$INSTDIR"'
 
@@ -323,12 +342,20 @@ Section "Uninstall"
     Delete "$INSTDIR\config.toml.example"
     Delete "$INSTDIR\VERSION"
     Delete "$INSTDIR\Convert-Env-To-Config.ps1"
+    Delete "$INSTDIR\update-wizard.bat"
+    Delete "$INSTDIR\update-wizard.ps1"
+    Delete "$INSTDIR\backup.bat"
+    Delete "$INSTDIR\restore-backup.bat"
+    Delete "$INSTDIR\restore-backup.ps1"
     Delete "$INSTDIR\Uninstall.exe"
 
     ; Startmenue
     Delete "$SMPROGRAMS\Zettelwirtschaft\Zettelwirtschaft oeffnen.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Logs ansehen.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Deinstallieren.lnk"
+    Delete "$SMPROGRAMS\Zettelwirtschaft\Update.lnk"
+    Delete "$SMPROGRAMS\Zettelwirtschaft\Backup jetzt.lnk"
+    Delete "$SMPROGRAMS\Zettelwirtschaft\Backup wiederherstellen.lnk"
     RMDir "$SMPROGRAMS\Zettelwirtschaft"
 
     ; Daten: User fragen
