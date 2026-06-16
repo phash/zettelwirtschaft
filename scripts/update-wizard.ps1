@@ -38,7 +38,12 @@ function Get-RegValue([string]$name) {
 function Get-AppVersion([string]$dir) {
     if (-not $dir) { return 'unbekannt' }
     $vf = Join-Path $dir 'VERSION'
-    if (Test-Path $vf) { return (Get-Content -LiteralPath $vf -Raw).Trim() }
+    if (Test-Path $vf) {
+        # Get-Content -Raw liefert auf einer 0-Byte-Datei $null -> .Trim() wuerde
+        # unter Windows PowerShell 5.1 werfen (top-level, kein try/catch).
+        $raw = Get-Content -LiteralPath $vf -Raw
+        if ($raw) { return $raw.Trim() }
+    }
     return 'unbekannt'
 }
 
@@ -374,8 +379,14 @@ function Step-StartService {
     Write-Log "Starte Dienst $ServiceName (Migrationen laufen beim Start)..."
     if ($DryRun) { Start-Sleep -Seconds 1; Set-StepStatus 'start' 'ok'; return $true }
     try {
+        # Symmetrisch zu Step-StopService: ein fehlender Dienst (kaputte Installation)
+        # ist eine Warnung, kein Update-Fehlschlag — die Dateien sind ja kopiert.
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $svc) {
+            Write-Log "WARNUNG: Dienst $ServiceName nicht gefunden - Start uebersprungen"
+            Set-StepStatus 'start' 'warn'; return $true
+        }
         Start-Service -Name $ServiceName -ErrorAction Stop
-        $svc = Get-Service -Name $ServiceName
         $svc.WaitForStatus('Running', (New-TimeSpan -Seconds 120))
         Write-Log 'Dienst laeuft'
         Set-StepStatus 'start' 'ok'; return $true

@@ -8,7 +8,13 @@ REM ============================================================
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Fordere Administrator-Rechte an...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    REM Optionales [InstallDir]-Argument bei der Elevation mitgeben (konsistent
+    REM mit restore-backup.bat); leeres %* wuerde sonst ein leeres Argument erzeugen.
+    if "%~1"=="" (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    ) else (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '%*'"
+    )
     exit /b
 )
 
