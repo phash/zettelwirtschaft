@@ -142,7 +142,7 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
     - Ollama als nativer Windows-Service (vom Ollama-Installer)
     - Konfiguration in `config.toml` statt `.env` (Pfad via `ZETTELWIRTSCHAFT_CONFIG`)
 - **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 1.x)
-- **Vektor-Suche:** ChromaDB 1.0.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
+- **Vektor-Suche:** ChromaDB 1.5.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
 - **Rate-Limiting:** slowapi (200/min default, X-Real-IP-Trust nur aus Docker-Net)
 - **CI:** Lokal via `scripts/ci-local.{ps1,sh}`, GitHub-Actions deaktiviert
 
@@ -446,6 +446,7 @@ User-Frage
 - **PRAGMA foreign_keys=ON:** siehe Alembic-Sektion oben. Ohne den Event-Listener sind FK-Constraints zur Laufzeit wirkungslos.
 - **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. `entrypoint.py:_run_migrations` macht `Base.metadata.create_all` bei leerer DB + Stamp auf head (Migrationen sind dann no-op).
 - **SPA-Routing:** `StaticFiles(html=True)` deckt nur Ordner-Index ab. `/dokumente` wuerde sonst 404 geben — der Catch-All-Route ist notwendig.
+- **ChromaDB Client/Server-Version synchron halten:** Bei einem `chromadb-client`-Bump (requirements.txt) MUSS das docker-compose-Server-Image `chromadb/chroma:<x>` mitgezogen werden (aktuell 1.5.9 ↔ client 1.5, seit v1.3.1). Weder Backend-Tests (volles/embedded chromadb im venv) noch E2E (API gemockt) fangen einen Skew — er trifft nur den Docker-Pfad zur Laufzeit.
 
 ## Qualitaetsprinzipien
 
@@ -553,6 +554,10 @@ ist OFF. Migration 013 verlaesst sich darauf.
   Heartbeat, Email-FAILED-Record).
 - **E2E: 145 Tests** (Playwright + TypeScript), 13 Testdateien. API-Response-Mocking
   via `page.route()` — Frontend-only-Run ohne Backend moeglich.
+- **Mobile-Projekt nicht in CI:** `ci-local.ps1` laeuft nur `--project=chromium` (145 Tests).
+  Das mobile Playwright-Projekt (Pixel 5) ist NICHT in CI — `npx playwright test` (beide
+  Projekte, 282) lokal gegen einen Preview-Server auf :8080 (`vite preview`) laufen lassen,
+  sonst rutschen mobile-only-Regressionen durch.
 - **CI lokal**: GitHub-Actions deaktiviert (`.github/workflows/ci.yml.disabled`),
   Lauf via `pwsh scripts/ci-local.ps1` bzw. `bash scripts/ci-local.sh`.
 
