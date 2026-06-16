@@ -325,10 +325,17 @@ Section "Uninstall"
     ; WICHTIG: --out-dir nach $DOCUMENTS, NICHT in den Datenordner — sonst loescht
     ; das RMDir /r unten (bei "Daten loeschen? Ja") genau dieses Backup wieder mit.
     ReadRegStr $1 HKLM "Software\Zettelwirtschaft" "ConfigPath"
+    StrCpy $R2 ""   ; Backup-Status-Text fuer den Loesch-Dialog (leer = kein Backup versucht)
     ${If} ${FileExists} "$INSTDIR\backend\zettelwirtschaft-backend.exe"
     ${AndIf} $1 != ""
         DetailPrint "Erstelle Sicherungs-Backup in $DOCUMENTS\Zettelwirtschaft-Backups..."
         nsExec::ExecToLog '"$INSTDIR\backend\zettelwirtschaft-backend.exe" --config "$1" --backup --out-dir "$DOCUMENTS\Zettelwirtschaft-Backups"'
+        Pop $R0
+        ${If} $R0 == "0"
+            StrCpy $R2 "Ein Sicherungs-Backup der Datenbank liegt in$\r$\n$DOCUMENTS\Zettelwirtschaft-Backups.$\r$\n$\r$\n"
+        ${Else}
+            StrCpy $R2 "WARNUNG: Das automatische Sicherungs-Backup ist fehlgeschlagen (Code $R0). Es existiert KEIN frisches Backup.$\r$\n$\r$\n"
+        ${EndIf}
     ${EndIf}
 
     ; Service entfernen
@@ -365,7 +372,7 @@ Section "Uninstall"
     ${If} $0 != ""
     ${AndIf} ${FileExists} "$0\data\*.*"
         MessageBox MB_YESNO|MB_ICONQUESTION \
-            "Sollen die Daten (Dokumente, Datenbank, Backups) in$\r$\n$0$\r$\nebenfalls geloescht werden?$\r$\n$\r$\nEin Sicherungs-Backup der Datenbank liegt in$\r$\n$DOCUMENTS\Zettelwirtschaft-Backups.$\r$\n$\r$\nDies kann NICHT rueckgaengig gemacht werden." \
+            "Sollen die Daten (Dokumente, Datenbank, Backups) in$\r$\n$0$\r$\nebenfalls geloescht werden?$\r$\n$\r$\n$R2Dies kann NICHT rueckgaengig gemacht werden." \
             /SD IDNO IDNO keep_data
         RMDir /r "$0"
         keep_data:
