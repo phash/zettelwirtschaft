@@ -4,6 +4,7 @@ import { useNotificationStore } from '../stores/notifications'
 import FolderSettings from '../components/settings/FolderSettings.vue'
 import FilingScopeManager from '../components/settings/FilingScopeManager.vue'
 import SystemHealth from '../components/settings/SystemHealth.vue'
+import UpdateCheck from '../components/settings/UpdateCheck.vue'
 import MaintenanceActions from '../components/settings/MaintenanceActions.vue'
 import EmailSettings from '../components/settings/EmailSettings.vue'
 
@@ -64,6 +65,9 @@ function copyText(text) {
 
     <!-- System Health + Komponenten + Speicher -->
     <SystemHealth @health-loaded="onHealthLoaded" />
+
+    <!-- Update-Prüfung (opt-in) -->
+    <UpdateCheck />
 
     <!-- Wartung + Backups -->
     <MaintenanceActions />

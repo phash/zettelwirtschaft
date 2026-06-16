@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8080
 
+    # Native-Mode HTTPS (optional). Wenn BEIDE Pfade gesetzt sind und existieren,
+    # startet uvicorn mit TLS — noetig fuer Smartphone-Scan (Kamera-API) und
+    # PWA-Service-Worker im LAN (Secure Context). Zertifikat erzeugen mit
+    # ssl/generate-self-signed-cert.py. Im Docker-Pfad uebernimmt das nginx.
+    SERVER_SSL_CERTFILE: str = ""
+    SERVER_SSL_KEYFILE: str = ""
+
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/zettelwirtschaft.db"
     UPLOAD_DIR: str = "./data/uploads"
     WATCH_DIR: str = "./data/watch"
@@ -104,6 +111,14 @@ class Settings(BaseSettings):
 
     # E-Mail
     EMAIL_ENCRYPTION_KEY: str = ""
+
+    # Update-Pruefung (opt-in, telemetriefrei). Standardmaessig AUS — die App
+    # macht ohne ausdrueckliche Aktivierung keinen externen Aufruf. Der
+    # Laufzeit-Schalter liegt in der DB-Einstellung "update_check_enabled"
+    # (ueber die Web-UI umlegbar); UPDATE_CHECK_ENABLED ist nur der Default,
+    # solange die DB-Einstellung nicht gesetzt ist.
+    UPDATE_CHECK_ENABLED: bool = False
+    UPDATE_MANIFEST_URL: str = "https://zettelwirtschaft.mr-development.de/latest.json"
 
     @property
     def allowed_file_types_list(self) -> list[str]:
