@@ -53,10 +53,12 @@ services:
       start_period: 10s
 
   chromadb:
-    # 1.x ist Rust-Rewrite mit deutlich besserer Performance. Volume-Format
-    # ist bei Major-Bump nicht abwaerts-kompatibel — Backup vor Update Pflicht.
-    # Default-persist_path hat sich von /chroma/chroma auf /data geaendert.
-    image: chromadb/chroma:1.0.20
+    # Server-Version an den chromadb-client (requirements.txt, 1.5.x) angeglichen,
+    # um Client/Server-Skew zu vermeiden. Innerhalb 1.x ist das Volume-Format
+    # kompatibel; beim 0.x->1.x-Major war es das nicht (persist_path /chroma/chroma
+    # -> /data). Vor groesseren Upgrades Backup empfohlen; notfalls den
+    # Vektor-Index ueber die System-Wartung neu aufbauen.
+    image: chromadb/chroma:1.5.9
     volumes:
       - chromadb-data:/data
     restart: unless-stopped

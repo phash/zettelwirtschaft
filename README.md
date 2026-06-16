@@ -131,6 +131,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.3.1
+- Fix: ChromaDB-Server-Image (`docker-compose.yml`) von 1.0.20 auf **1.5.9** angehoben — passend zum in v1.3.0 migrierten `chromadb-client` 1.5. Beseitigt den Client/Server-Versions-Skew im Docker-Pfad (Native/embedded war nicht betroffen). Innerhalb 1.x ist das Volume-Format kompatibel; bei Problemen Vektor-Index über die System-Wartung neu aufbauen.
+- Chore: GitHub-Actions im Release-Workflow auf Node-24-Majors aktualisiert (checkout v6, setup-python v6, docker/setup-buildx v4, docker/login v4, docker/build-push v7, action-gh-release v3) — behebt die Node-20-Deprecation (GitHub erzwingt Node 24 ab 2026-06-16).
+
 ### v1.3.0
 - **Native-Windows-Modus (Foundation):** Setup.exe → NSSM-Service `ZettelwirtschaftBackend`, PyInstaller-Onedir-Bundle, Frontend über FastAPI `StaticFiles`, ChromaDB embedded (`PersistentClient`), Tesseract + poppler gebündelt, Konfiguration über `config.toml`. Migrationspfad Docker → Native dokumentiert und getestet.
 - **Aggressive Abhängigkeits-Migration auf neueste Stable-Versionen:** Frontend **Vite 7 → 8** und **TypeScript 5 → 6** (Major), vue-router 5.1, Pinia 3.0.4, Vue 3.5.38, Tailwind 4.3; Backend FastAPI 0.137, uvicorn 0.49, cryptography 49, SQLAlchemy 2.0.51, pytest 9 / pytest-asyncio 1.x, chromadb 1.5. Plugin-Peer-Kompatibilität für Vite 8 vorab verifiziert (kein `--legacy-peer-deps`).
