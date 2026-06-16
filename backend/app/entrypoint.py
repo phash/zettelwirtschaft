@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--backup",
         action="store_true",
-        help="Backup erstellen (DB + Config) und beenden",
+        help="Backup der Datenbank (+ Dokumente mit --full) erstellen und beenden",
     )
     parser.add_argument(
         "--full",
