@@ -104,6 +104,11 @@ Copy-Item -Force (Join-Path $RepoRoot "scripts\service-uninstall.bat") (Join-Pat
 Copy-Item -Force (Join-Path $RepoRoot "config.toml.example") (Join-Path $DistRoot "config.toml.example")
 Copy-Item -Force (Join-Path $RepoRoot "VERSION") (Join-Path $DistRoot "VERSION")
 
+# Update/Backup/Restore-Skripte ins Bundle (landen in Setup.exe UND im Update-ZIP)
+foreach ($s in @("update-wizard.bat", "update-wizard.ps1", "backup.bat", "restore-backup.bat", "restore-backup.ps1")) {
+    Copy-Item -Force (Join-Path $RepoRoot "scripts\$s") (Join-Path $DistRoot $s)
+}
+
 # --- 5. NSIS-Installer ---
 if (-not $SkipInstaller) {
     Write-Host "==> [5/5] NSIS-Installer" -ForegroundColor Yellow
