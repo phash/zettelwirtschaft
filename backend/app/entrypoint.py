@@ -2,6 +2,7 @@
 
 Aufrufpfad:
     zettelwirtschaft-backend.exe [--config <path>] [--migrate-only]
+                                 [--backup [--full]] [--version]
 
 - Liest ZETTELWIRTSCHAFT_CONFIG aus ENV oder --config-Argument.
 - Stellt sicher, dass die Datenverzeichnisse existieren.
@@ -163,6 +164,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="Pfad zur config.toml (alternativ: ENV ZETTELWIRTSCHAFT_CONFIG)")
     parser.add_argument("--migrate-only", action="store_true", help="Nur Migrationen ausfuehren, dann beenden")
     parser.add_argument("--version", action="store_true")
+    parser.add_argument(
+        "--backup",
+        action="store_true",
+        help="Backup der Datenbank (+ Dokumente mit --full) erstellen und beenden",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Mit --backup: Dokumente einschliessen",
+    )
+    parser.add_argument(
+        "--out-dir",
+        help="Mit --backup: Zielordner fuer die ZIP (Default: <DataDir>/data/backups). "
+        "Der Uninstaller nutzt das, damit das Backup das Loeschen des Datenordners ueberlebt.",
+    )
     args = parser.parse_args(argv)
 
     _set_config_from_args(args)
@@ -177,6 +193,18 @@ def main(argv: list[str] | None = None) -> int:
         print(_read_version())
         return 0
 
+    if args.backup:
+        # Offline-Backup: nutzt den getesteten backup_service direkt — kein HTTP,
+        # also auch keine PIN-Huerde, und funktioniert bei laufendem wie gestopptem
+        # Service (sqlite3 .backup() ist multi-prozess-sicher).
+        from app.config import get_settings
+        from app.services.backup_service import create_backup
+
+        settings = get_settings()
+        path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
+        print(path)
+        return 0
+
     _ensure_data_dirs()
     _run_migrations()
 
@@ -189,7 +217,22 @@ def main(argv: list[str] | None = None) -> int:
     from app.config import get_settings
 
     settings = get_settings()
-    logging.info("Starte Backend auf %s:%s", settings.SERVER_HOST, settings.SERVER_PORT)
+
+    # Optionales TLS (Native-HTTPS) — nur wenn beide Pfade gesetzt sind und
+    # existieren. Ermoeglicht Smartphone-Scan + PWA im LAN (Secure Context).
+    ssl_kwargs: dict = {}
+    cert, key = settings.SERVER_SSL_CERTFILE, settings.SERVER_SSL_KEYFILE
+    if cert and key:
+        if Path(cert).exists() and Path(key).exists():
+            ssl_kwargs = {"ssl_certfile": cert, "ssl_keyfile": key}
+            logging.info("TLS aktiv (Cert: %s)", cert)
+        else:
+            logging.warning(
+                "SERVER_SSL_CERTFILE/KEYFILE gesetzt, aber Datei fehlt — starte ohne TLS (HTTP)."
+            )
+
+    scheme = "https" if ssl_kwargs else "http"
+    logging.info("Starte Backend auf %s://%s:%s", scheme, settings.SERVER_HOST, settings.SERVER_PORT)
     uvicorn.run(
         "app.main:app",
         host=settings.SERVER_HOST,
@@ -199,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         # und PIN-Sessions sind in-memory (siehe N-06).
         reload=False,
         workers=1,
+        **ssl_kwargs,
     )
     return 0
 

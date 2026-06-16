@@ -108,6 +108,37 @@ Die Konfiguration erfolgt über die `.env`-Datei. Wichtige Einstellungen:
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding-Modell für RAG-Vektorisierung |
 | `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen für RAG-Antworten |
 
+## HTTPS für den Smartphone-Scan (Heim-WLAN)
+
+Der **Smartphone-Scan** (Kamera) und der **PWA-Service-Worker** verlangen einen
+*Secure Context* — also HTTPS oder `localhost`. Über `http://<rechner>:8080`
+verweigert der Browser den Kamerazugriff. Lösung: ein selbstsigniertes
+Server-Zertifikat fürs lokale Netz.
+
+**Docker:**
+
+```bash
+# 1. Zertifikat erzeugen (10 Jahre gültig, serverAuth + SAN für localhost/LAN-IP)
+bash ssl/generate-cert.sh
+
+# 2. Mit HTTPS-Overlay starten
+docker compose -f docker-compose.yml -f docker-compose.ssl.yml up -d
+
+# 3. Am Smartphone https://<server-ip>/ öffnen, einmalig die Browser-Warnung
+#    bestätigen ("Erweitert" → "Trotzdem fortfahren") — danach läuft der Scan.
+```
+
+HTTP (`:80`) wird automatisch auf HTTPS (`:443`) umgeleitet. Das Zertifikat ist
+selbstsigniert; die einmalige Warnung ist im LAN normal und unbedenklich. Der
+nginx-Master läuft im SSL-Overlay als root (bindet 80/443, liest den `0600`-Key),
+die Worker bleiben non-root. `cert.pem`/`key.pem` liegen unter `ssl/` und werden
+nicht eingecheckt (`.gitignore`).
+
+**Native (Windows):** Zertifikat mit dem gebündelten Python erzeugen
+(`<install>\bin\python.exe ssl\generate-self-signed-cert.py`) und in
+`config.toml` `SERVER_SSL_CERTFILE` + `SERVER_SSL_KEYFILE` setzen — dann startet
+der Dienst direkt mit TLS.
+
 ## Verzeichnisstruktur
 
 Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
@@ -130,6 +161,13 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Deployment:** Docker Compose
 
 ## Changelog
+
+### v1.4.1
+- **HTTPS / selbstsigniertes Zertifikat (Heim-WLAN):** Ermöglicht den Smartphone-Scan (Kamera-API) und den PWA-Service-Worker im LAN — beide verlangen einen *Secure Context* (HTTPS oder localhost). Neu: `ssl/generate-self-signed-cert.py` (RSA-2048, **serverAuth-EKU** + SAN für localhost/127.0.0.1/LAN-IP/Hostname, 10 J., CA:FALSE, Key 0600) und `ssl/generate-cert.sh` (openssl-Wrapper mit Python-Fallback), `ssl/nginx-ssl.conf` (HTTP→HTTPS-Redirect + TLS auf 443), `docker-compose.ssl.yml` (Overlay, Host-Ports 80/443; nginx-Master als root, Worker non-root — Standard-TLS-Modell). Native-Modus: `SERVER_SSL_CERTFILE`/`SERVER_SSL_KEYFILE` → uvicorn startet direkt mit TLS. Vorgehen analog praxiszeit v1.8.7. Doku: README „HTTPS für den Smartphone-Scan". Tests: +2 (Cert-Generator: serverAuth/SAN/CA:FALSE/RSA-2048/Key-0600).
+
+### v1.4.0
+- **Update-Prüfung (opt-in):** Neuer Backend-Endpoint `GET/PUT /api/system/update-check` vergleicht die installierte Version mit einem veröffentlichten Manifest (`latest.json`) und meldet verfügbare Updates. **Telemetriefrei und standardmäßig deaktiviert** — erst nach ausdrücklicher Aktivierung in den Einstellungen wird ein externer Aufruf gemacht (nur die Manifest-Abfrage, keine Dokument- oder Nutzungsdaten). Frontend: „Updates"-Karte in den Einstellungen mit Opt-in-Schalter, Versionsanzeige und „Update verfügbar"-Banner inkl. Download-Link. Gecached (6 h), graceful bei Netzwerkfehlern. Konfiguration: `UPDATE_CHECK_ENABLED` (Default `false`), `UPDATE_MANIFEST_URL`. Tests: +13 (Versionsvergleich, Endpoint-Opt-in, E2E-Karte).
+- **Präsentations-/Download-Website:** Statische Marketing- und Download-Seite (Präsentation, Hilfe/FAQ, Download mit Prüfsummen, Impressum, Datenschutz) unter `https://zettelwirtschaft.mr-development.de` — selbst-gehostete Fonts (keine externen Aufrufe), strenge CSP, barrierefrei.
 
 ### v1.3.1
 - Fix: ChromaDB-Server-Image (`docker-compose.yml`) von 1.0.20 auf **1.5.9** angehoben — passend zum in v1.3.0 migrierten `chromadb-client` 1.5. Beseitigt den Client/Server-Versions-Skew im Docker-Pfad (Native/embedded war nicht betroffen). Innerhalb 1.x ist das Volume-Format kompatibel; bei Problemen Vektor-Index über die System-Wartung neu aufbauen.

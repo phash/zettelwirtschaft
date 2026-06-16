@@ -628,6 +628,23 @@ export async function setupBaseMocks(page: Page) {
   await page.route('**/api/system/health', (route) =>
     route.fulfill({ json: MOCK_SYSTEM_HEALTH })
   );
+  // Opt-in Update-Pruefung: standardmaessig deaktiviert. PUT echo't den Schalter.
+  await page.route('**/api/system/update-check', (route) => {
+    if (route.request().method() === 'PUT') {
+      const enabled = (route.request().postDataJSON() as { enabled?: boolean })?.enabled ?? false;
+      return route.fulfill({
+        json: {
+          enabled,
+          current_version: '1.4.0',
+          latest_version: enabled ? '1.4.0' : null,
+          update_available: false,
+        },
+      });
+    }
+    return route.fulfill({
+      json: { enabled: false, current_version: '1.4.0', latest_version: null, update_available: false },
+    });
+  });
 }
 
 /** Set up PIN-enabled auth mock */

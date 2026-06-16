@@ -239,6 +239,16 @@ export async function getSystemHealth() {
   return data
 }
 
+export async function getUpdateCheck(force = false) {
+  const { data } = await api.get('/system/update-check', { params: { force } })
+  return data
+}
+
+export async function setUpdateCheckEnabled(enabled) {
+  const { data } = await api.put('/system/update-check', { enabled })
+  return data
+}
+
 export async function createBackup(full = false) {
   const { data } = await api.post('/system/backup', null, { params: { full } })
   return data

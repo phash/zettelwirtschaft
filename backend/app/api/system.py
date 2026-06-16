@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -279,6 +280,76 @@ async def system_health(
     if install_path:
         result["install_path"] = install_path
     return result
+
+
+class UpdateCheckResponse(BaseModel):
+    enabled: bool
+    current_version: str
+    latest_version: str | None = None
+    update_available: bool = False
+    release_url: str | None = None
+    published_at: str | None = None
+    notes: str | None = None
+    checked_at: str | None = None
+    cached: bool = False
+    error: str | None = None
+
+
+class UpdateCheckSettings(BaseModel):
+    enabled: bool
+
+
+UPDATE_CHECK_SETTING_KEY = "update_check_enabled"
+
+
+async def _update_check_enabled(session: AsyncSession, settings: Settings) -> bool:
+    """DB-Einstellung hat Vorrang; faellt auf den Config-Default zurueck."""
+    raw = await get_db_setting(session, UPDATE_CHECK_SETTING_KEY, "")
+    if raw == "":
+        return settings.UPDATE_CHECK_ENABLED
+    return raw == "true"
+
+
+@router.get("/system/update-check", response_model=UpdateCheckResponse)
+async def get_update_check(
+    force: bool = False,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Opt-in Update-Pruefung. Macht nur dann einen externen Aufruf, wenn der
+    Nutzer die Pruefung aktiviert hat."""
+    from app.services import update_service
+
+    if not await _update_check_enabled(session, settings):
+        return UpdateCheckResponse(
+            enabled=False, current_version=update_service.read_local_version()
+        )
+    data = await update_service.check_for_update(settings.UPDATE_MANIFEST_URL, force=force)
+    return UpdateCheckResponse(
+        enabled=True, checked_at=datetime.now(timezone.utc).isoformat(), **data
+    )
+
+
+@router.put("/system/update-check", response_model=UpdateCheckResponse)
+async def set_update_check(
+    body: UpdateCheckSettings,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Update-Pruefung aktivieren/deaktivieren (opt-in). Bei Aktivierung wird
+    sofort einmal geprueft."""
+    from app.services import update_service
+
+    await set_db_setting(session, UPDATE_CHECK_SETTING_KEY, "true" if body.enabled else "false")
+    await session.commit()
+    if not body.enabled:
+        return UpdateCheckResponse(
+            enabled=False, current_version=update_service.read_local_version()
+        )
+    data = await update_service.check_for_update(settings.UPDATE_MANIFEST_URL, force=True)
+    return UpdateCheckResponse(
+        enabled=True, checked_at=datetime.now(timezone.utc).isoformat(), **data
+    )
 
 
 @router.post("/system/backup")

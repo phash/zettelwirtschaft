@@ -1,0 +1,28 @@
+# SSL-/HTTPS-Erweiterung fuer Zettelwirtschaft (selbstsigniertes LAN-Zertifikat).
+#
+# Zweck: ermoeglicht den Smartphone-Scan (Kamera-API) und den PWA-Service-Worker
+# im Heim-WLAN — beide verlangen einen Secure Context (HTTPS oder localhost).
+#
+# Voraussetzung: einmalig das Zertifikat erzeugen:
+#     bash ssl/generate-cert.sh
+#
+# Start:
+#     docker compose -f docker-compose.yml -f docker-compose.ssl.yml up -d
+#
+# Danach am Smartphone https://<server-ip>/ oeffnen und die einmalige
+# Browser-Warnung (selbstsigniertes Zertifikat) akzeptieren.
+
+services:
+  frontend:
+    # nginx-Master als root: bindet 80/443 und liest den owner-only (0600) Key.
+    # Die Worker (die den Netzwerkverkehr bedienen) laufen weiterhin als non-root
+    # nginx — gesteuert durch die `user nginx;`-Direktive in /etc/nginx/nginx.conf
+    # (Standard-TLS-Modell, gleiches Vorgehen wie praxiszeit).
+    user: root
+    ports:
+      - "80:80"     # HTTP -> 301 Redirect auf HTTPS
+      - "443:443"   # HTTPS
+    volumes:
+      - ./ssl/nginx-ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
+      - ./ssl/key.pem:/etc/nginx/ssl/key.pem:ro

@@ -25,6 +25,36 @@ test.describe('Settings', () => {
     await expect(page.locator('main').locator(`text=v${MOCK_SYSTEM_HEALTH.app_version}`).first()).toBeVisible();
   });
 
+  // --- Update check (opt-in) ---
+
+  test('Shows opt-in update check card, disabled by default', async ({ page }) => {
+    await page.goto('/einstellungen');
+    await expect(page.getByRole('heading', { name: 'Updates' })).toBeVisible();
+    await expect(page.getByText('Automatisch auf Updates prüfen')).toBeVisible();
+    await expect(page.getByText('Installiert: 1.4.0')).toBeVisible();
+    // No availability banner while the check is disabled
+    await expect(page.getByText(/Update verfügbar/)).toHaveCount(0);
+  });
+
+  test('Surfaces an available update when the check is enabled', async ({ page }) => {
+    await page.route('**/api/system/update-check', (route) =>
+      route.fulfill({
+        json: {
+          enabled: true,
+          current_version: '1.4.0',
+          latest_version: '1.5.0',
+          update_available: true,
+          release_url: 'https://zettelwirtschaft.mr-development.de/download.html',
+          published_at: '2026-07-01',
+          notes: 'Testnotiz',
+        },
+      })
+    );
+    await page.goto('/einstellungen');
+    await expect(page.getByText(/Update verfügbar: Version 1\.5\.0/)).toBeVisible();
+    await expect(page.getByRole('link', { name: /Zum Download/ })).toBeVisible();
+  });
+
   test('Shows component statuses', async ({ page }) => {
     await page.goto('/einstellungen');
 

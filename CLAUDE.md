@@ -104,6 +104,30 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
 6. **Service installieren** (Admin): `scripts/service-install.bat <install-dir> <config> <log-dir>`.
 7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder per `ollama pull bge-m3` + `ollama pull qwen2.5:7b` neu ziehen.
 
+**Update / Backup / Restore** (Native, ab v1.4):
+
+- **Update**: neues `dist/native`-ZIP in einen TEMP-Ordner entpacken, dort
+  `update-wizard.bat` als Admin starten (GUI-Wizard). Schritte: Backup -> Dienst
+  stoppen -> robocopy neuer Dateien in den Install-Ordner -> Dienst starten
+  (Alembic-Migrationen laufen automatisch). Headless: `update-wizard.ps1 -Headless`.
+  Der Wizard erkennt Install-/Daten-/Config-Pfad aus `HKLM\SOFTWARE\Zettelwirtschaft`
+  und verweigert den Start aus dem Install-Ordner heraus.
+- **Backup manuell**: Startmenue "Backup jetzt" oder `backup.bat` -> ruft
+  `zettelwirtschaft-backend.exe --config <config.toml> --backup` (Datenbank, als ZIP in
+  `<DataDir>\data\backups`). `backup.bat /full` schliesst die Dokumente mit ein
+  (`--full`). Offline ueber die Exe, nicht ueber HTTP — PIN-by-default wuerde die API
+  blocken. Zusaetzlich laeuft der in-process Auto-Backup taeglich (DB-only, kein
+  Windows-Scheduled-Task noetig). Hinweis: die DB-only-Backups sichern NICHT die
+  archivierten Dateien — fuer ein vollstaendiges Backup `/full` nutzen oder den
+  Datenordner separat sichern (NAS/Cloud-Sync).
+- **Restore**: `restore-backup.bat <backup.zip>` (Admin) -> Dienst stoppen, `-wal/-shm`
+  bereinigen, DB (+ optional Dokumente bei `--full`-Backups) aus dem ZIP zurueckspielen,
+  Dienst starten. Danach ggf. Vektor-Index neu aufbauen (Einstellungen -> Wartung).
+- **Backup vor Deinstallation**: der Uninstaller erstellt automatisch ein Sicherungs-Backup
+  nach `%USERPROFILE%\Documents\Zettelwirtschaft-Backups` (via `--backup --out-dir`,
+  bewusst AUSSERHALB des Datenordners — sonst loescht das optionale "Daten loeschen?" das
+  Backup gleich wieder), bevor er Dienst und Programmdateien entfernt.
+
 ## Memory Files — Read Before Working on a Topic
 
 | File | Read when working on… |
