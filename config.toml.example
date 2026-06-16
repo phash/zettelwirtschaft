@@ -12,6 +12,14 @@
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8080
 
+# ---- HTTPS (optional, fuer Smartphone-Scan im LAN) ----
+# Die Kamera-API und der PWA-Service-Worker verlangen einen Secure Context
+# (HTTPS oder localhost). Zertifikat erzeugen:
+#   <install>\bin\python.exe ssl\generate-self-signed-cert.py
+# Dann beide Pfade setzen (leer = HTTP):
+# SERVER_SSL_CERTFILE = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/cert.pem"
+# SERVER_SSL_KEYFILE  = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/key.pem"
+
 # ---- Datenbank + Verzeichnisse ----
 # Diese Pfade duerfen absolut oder relativ sein. Bei einem Setup-Run schreibt
 # der Installer hier in der Regel absolute Pfade zum gewaehlten Datenordner.
@@ -62,6 +70,12 @@ RAG_USE_RERANKER = false
 
 LLM_USE_VERIFIER = false
 LLM_VERIFIER_THRESHOLD = 0.5
+
+# ---- Update-Pruefung (opt-in, telemetriefrei) ----
+# Standardmaessig AUS. Erst nach Aktivierung in den Einstellungen wird das
+# Manifest abgerufen (nur die Abfrage selbst, keine Nutzungsdaten).
+UPDATE_CHECK_ENABLED = false
+UPDATE_MANIFEST_URL = "https://zettelwirtschaft.mr-development.de/latest.json"
 
 # ---- E-Mail-Anbindung ----
 # Fernet-Key fuer IMAP-Passwoerter (vom Installer kryptografisch generiert).
