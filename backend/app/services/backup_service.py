@@ -26,12 +26,26 @@ def _db_path(settings: Settings) -> Path:
     return Path(path_str)
 
 
-def create_backup(settings: Settings, include_documents: bool = False) -> str:
-    """Erstellt ein Backup als ZIP-Datei. Gibt den Dateipfad zurueck."""
+def create_backup(
+    settings: Settings,
+    include_documents: bool = False,
+    out_dir: str | Path | None = None,
+) -> str:
+    """Erstellt ein Backup als ZIP-Datei. Gibt den Dateipfad zurueck.
+
+    out_dir: optionaler Zielordner ausserhalb des Datenordners. Wird z.B. vom
+    Uninstaller genutzt, damit das Sicherungs-Backup das Loeschen des
+    Datenordners ueberlebt. Default: <ARCHIVE_DIR>/../backups.
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_type = "full" if include_documents else "db"
     filename = f"backup_{backup_type}_{timestamp}.zip"
-    backup_path = _backup_dir(settings) / filename
+    if out_dir:
+        target_dir = Path(out_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        target_dir = _backup_dir(settings)
+    backup_path = target_dir / filename
 
     db_file = _db_path(settings)
 

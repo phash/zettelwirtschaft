@@ -57,3 +57,22 @@ def test_backup_cli_full_includes_documents(test_settings: Settings, monkeypatch
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
     assert any(n.startswith("documents/") for n in names), names
+
+
+def test_backup_cli_out_dir(test_settings: Settings, monkeypatch, capsys, tmp_path):
+    """--out-dir schreibt das Backup ausserhalb des Datenordners (Uninstaller-Pfad)."""
+    db_path = Path(test_settings.DATABASE_URL.split("///")[-1])
+    _make_sqlite_db(db_path)
+    out_dir = tmp_path / "safe-backups"  # NICHT der Default <archive>/../backups
+
+    import app.config
+    monkeypatch.setattr(app.config, "get_settings", lambda: test_settings)
+
+    from app.entrypoint import main
+    rc = main(["--backup", "--out-dir", str(out_dir)])
+
+    printed = capsys.readouterr().out.strip()
+    assert rc == 0
+    zip_path = Path(printed)
+    assert zip_path.exists()
+    assert zip_path.parent == out_dir, f"Backup nicht im out-dir: {zip_path}"

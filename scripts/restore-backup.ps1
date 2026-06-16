@@ -71,15 +71,33 @@ try {
     Write-Host 'Datenbank wiederhergestellt.'
 
     $srcDocs = Join-Path $tmp 'documents'
-    if ((Test-Path $srcDocs) -and $archiveDir) {
-        $archiveWin = $archiveDir -replace '/', '\'
-        Write-Host 'Stelle Dokumente wieder her...'
-        New-Item -ItemType Directory -Force -Path $archiveWin | Out-Null
-        Copy-Item -Path (Join-Path $srcDocs '*') -Destination $archiveWin -Recurse -Force
+    if (Test-Path $srcDocs) {
+        if ($archiveDir) {
+            $archiveWin = $archiveDir -replace '/', '\'
+            Write-Host 'Stelle Dokumente wieder her...'
+            New-Item -ItemType Directory -Force -Path $archiveWin | Out-Null
+            Copy-Item -Path (Join-Path $srcDocs '*') -Destination $archiveWin -Recurse -Force
+        } else {
+            Write-Host 'WARNUNG: documents/ im Backup, aber ARCHIVE_DIR fehlt in config.toml - Dokumente NICHT wiederhergestellt.'
+        }
+    } else {
+        Write-Host 'Hinweis: DB-only-Backup (kein documents/) - nur die Datenbank wurde wiederhergestellt.'
     }
 
     Write-Host 'Starte Dienst...'
-    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    $svcStart = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svcStart) {
+        try {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            $svcStart.WaitForStatus('Running', (New-TimeSpan -Seconds 120))
+            Write-Host 'Dienst laeuft.'
+        } catch {
+            Write-Host "WARNUNG: Dienst konnte nicht gestartet werden: $_"
+            Write-Host 'Pruefe logs\backend.log im Datenordner.'
+        }
+    } else {
+        Write-Host "WARNUNG: Dienst $ServiceName nicht gefunden - bitte manuell starten."
+    }
 
     Write-Host ''
     Write-Host 'Restore abgeschlossen.'

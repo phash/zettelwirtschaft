@@ -113,15 +113,20 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
   Der Wizard erkennt Install-/Daten-/Config-Pfad aus `HKLM\SOFTWARE\Zettelwirtschaft`
   und verweigert den Start aus dem Install-Ordner heraus.
 - **Backup manuell**: Startmenue "Backup jetzt" oder `backup.bat` -> ruft
-  `zettelwirtschaft-backend.exe --config <config.toml> --backup` (Datenbank, optional
-  Dokumente mit `--full`, als ZIP in `<DataDir>\data\backups`). Offline ueber die Exe,
-  nicht ueber HTTP — PIN-by-default wuerde die API blocken. Zusaetzlich laeuft der
-  in-process Auto-Backup taeglich (kein Windows-Scheduled-Task noetig).
+  `zettelwirtschaft-backend.exe --config <config.toml> --backup` (Datenbank, als ZIP in
+  `<DataDir>\data\backups`). `backup.bat /full` schliesst die Dokumente mit ein
+  (`--full`). Offline ueber die Exe, nicht ueber HTTP — PIN-by-default wuerde die API
+  blocken. Zusaetzlich laeuft der in-process Auto-Backup taeglich (DB-only, kein
+  Windows-Scheduled-Task noetig). Hinweis: die DB-only-Backups sichern NICHT die
+  archivierten Dateien — fuer ein vollstaendiges Backup `/full` nutzen oder den
+  Datenordner separat sichern (NAS/Cloud-Sync).
 - **Restore**: `restore-backup.bat <backup.zip>` (Admin) -> Dienst stoppen, `-wal/-shm`
   bereinigen, DB (+ optional Dokumente bei `--full`-Backups) aus dem ZIP zurueckspielen,
   Dienst starten. Danach ggf. Vektor-Index neu aufbauen (Einstellungen -> Wartung).
 - **Backup vor Deinstallation**: der Uninstaller erstellt automatisch ein Sicherungs-Backup
-  im Datenordner, bevor er den Dienst und die Programmdateien entfernt.
+  nach `%USERPROFILE%\Documents\Zettelwirtschaft-Backups` (via `--backup --out-dir`,
+  bewusst AUSSERHALB des Datenordners — sonst loescht das optionale "Daten loeschen?" das
+  Backup gleich wieder), bevor er Dienst und Programmdateien entfernt.
 
 ## Memory Files — Read Before Working on a Topic
 

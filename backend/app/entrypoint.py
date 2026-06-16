@@ -174,6 +174,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Mit --backup: Dokumente einschliessen",
     )
+    parser.add_argument(
+        "--out-dir",
+        help="Mit --backup: Zielordner fuer die ZIP (Default: <DataDir>/data/backups). "
+        "Der Uninstaller nutzt das, damit das Backup das Loeschen des Datenordners ueberlebt.",
+    )
     args = parser.parse_args(argv)
 
     _set_config_from_args(args)
@@ -196,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         from app.services.backup_service import create_backup
 
         settings = get_settings()
-        path = create_backup(settings, include_documents=args.full)
+        path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
         print(path)
         return 0
 
