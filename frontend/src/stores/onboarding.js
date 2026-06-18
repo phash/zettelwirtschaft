@@ -39,9 +39,11 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     _persist()
   }
 
-  // Aus der Hilfe heraus erneut ansehen.
+  // Aus der Hilfe heraus erneut ansehen. Nur oeffnen — `completed` (und damit
+  // localStorage) bleibt unangetastet, sonst entstuende eine Divergenz zwischen
+  // In-Memory- und persistiertem Zustand (Review H2). Das Modal wird ueber
+  // `open` gesteuert, nicht ueber `completed`.
   function restart() {
-    completed.value = false
     open.value = true
   }
 

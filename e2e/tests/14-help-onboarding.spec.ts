@@ -43,4 +43,17 @@ test.describe('Help & Onboarding', () => {
     await page.getByRole('button', { name: 'Tour erneut starten' }).click();
     await expect(page.getByRole('heading', { name: 'Willkommen bei Zettelwirtschaft' })).toBeVisible();
   });
+
+  test('Onboarding last-step CTA navigates to upload', async ({ page }) => {
+    await page.addInitScript(() => {
+      try { localStorage.removeItem('zw_onboarding_v1_done'); } catch { /* ignore */ }
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'Willkommen bei Zettelwirtschaft' })).toBeVisible();
+    for (let i = 0; i < 4; i++) {
+      await page.getByRole('button', { name: 'Weiter' }).click();
+    }
+    await page.getByRole('button', { name: 'Erstes Dokument hochladen' }).click();
+    await expect(page).toHaveURL(/\/upload/);
+  });
 });

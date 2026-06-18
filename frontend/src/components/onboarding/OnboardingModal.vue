@@ -1,11 +1,13 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useOnboardingStore } from '../../stores/onboarding'
 
 const onboarding = useOnboardingStore()
 const router = useRouter()
 const step = ref(0)
+const panel = ref(null)
+let lastFocused = null
 
 const steps = [
   {
@@ -55,13 +57,29 @@ function goUpload() {
 }
 
 function onKey(e) {
-  if (!onboarding.open) return
   if (e.key === 'Escape') finish()
   else if (e.key === 'ArrowRight') next()
   else if (e.key === 'ArrowLeft') back()
 }
-onMounted(() => document.addEventListener('keydown', onKey))
-onUnmounted(() => document.removeEventListener('keydown', onKey))
+
+// Keydown-Listener nur waehrend die Tour offen ist (nicht app-weit), plus
+// Fokus-Management: beim Oeffnen Fokus in den Dialog, beim Schliessen zurueck.
+watch(
+  () => onboarding.open,
+  (isOpen) => {
+    if (isOpen) {
+      lastFocused = document.activeElement
+      document.addEventListener('keydown', onKey)
+      nextTick(() => panel.value?.focus())
+    } else {
+      document.removeEventListener('keydown', onKey)
+      if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus()
+      lastFocused = null
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 
 const icons = {
   sparkles: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z',
@@ -75,9 +93,19 @@ const icons = {
 <template>
   <teleport to="body">
     <div v-if="onboarding.open" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div class="fixed inset-0 bg-black/50" @click="finish"></div>
+      <!-- Backdrop bewusst OHNE Klick-zum-Schliessen: ein versehentlicher Klick
+           daneben soll die Erst-Tour nicht dauerhaft verwerfen (Review M3).
+           Schliessen via X / Überspringen / Später / Esc. -->
+      <div class="fixed inset-0 bg-black/50" aria-hidden="true"></div>
 
-      <div class="relative z-10 w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div
+        ref="panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="onb-title"
+        tabindex="-1"
+        class="relative z-10 w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl focus:outline-none"
+      >
         <button
           @click="finish"
           class="absolute right-4 top-4 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
@@ -97,7 +125,7 @@ const icons = {
           <p class="text-xs font-semibold uppercase tracking-wide text-primary-600">
             Schritt {{ step + 1 }} von {{ steps.length }}
           </p>
-          <h2 class="mt-2 text-2xl font-bold text-gray-900">{{ current.title }}</h2>
+          <h2 id="onb-title" class="mt-2 text-2xl font-bold text-gray-900">{{ current.title }}</h2>
           <p class="mt-3 leading-relaxed text-gray-600">{{ current.text }}</p>
         </div>
 
