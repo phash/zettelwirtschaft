@@ -162,6 +162,15 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.5.0
+- **In-App-Hilfe & Onboarding:** Geführter Einstieg für neue Nutzer. 5-Schritt-Willkommens-Tour (zeigt sich beim ersten App-Start, schließbar, jederzeit erneut startbar) sowie eine Hilfe-Seite unter `/hilfe` (Schnellstart, 9 Funktions-Karten mit Deep-Links, 12er-FAQ, Datenschutz-Hinweis). „Hilfe" in der Seitenleiste + „?"-Button im Header. Barrierefrei (Dialog-Rolle, Fokus-Management). Tests: +6 E2E.
+- **Code-Review-Härtung (24 Findings bis Low gefixt):**
+  - Fix (**Blocker**): Das HTTPS-Overlay aus v1.4.1 (`docker-compose.ssl.yml`) crash-loopte beim Start — `user: root` zusammen mit `cap_drop: ALL` verhindert das Binden von 80/443 und das Lesen des 0600-Keys. Jetzt werden gezielt die fünf nötigen Capabilities zurückgegeben (NET_BIND_SERVICE, DAC_OVERRIDE, SETUID, SETGID, CHOWN); verifiziert.
+  - Fix (High): Native-Restore mergte Dokumente statt zu ersetzen (Archiv/DB-Divergenz) → altes Archiv wird zur Seite gelegt; Batch-Elevation escaped `'` in Pfaden (Injection); Onboarding-Auto-Start auf Auth-State gegated.
+  - Fix (Medium): `parse_version` Unicode-Ziffern (latenter 500) + Cache auf Manifest-URL gekeyt; Voll-Backups werden gepruned + Temp-DB ins System-Temp; Zip-Slip-Schutz im Restore; Registry-Version nach Update nachgezogen; `generate-cert.sh` delegiert an den Python-Generator.
+  - Fix (Low): HSTS gekürzt (Self-Signed/IP), `.gitignore` für Keys breiter, `release_url` nur als Link bei `https://`, diverse a11y-/Hygiene-Fixes.
+- Tests: Backend **393** (2 übersprungen).
+
 ### v1.4.1
 - **HTTPS / selbstsigniertes Zertifikat (Heim-WLAN):** Ermöglicht den Smartphone-Scan (Kamera-API) und den PWA-Service-Worker im LAN — beide verlangen einen *Secure Context* (HTTPS oder localhost). Neu: `ssl/generate-self-signed-cert.py` (RSA-2048, **serverAuth-EKU** + SAN für localhost/127.0.0.1/LAN-IP/Hostname, 10 J., CA:FALSE, Key 0600) und `ssl/generate-cert.sh` (openssl-Wrapper mit Python-Fallback), `ssl/nginx-ssl.conf` (HTTP→HTTPS-Redirect + TLS auf 443), `docker-compose.ssl.yml` (Overlay, Host-Ports 80/443; nginx-Master als root, Worker non-root — Standard-TLS-Modell). Native-Modus: `SERVER_SSL_CERTFILE`/`SERVER_SSL_KEYFILE` → uvicorn startet direkt mit TLS. Vorgehen analog praxiszeit v1.8.7. Doku: README „HTTPS für den Smartphone-Scan". Tests: +2 (Cert-Generator: serverAuth/SAN/CA:FALSE/RSA-2048/Key-0600).
 
