@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import os
 import shutil
 import sqlite3
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -52,7 +54,14 @@ def create_backup(
     with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # Datenbank - via SQLite Backup API fuer konsistente Sicherung
         if db_file.exists():
-            backup_db = backup_path.parent / f"_temp_{timestamp}.db"
+            # Temp-Snapshot ins System-Temp, NICHT ins Zielverzeichnis: bei
+            # einem Crash zwischen close() und unlink() bliebe sonst eine
+            # vollstaendige DB-Kopie ausserhalb des Datenordners liegen (z.B. im
+            # Documents-Backup-Ordner beim Uninstall). System-Temp wird vom OS
+            # aufgeraeumt. (Review M3)
+            fd, tmp_name = tempfile.mkstemp(suffix=".db", prefix="zw_backup_")
+            os.close(fd)
+            backup_db = Path(tmp_name)
             try:
                 src = sqlite3.connect(str(db_file))
                 dst = sqlite3.connect(str(backup_db))
@@ -95,14 +104,26 @@ def list_backups(settings: Settings) -> list[dict]:
     return backups
 
 
-def cleanup_old_backups(settings: Settings, keep_daily: int = 7, keep_weekly: int = 4) -> int:
-    """Loescht alte Backups, behaelt die neuesten."""
-    backup_dir = _backup_dir(settings)
-    all_backups = sorted(backup_dir.glob("backup_db_*.zip"), key=lambda f: f.stat().st_mtime, reverse=True)
+def cleanup_old_backups(
+    settings: Settings, keep_daily: int = 7, keep_weekly: int = 4, keep_full: int = 3
+) -> int:
+    """Loescht alte Backups, behaelt die neuesten.
 
-    to_keep = keep_daily + keep_weekly
+    DB- und Voll-Backups werden GETRENNT begrenzt: Voll-Backups (backup_full_*.zip)
+    enthalten das komplette Archiv und sind oft hunderte MB gross. Wuerde man sie
+    nicht pruenen (Review M1), liefe die Platte bei jedem manuellen Voll-Backup
+    voll, da der bisherige Glob nur ``backup_db_*.zip`` erfasste.
+    """
+    backup_dir = _backup_dir(settings)
     removed = 0
-    for f in all_backups[to_keep:]:
+
+    def _by_mtime(pattern: str) -> list[Path]:
+        return sorted(backup_dir.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+
+    for f in _by_mtime("backup_db_*.zip")[keep_daily + keep_weekly:]:
+        f.unlink()
+        removed += 1
+    for f in _by_mtime("backup_full_*.zip")[keep_full:]:
         f.unlink()
         removed += 1
 
