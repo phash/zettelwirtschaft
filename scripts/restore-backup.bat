@@ -5,10 +5,22 @@ REM Zettelwirtschaft Restore Launcher (Admin)
 REM Aufruf: restore-backup.bat <backup-file.zip>
 REM ============================================================
 
+REM H2: Pfad + Argumente fuer die PowerShell-Single-Quote-Strings escapen (ein '
+REM im Pfad wuerde den String sonst beenden -> Parse-Fehler / Injection). Der
+REM Backup-ZIP-Pfad ist voll nutzerkontrolliert und liegt oft unter %USERPROFILE%.
+set "SELF=%~f0"
+set "SELF=%SELF:'=''%"
+set "ARGS=%*"
+if defined ARGS set "ARGS=%ARGS:'=''%"
+
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Fordere Administrator-Rechte an...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '%*'"
+    if "%~1"=="" (
+        powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
+    ) else (
+        powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -Verb RunAs -ArgumentList '%ARGS%'"
+    )
     exit /b
 )
 

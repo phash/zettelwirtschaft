@@ -20,6 +20,14 @@ class TestVersionParsing:
         assert us.parse_version("dev") is None
         assert us.parse_version(None) is None
 
+    def test_parse_unicode_digits_rejected(self):
+        # str.isdigit() ist True fuer Unicode-Ziffern -> ohne isascii()-Guard
+        # entweder ValueError ("²") oder falsche Basis ("٤"). Beide -> None.
+        assert us.parse_version("1.².0") is None  # superscript two
+        assert us.parse_version("1.٤.0") is None  # arabic-indic four
+        # Nur EIN fuehrendes v wird abgeschnitten:
+        assert us.parse_version("vv1.0") is None
+
     def test_is_newer(self):
         assert us.is_newer("1.3.1", "1.4.0") is True
         assert us.is_newer("1.4.0", "1.4.0") is False
@@ -114,3 +122,40 @@ class TestCheckForUpdate:
         res = await us.check_for_update("https://example/latest.json", force=True)
         assert res["error"] is not None
         assert res["latest_version"] is None
+
+    async def test_cached_path_serves_cache_with_fresh_current_version(self, monkeypatch):
+        us._reset_cache()
+        calls = {"n": 0}
+
+        def _client(*a, **k):
+            calls["n"] += 1
+            return _FakeClient(payload={"latest_version": "1.4.0"})
+
+        monkeypatch.setattr(us.httpx, "AsyncClient", _client)
+        monkeypatch.setattr(us, "read_local_version", lambda: "1.3.1")
+        first = await us.check_for_update("https://example/latest.json", force=True)
+        assert first["cached"] is False and calls["n"] == 1
+
+        # zweiter Aufruf ohne force -> Cache, KEIN weiterer HTTP-Call, update_available
+        # gegen die jetzt aktuelle lokale Version neu berechnet.
+        monkeypatch.setattr(us, "read_local_version", lambda: "1.4.0")
+        second = await us.check_for_update("https://example/latest.json", force=False)
+        assert second["cached"] is True
+        assert calls["n"] == 1  # kein neuer externer Aufruf
+        assert second["current_version"] == "1.4.0"
+        assert second["update_available"] is False  # 1.4.0 vs 1.4.0
+
+    async def test_cache_keyed_on_url(self, monkeypatch):
+        us._reset_cache()
+        calls = {"n": 0}
+
+        def _client(*a, **k):
+            calls["n"] += 1
+            return _FakeClient(payload={"latest_version": "1.4.0"})
+
+        monkeypatch.setattr(us.httpx, "AsyncClient", _client)
+        monkeypatch.setattr(us, "read_local_version", lambda: "1.3.1")
+        await us.check_for_update("https://a/latest.json", force=True)
+        # andere URL ohne force -> Cache-Miss -> neuer Aufruf (nicht den a-Eintrag liefern)
+        await us.check_for_update("https://b/latest.json", force=False)
+        assert calls["n"] == 2

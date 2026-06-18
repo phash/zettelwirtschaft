@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 # Kleiner In-Memory-Cache, damit wiederholte UI-Aufrufe (Settings-Polling,
 # Seitenwechsel) nicht jedes Mal den Update-Server kontaktieren.
 _CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 Stunden
-_cache: dict = {"at": 0.0, "data": None}
+# url mitcachen: bei geaenderter UPDATE_MANIFEST_URL (Env vs config.toml, Tests)
+# darf kein Eintrag der alten URL ausgeliefert werden.
+_cache: dict = {"url": None, "at": 0.0, "data": None}
 
 
 def read_local_version() -> str:
@@ -37,14 +39,20 @@ def parse_version(value: str | None) -> tuple[int, ...] | None:
     """'1.4.0' / 'v1.4.0' / '1.4.0-beta1' -> (1, 4, 0). None wenn nicht parsebar."""
     if not value:
         return None
-    v = value.strip().lstrip("vV")
+    v = value.strip()
+    # Genau EIN fuehrendes v/V abschneiden (nicht lstrip — das wuerde alle
+    # fuehrenden v/V entfernen, z.B. "vv1.0").
+    if v[:1] in ("v", "V"):
+        v = v[1:]
     for sep in ("-", "+", " "):
         if sep in v:
             v = v.split(sep, 1)[0]
     parts = v.split(".")
     nums: list[int] = []
     for part in parts:
-        if not part.isdigit():
+        # isascii() vor isdigit(): str.isdigit() ist True fuer Unicode-Ziffern
+        # (z.B. "²" -> int()-ValueError, "٤" -> falsche Vergleichsbasis).
+        if not (part.isascii() and part.isdigit()):
             return None
         nums.append(int(part))
     return tuple(nums) if nums else None
@@ -85,7 +93,12 @@ async def check_for_update(
     current = read_local_version()
     now = time.monotonic()
 
-    if not force and _cache["data"] is not None and (now - _cache["at"]) < _CACHE_TTL_SECONDS:
+    if (
+        not force
+        and _cache["data"] is not None
+        and _cache["url"] == manifest_url
+        and (now - _cache["at"]) < _CACHE_TTL_SECONDS
+    ):
         cached = dict(_cache["data"])
         cached["current_version"] = current
         cached["cached"] = True
@@ -107,6 +120,7 @@ async def check_for_update(
         result["published_at"] = manifest.get("published_at")
         result["notes"] = manifest.get("notes")
         result["update_available"] = is_newer(current, latest)
+        _cache["url"] = manifest_url
         _cache["at"] = now
         _cache["data"] = dict(result)
     except Exception as exc:  # graceful: Update-Pruefung darf nie das System stoeren
@@ -117,5 +131,6 @@ async def check_for_update(
 
 def _reset_cache() -> None:
     """Nur fuer Tests."""
+    _cache["url"] = None
     _cache["at"] = 0.0
     _cache["data"] = None

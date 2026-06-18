@@ -113,7 +113,7 @@ const icons = {
     <section>
       <h2 class="mb-4 text-lg font-semibold text-gray-900">Häufige Fragen</h2>
       <div class="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200 bg-white">
-        <details v-for="(item, i) in faqs" :key="i" class="group">
+        <details v-for="item in faqs" :key="item.q" class="group">
           <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-medium text-gray-900 hover:bg-gray-50">
             {{ item.q }}
             <svg class="h-5 w-5 flex-shrink-0 text-gray-400 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">

@@ -1,11 +1,19 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getUpdateCheck, setUpdateCheckEnabled } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
 
 const notify = useNotificationStore()
 const loading = ref(true)
 const busy = ref(false)
+
+// Nur https-URLs aus dem Manifest als Link zulassen — ein manipuliertes
+// Manifest koennte sonst z.B. eine javascript:-URL einschleusen (Vue
+// sanitisiert :href nicht). Review-Defense-in-Depth.
+const safeReleaseUrl = computed(() => {
+  const u = status.value?.release_url
+  return typeof u === 'string' && /^https:\/\//i.test(u) ? u : null
+})
 const status = ref(null)
 
 async function load() {
@@ -88,8 +96,8 @@ onMounted(load)
         </p>
         <p v-if="status.notes" class="text-xs text-emerald-700">{{ status.notes }}</p>
         <a
-          v-if="status.release_url"
-          :href="status.release_url"
+          v-if="safeReleaseUrl"
+          :href="safeReleaseUrl"
           target="_blank"
           rel="noopener noreferrer"
           class="btn-primary inline-block text-sm"

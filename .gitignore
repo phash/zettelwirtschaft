@@ -58,8 +58,12 @@ e2e/test-results/
 feedback/
 zettelwirtschaft-local.zip
 
-# Selbstsignierte TLS-Zertifikate (lokal generiert, NIE committen)
+# Selbstsignierte TLS-Zertifikate / private Keys (lokal generiert, NIE committen).
+# Breit gefasst, falls Cert/Key in einen anderen/verschachtelten Ordner wandern.
 ssl/*.pem
+**/key.pem
+**/cert.pem
+*.key
 
 # Native-Build-Artefakte
 # tools/ enthaelt manuell heruntergeladene Tesseract/poppler/NSSM-Binaries
