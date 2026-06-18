@@ -1,9 +1,26 @@
 <script setup>
+import { watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import AppHeader from './AppHeader.vue'
 import BottomNav from './BottomNav.vue'
 import ToastContainer from '../common/ToastContainer.vue'
 import PinWarningBanner from '../common/PinWarningBanner.vue'
+import OnboardingModal from '../onboarding/OnboardingModal.vue'
+import { useOnboardingStore } from '../../stores/onboarding'
+
+const route = useRoute()
+const onboarding = useOnboardingStore()
+
+// Beim ersten App-Start (nach evtl. PIN-Login) die Willkommens-Tour zeigen.
+// Nicht auf der PIN-Seite, und nur einmal (per localStorage gemerkt).
+watch(
+  () => route.name,
+  (name) => {
+    if (name && name !== 'pin-login') onboarding.maybeAutoStart()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -18,5 +35,6 @@ import PinWarningBanner from '../common/PinWarningBanner.vue'
     </div>
     <BottomNav />
     <ToastContainer />
+    <OnboardingModal />
   </div>
 </template>

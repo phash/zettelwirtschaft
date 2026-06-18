@@ -610,6 +610,12 @@ export const MOCK_EMAIL_ACCOUNTS = [
  * - /api/system/health
  */
 export async function setupBaseMocks(page: Page) {
+  // Onboarding-Tour als gesehen markieren, damit das Willkommens-Modal nicht
+  // in jedem Test aufpoppt und die UI verdeckt. Onboarding-Tests entfernen den
+  // Key per eigenem addInitScript wieder.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('zw_onboarding_v1_done', '1'); } catch { /* ignore */ }
+  });
   await page.route('**/api/health', (route) =>
     route.fulfill({ json: MOCK_HEALTH })
   );
@@ -629,7 +635,8 @@ export async function setupBaseMocks(page: Page) {
     route.fulfill({ json: MOCK_SYSTEM_HEALTH })
   );
   // Opt-in Update-Pruefung: standardmaessig deaktiviert. PUT echo't den Schalter.
-  await page.route('**/api/system/update-check', (route) => {
+  // Glob mit ** am Ende, damit auch der ?force=-Query-Param matcht.
+  await page.route('**/api/system/update-check**', (route) => {
     if (route.request().method() === 'PUT') {
       const enabled = (route.request().postDataJSON() as { enabled?: boolean })?.enabled ?? false;
       return route.fulfill({
@@ -649,6 +656,9 @@ export async function setupBaseMocks(page: Page) {
 
 /** Set up PIN-enabled auth mock */
 export async function setupPinAuthMocks(page: Page) {
+  await page.addInitScript(() => {
+    try { localStorage.setItem('zw_onboarding_v1_done', '1'); } catch { /* ignore */ }
+  });
   await page.route('**/api/health', (route) =>
     route.fulfill({ json: MOCK_HEALTH })
   );

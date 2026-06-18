@@ -76,6 +76,12 @@ const routes = [
     meta: { title: 'Einstellungen' },
   },
   {
+    path: '/hilfe',
+    name: 'help',
+    component: () => import('../views/HelpView.vue'),
+    meta: { title: 'Hilfe' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
     redirect: '/'
