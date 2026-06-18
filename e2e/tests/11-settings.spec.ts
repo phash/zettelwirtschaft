@@ -37,7 +37,7 @@ test.describe('Settings', () => {
   });
 
   test('Surfaces an available update when the check is enabled', async ({ page }) => {
-    await page.route('**/api/system/update-check', (route) =>
+    await page.route('**/api/system/update-check**', (route) =>
       route.fulfill({
         json: {
           enabled: true,
