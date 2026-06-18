@@ -18,7 +18,15 @@ echo "Generiere selbstsigniertes SSL-Zertifikat..."
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo "Erkannte Server-IP: ${SERVER_IP:-<keine>}"
 
-if command -v openssl >/dev/null 2>&1; then
+# Primaer: der Python-Generator (cryptography). Er ist die kanonische Quelle —
+# konsistente SAN/CN und robustere IP-Erkennung als `hostname -I` (das auf Hosts
+# mit Docker-Bridge/VPN die falsche IP liefern kann). openssl nur als Fallback,
+# damit cert.sh und der Python-Pfad NICHT auseinanderlaufen (Review M2).
+if python3 -c "import cryptography" >/dev/null 2>&1; then
+    echo "Nutze Python-Generator (cryptography)."
+    python3 "$SCRIPT_DIR/generate-self-signed-cert.py" "$SERVER_IP" "$SCRIPT_DIR"
+elif command -v openssl >/dev/null 2>&1; then
+    echo "python3/cryptography nicht verfuegbar — Fallback auf openssl."
     # SAN konditionell: leeres SERVER_IP (IPv6-only/loopback) wuerde openssl brechen.
     SAN="DNS:localhost,IP:127.0.0.1"
     [ -n "$SERVER_IP" ] && SAN="$SAN,IP:$SERVER_IP"
@@ -37,8 +45,8 @@ if command -v openssl >/dev/null 2>&1; then
         -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
         -addext "extendedKeyUsage=serverAuth"
 else
-    echo "openssl nicht gefunden — nutze Python-Generator (cryptography)."
-    python3 "$SCRIPT_DIR/generate-self-signed-cert.py" "$SERVER_IP" "$SCRIPT_DIR"
+    echo "FEHLER: Weder python3+cryptography noch openssl verfuegbar." >&2
+    exit 1
 fi
 
 # Private Key owner-only (0600); nur das oeffentliche Cert ist world-readable.

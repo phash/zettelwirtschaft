@@ -16,9 +16,20 @@ services:
   frontend:
     # nginx-Master als root: bindet 80/443 und liest den owner-only (0600) Key.
     # Die Worker (die den Netzwerkverkehr bedienen) laufen weiterhin als non-root
-    # nginx — gesteuert durch die `user nginx;`-Direktive in /etc/nginx/nginx.conf
-    # (Standard-TLS-Modell, gleiches Vorgehen wie praxiszeit).
+    # nginx (user-Direktive der stock nginx.conf, greift nur bei root-Master) —
+    # Standard-TLS-Modell, gleiches Vorgehen wie praxiszeit.
     user: root
+    # Die Basis droppt ALLE Caps. Fuer den root-Master werden GENAU die noetigen
+    # zurueckgegeben: NET_BIND_SERVICE (Port 80/443), DAC_OVERRIDE (0600-Key +
+    # nginx-Cache lesen/schreiben), SETUID/SETGID (Worker auf nginx droppen),
+    # CHOWN. Ohne sie crasht der Container beim Start (mkdir/bind: permission
+    # denied). no-new-privileges der Basis bleibt aktiv (verhindert SUID-Eskalation).
+    cap_add:
+      - NET_BIND_SERVICE
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+      - CHOWN
     ports:
       - "80:80"     # HTTP -> 301 Redirect auf HTTPS
       - "443:443"   # HTTPS
