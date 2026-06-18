@@ -5,15 +5,22 @@ REM Zettelwirtschaft Update-Wizard Launcher (Admin + STA)
 REM Aufruf: update-wizard.bat [InstallDir]
 REM ============================================================
 
+REM H2: Pfad + Argumente fuer die PowerShell-Single-Quote-Strings escapen. Ein
+REM ' im Pfad (z.B. C:\Users\O'Brien\) wuerde den String sonst beenden -> Parse-
+REM Fehler / Injection. In Single-Quote-Strings wird ' als '' escaped. Ausserhalb
+REM des if-Blocks setzen (Batch expandiert %VAR% im Block schon beim Parsen).
+set "SELF=%~f0"
+set "SELF=%SELF:'=''%"
+set "ARGS=%*"
+if defined ARGS set "ARGS=%ARGS:'=''%"
+
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Fordere Administrator-Rechte an...
-    REM Optionales [InstallDir]-Argument bei der Elevation mitgeben (konsistent
-    REM mit restore-backup.bat); leeres %* wuerde sonst ein leeres Argument erzeugen.
     if "%~1"=="" (
-        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+        powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
     ) else (
-        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList '%*'"
+        powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -Verb RunAs -ArgumentList '%ARGS%'"
     )
     exit /b
 )

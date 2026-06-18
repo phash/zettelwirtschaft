@@ -363,6 +363,16 @@ function Step-CopyFiles {
         $rc = $LASTEXITCODE
         if ($rc -lt 8) {
             Write-Log "Dateien aktualisiert (robocopy exit=$rc)"
+            # M2: Registry-Version nachziehen. Sonst zeigen HKLM und "Programme &
+            # Features" weiter die alte Version -> falsche Basis fuer eine spaetere
+            # Update-/Uninstall-Entscheidung. Nicht-fatal bei Fehler.
+            try {
+                Set-ItemProperty -Path 'HKLM:\SOFTWARE\Zettelwirtschaft' -Name 'Version' -Value $NewVersion -ErrorAction Stop
+                Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft' -Name 'DisplayVersion' -Value $NewVersion -ErrorAction SilentlyContinue
+                Write-Log "Registry-Version aktualisiert: $NewVersion"
+            } catch {
+                Write-Log "WARNUNG: Registry-Version nicht aktualisiert: $_"
+            }
             Set-StepStatus 'copy' 'ok'; return $true
         }
         Write-Log "FEHLER: robocopy exit=$rc"

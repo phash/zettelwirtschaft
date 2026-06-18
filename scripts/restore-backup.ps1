@@ -49,6 +49,20 @@ if ($confirm -ne 'WIEDERHERSTELLEN') { Write-Host 'Abgebrochen.'; exit 0 }
 $tmp = Join-Path $env:TEMP ('zw-restore-' + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
+    # M4: ZIP-Eintraege vor dem Entpacken auf Path-Traversal pruefen (zip-slip).
+    # -BackupZip ist beliebig vom Nutzer waehlbar; ein praepariertes Archiv
+    # koennte sonst Dateien ausserhalb von $tmp schreiben.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipRead = [System.IO.Compression.ZipFile]::OpenRead($BackupZip)
+    try {
+        foreach ($entry in $zipRead.Entries) {
+            $en = $entry.FullName
+            if ($en -match '\.\.[\\/]' -or $en -match '^([A-Za-z]:|[\\/])') {
+                throw "Unsicherer Pfad im Backup-ZIP (abgebrochen): $en"
+            }
+        }
+    } finally { $zipRead.Dispose() }
+
     Expand-Archive -LiteralPath $BackupZip -DestinationPath $tmp -Force
     $srcDb = Join-Path $tmp 'database\zettelwirtschaft.db'
     if (-not (Test-Path $srcDb)) {
@@ -59,7 +73,10 @@ try {
     Write-Host 'Stoppe Dienst...'
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($svc) { $svc.WaitForStatus('Stopped', (New-TimeSpan -Seconds 60)) }
+    if ($svc) {
+        try { $svc.WaitForStatus('Stopped', (New-TimeSpan -Seconds 60)) }
+        catch { throw "Dienst '$ServiceName' konnte nicht gestoppt werden - Restore abgebrochen (Datenbank unveraendert)." }
+    }
 
     foreach ($sfx in '-wal', '-shm') {
         $side = "$dbPath$sfx"
@@ -75,6 +92,16 @@ try {
         if ($archiveDir) {
             $archiveWin = $archiveDir -replace '/', '\'
             Write-Host 'Stelle Dokumente wieder her...'
+            # H1: Das aktuelle Archiv NICHT mit dem Backup mergen (sonst weichen
+            # Archiv und wiederhergestellte DB voneinander ab - Dateien ohne
+            # DB-Eintrag bleiben als Waisen liegen). Vorhandenes Archiv zur Seite
+            # legen (nicht loeschen - bei unvollstaendigem ZIP waere das
+            # Datenverlust) und frisch aus dem Backup befuellen.
+            if ((Test-Path $archiveWin) -and (Get-ChildItem -LiteralPath $archiveWin -Force -ErrorAction SilentlyContinue)) {
+                $aside = "${archiveWin}.pre-restore-$(Get-Date -Format yyyyMMdd_HHmmss)"
+                Rename-Item -LiteralPath $archiveWin -NewName (Split-Path -Leaf $aside)
+                Write-Host "Bisheriges Archiv gesichert nach: $aside"
+            }
             New-Item -ItemType Directory -Force -Path $archiveWin | Out-Null
             Copy-Item -Path (Join-Path $srcDocs '*') -Destination $archiveWin -Recurse -Force
         } else {
