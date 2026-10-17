@@ -378,7 +378,7 @@ This is a textbook mass-assignment pattern, but `DocumentUpdate` (schemas/docume
 **OWASP:** A01:2021 Broken Access Control | **CWE:** CWE-639 | **Severity:** Informational
 **Affected:** `backend/app/services/rag_service.py:131-136`
 
-The RAG pipeline returns `sources: list[ChatSource]` containing `document_id`. If a future endpoint accepts that document_id from the client to fetch the source document, it must re-check the document's status (`!= DELETED`) and the user's filing_scope_id filter. Today, the chat history is server-rendered and the `/api/documents/{id}` GET correctly enforces non-DELETED, but the pattern is fragile if filing_scope-based isolation is later added.
+The RAG pipeline returns `sources: list[ChatSource]` containing `document_id`. If a future endpoint accepts that document_id from the client to fetch the source document, it must re-check the document's status (`!= DELETED`) and the user's filing_scope_id filter. Today, the chat history is server-rendered. ~~The `/api/documents/{id}` GET correctly enforces non-DELETED~~ — **Correction (review 1.6.0, 2026-10):** this statement was wrong; the single-document endpoints (GET, PATCH, `/file`, tags) never filtered on `status != DELETED`. The 1.6.0 hardening adds a shared active-document loader that returns 404 for DELETED documents. The pattern stays fragile if filing_scope-based isolation is later added.
 
 No exploitable path today — informational only.
 

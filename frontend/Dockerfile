@@ -20,6 +20,8 @@ RUN npm run build
 FROM nginx:1.30-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Gemeinsame server-Regeln fuer nginx.conf UND ssl/nginx-ssl.conf (include).
+COPY nginx-common.conf /etc/nginx/snippets/zettelwirtschaft-common.conf
 
 # nginx als non-root laufen lassen (Defense-in-Depth, N-006).
 # - Listen-Port von 80 auf 8080 (privilegierte Ports < 1024 brauchen root)

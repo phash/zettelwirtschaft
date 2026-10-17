@@ -90,7 +90,7 @@ class TestProcessUpload:
 
         # M4: process_upload kopiert jetzt auch fuer WATCH_FOLDER (statt move).
         # Die Quelldatei bleibt bis nach dem DB-Commit erhalten und wird erst
-        # vom Aufrufer (watch_folder_service._safe_unlink) geloescht —
+        # vom Aufrufer (watch_folder_service._finish_original) entfernt —
         # rollback-sicher, sonst waere die Datei bei Commit-Fehler verloren.
         assert original_path.exists()
         # Kopie existiert im Upload-Dir

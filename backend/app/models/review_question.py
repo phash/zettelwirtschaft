@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -22,12 +23,12 @@ class ReviewQuestion(Base):
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     field_affected: Mapped[str | None] = mapped_column(String(100), nullable=True)
     suggested_answers: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_answered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_answered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )
-    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     document: Mapped["Document"] = relationship(back_populates="review_questions")
 

@@ -1,57 +1,116 @@
-"""Globaler slowapi-Limiter — zentral importierbar fuer Endpoint-Decoratoren.
+"""Client-IP-Ermittlung und globales Rate-Limit (200 Requests/Minute pro IP).
 
-Wird aus main.py beim FastAPI-App-Setup als app.state.limiter registriert.
-Endpoints die das globale Default-Limit (200/min) nicht treffen sollen
-(z.B. Health-Probes von docker-compose) koennen `@limiter.exempt` nutzen.
+Das globale Limit laeuft als App-weite FastAPI-Dependency (siehe main.py:
+``FastAPI(dependencies=[Depends(global_rate_limit)])``) — also NACH dem Routing,
+mit dem aufgeloesten Endpoint in ``request.scope["endpoint"]``. Die fruehere
+slowapi-Middleware fand ab FastAPI 0.143 (``_IncludedRouter`` ohne
+``.endpoint``) keinen Handler mehr und liess damit jeden /api-Request ungeprueft
+durch. Endpoints, die das Limit nicht treffen soll (Health-Probes von
+docker-compose, SPA-Shell), markieren sich mit ``@limiter.exempt``.
 """
 
 import ipaddress
 import logging
+import math
+import time
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from fastapi import HTTPException, Request
+from limits import parse_many
+from limits.storage import MemoryStorage
+from limits.strategies import MovingWindowRateLimiter
+
+from app.config import Settings, settings_for_request
 
 logger = logging.getLogger(__name__)
 
-# NEW-002 (SECURITY_AUDIT_v3): X-Real-IP nur trusten wenn die Verbindung
-# selbst aus einem Trusted-Proxy-Netz kommt. In unserer Docker-Topologie
-# ist das die compose-interne Bridge (172.16/12) — nginx leitet von dort
-# weiter. Wenn jemand das Backend je direkt von ausserhalb erreichen kann,
-# wird der Header ignoriert und der echte Socket-Peer benutzt.
-_TRUSTED_PROXY_NETWORKS = [
-    ipaddress.IPv4Network("127.0.0.0/8"),     # localhost
-    ipaddress.IPv4Network("172.16.0.0/12"),   # Docker default + compose
-    ipaddress.IPv4Network("10.0.0.0/8"),      # alternative Docker-Setups
-    ipaddress.IPv4Network("192.168.0.0/16"),  # bei host-network-Setups
-]
+GLOBAL_RATE_LIMITS = "200/minute"
 
 
-def _is_trusted_proxy(host: str) -> bool:
-    try:
-        return any(ipaddress.ip_address(host) in net for net in _TRUSTED_PROXY_NETWORKS)
-    except (ValueError, TypeError):
-        return False
+def is_trusted_proxy(host: str | None, settings: Settings) -> bool:
+    """True wenn ``host`` (Socket-Peer) ein vertrauenswuerdiger Reverse-Proxy ist.
 
-
-def trusted_client_ip(request) -> str:
-    """Effektive Client-IP unter Beruecksichtigung von X-Real-IP-Trust.
-
-    Wird sowohl von slowapi als auch vom auth.py-Limiter benutzt — beide
-    sollten dieselbe Logik teilen, sonst kann der Pin-Login-Bypass von
-    SECURITY_AUDIT_v3 NEW-002 wieder reinkommen.
+    NEW-002 (docs/reviews/SECURITY_AUDIT_v3.md): Nur im Docker-Betrieb und nur aus
+    ``TRUSTED_PROXIES`` (Docker-Netze) — dort ist das Backend ausschliesslich
+    ueber nginx erreichbar. Native/Dev haben keinen Proxy: uvicorn steht direkt
+    im LAN, jeder LAN-Client waere sonst "Proxy" und koennte X-Real-IP frei
+    rotieren (unbegrenzte PIN-Versuche).
     """
-    socket_host = get_remote_address(request)
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip and _is_trusted_proxy(socket_host):
-        return real_ip
-    if real_ip and not _is_trusted_proxy(socket_host):
-        # Verdaechtige Konstellation: X-Real-IP gesetzt, aber Connection
-        # nicht aus Trusted-Proxy-Netz. Loggen + ignorieren.
-        logger.warning(
-            "X-Real-IP=%s ignoriert (Connection aus untrusted Netz: %s)",
-            real_ip, socket_host,
+    networks = settings.trusted_proxy_networks
+    if not host or not networks:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def trusted_client_ip(request: Request, settings: Settings | None = None) -> str:
+    """Effektive Client-IP: X-Real-IP nur von einem vertrauenswuerdigen Proxy.
+
+    Gemeinsamer Schluessel fuer das globale Rate-Limit und den PIN-Lockout
+    (auth.py) — beide muessen dieselbe Logik teilen, sonst kommt der
+    Pin-Login-Bypass aus NEW-002 wieder herein. nginx setzt X-Real-IP auf
+    ``$remote_addr`` (Header des Clients werden ueberschrieben).
+    """
+    if settings is None:
+        settings = settings_for_request(request)
+    socket_host = request.client.host if request.client else "unknown"
+    real_ip = (request.headers.get("X-Real-IP") or "").strip()
+    if not real_ip:
+        return socket_host
+    if not is_trusted_proxy(socket_host, settings):
+        # Header von einem Nicht-Proxy (Native/Dev oder fremdes Netz): ignorieren.
+        logger.debug("X-Real-IP=%s ignoriert (kein vertrauenswuerdiger Proxy: %s)", real_ip, socket_host)
+        return socket_host
+    try:
+        return str(ipaddress.ip_address(real_ip))
+    except ValueError:
+        logger.warning("Ungueltige X-Real-IP %r vom Proxy %s ignoriert", real_ip, socket_host)
+        return socket_host
+
+
+class GlobalRateLimiter:
+    """Moving-Window-Limit pro Client-IP (in-memory, ein Prozess)."""
+
+    def __init__(self, limits: str) -> None:
+        self._limits = parse_many(limits)
+        self._storage = MemoryStorage()
+        self._strategy = MovingWindowRateLimiter(self._storage)
+
+    @staticmethod
+    def exempt(func):
+        """Decorator: Endpoint vom globalen Limit ausnehmen (unter ``@router.get``)."""
+        func._rate_limit_exempt = True
+        return func
+
+    @staticmethod
+    def is_exempt(endpoint) -> bool:
+        return bool(getattr(endpoint, "_rate_limit_exempt", False))
+
+    def hit(self, key: str) -> int | None:
+        """Zaehlt einen Request. None = erlaubt, sonst Sekunden bis zum naechsten Slot."""
+        for item in self._limits:
+            if not self._strategy.hit(item, key):
+                reset_at = self._strategy.get_window_stats(item, key).reset_time
+                return max(1, math.ceil(reset_at - time.time()))
+        return None
+
+    def reset(self) -> None:
+        self._storage.reset()
+
+
+limiter = GlobalRateLimiter(GLOBAL_RATE_LIMITS)
+
+
+async def global_rate_limit(request: Request) -> None:
+    """App-weite Dependency: 429 wenn die Client-IP das globale Limit reisst."""
+    if limiter.is_exempt(request.scope.get("endpoint")):
+        return
+    retry_after = limiter.hit(trusted_client_ip(request))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Zu viele Anfragen. Bitte kurz warten und erneut versuchen.",
+            headers={"Retry-After": str(retry_after)},
         )
-    return socket_host
-
-
-limiter = Limiter(key_func=trusted_client_ip, default_limits=["200/minute"])

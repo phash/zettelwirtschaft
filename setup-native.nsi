@@ -1,15 +1,36 @@
-; Zettelwirtschaft Native-Windows-Installer
+﻿; Zettelwirtschaft Native-Windows-Installer
 ;
-; Build:  makensis /DVERSION=1.3.0 /DDIST=dist\native setup-native.nsi
+; Build:  makensis /WX /DVERSION=1.3.0 /DDIST=dist\native setup-native.nsi
 ; Output: Zettelwirtschaft-1.3.0-Native-Setup.exe
 ;
 ; Im Gegensatz zum alten setup.nsi (Docker-basiert) braucht dieser Setup
 ; weder Docker Desktop noch eine externe install-gui.ps1. Backend laeuft als
 ; Windows-Service, ChromaDB embedded, Tesseract+poppler gebundled.
+;
+; Datei ist UTF-8 MIT BOM gespeichert (NSIS liest sie dann als UTF-8 ->
+; Umlaute in den UI-Texten). Nicht ohne BOM speichern.
+;
+; Zwei Modi:
+;   - Erstinstallation: Datenordner waehlen, PIN + Fernet-Key erzeugen,
+;     config.toml schreiben (New-NativeConfig.ps1), Dienst registrieren.
+;   - Upgrade (bestehende Installation in der Registry gefunden): Pfade aus der
+;     Registry, Sicherungs-Backup, Dienst stoppen, Programmdateien ersetzen.
+;     config.toml (PIN, EMAIL_ENCRYPTION_KEY, eigene Einstellungen) bleibt
+;     unangetastet.
+;
+; Registry: 64-Bit-Ansicht (SetRegView 64). Aeltere Setups schrieben als
+; 32-Bit-Prozess nach WOW6432Node, wo backup.bat/update-wizard.ps1 (64-Bit)
+; nichts fanden; diese Altwerte werden beim Upgrade gelesen und migriert.
+
+Unicode True
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "TextFunc.nsh"
+; GenerateSecret / TrimNewlines / POWERSHELL (eigene Datei, damit
+; scripts/test-scripts.ps1 sie in einem Test-Installer ausfuehren kann)
+!include "setup-native-helpers.nsh"
 
 !ifndef VERSION
     !define VERSION "dev"
@@ -18,51 +39,65 @@
     !define DIST "dist\native"
 !endif
 
+!define REG_KEY "Software\Zettelwirtschaft"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft"
+!define SERVICE_NAME "ZettelwirtschaftBackend"
+!define OLLAMA_DOWNLOAD_URL "https://ollama.com/download"
+
 ; --- General ---
 Name "Zettelwirtschaft ${VERSION}"
-OutFile "Zettelwirtschaft-${VERSION}-Native-Setup.exe"
-Unicode True
+!ifdef OUTFILE
+    OutFile "${OUTFILE}"
+!else
+    OutFile "Zettelwirtschaft-${VERSION}-Native-Setup.exe"
+!endif
 InstallDir "$PROGRAMFILES64\Zettelwirtschaft"
-InstallDirRegKey HKLM "Software\Zettelwirtschaft" "InstallDir"
 RequestExecutionLevel admin
 BrandingText "Zettelwirtschaft ${VERSION} Native"
 
 ; --- MUI ---
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "Zettelwirtschaft ${VERSION}"
-!define MUI_WELCOMEPAGE_TEXT "Willkommen.$\r$\n$\r$\nDieses Setup installiert Zettelwirtschaft als Windows-Service.$\r$\n$\r$\nKeine Docker-Installation noetig. Ollama (LLM-Server) wird im Anschluss als optionaler Download angeboten.$\r$\n$\r$\nKlicke 'Weiter' um zu beginnen."
+!define MUI_WELCOMEPAGE_TEXT "Willkommen.$\r$\n$\r$\nDieses Setup installiert Zettelwirtschaft als Windows-Dienst. Docker wird nicht benötigt.$\r$\n$\r$\nFür die KI-Analyse braucht Zettelwirtschaft zusätzlich Ollama (lokaler KI-Server). Ollama wird NICHT mitinstalliert, sondern separat von ${OLLAMA_DOWNLOAD_URL} heruntergeladen. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach dem Start selbst; bis dahin landen neue Dokumente zur Prüfung.$\r$\n$\r$\nKlicke 'Weiter', um zu beginnen."
 
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Programmordner waehlen. Programmdateien werden hier abgelegt; die Nutzerdaten kommen in einen separaten Ordner (im naechsten Schritt)."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Programmordner wählen. Programmdateien werden hier abgelegt; die Nutzerdaten kommen in einen separaten Ordner (im nächsten Schritt)."
 
-; Variablen fuer Custom-Pages
+; Variablen
 Var DATA_DIR
 Var DATA_DIR_LABEL
 Var DATA_DIR_TEXT
 Var DATA_DIR_BUTTON
+Var PORT_TEXT
 Var PIN_CODE
 Var SERVER_PORT
 Var CONFIG_PATH
-Var FRONTEND_DIST_PATH
+Var UPGRADE          ; "1" = bestehende Installation wird aktualisiert
+Var OLD_VERSION
+Var LEGACY_REGVIEW   ; "1" = Altwerte lagen in der 32-Bit-Registry-Ansicht
+Var FINISH_PIN_TEXT
 
 ; --- Pages ---
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "LICENSE"
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipPageOnUpgrade
 !insertmacro MUI_PAGE_DIRECTORY
 
-; Custom Page: Datenordner waehlen
+; Custom Page: Datenordner wählen (bei Upgrade übersprungen)
 Page custom DataDirPage DataDirPageLeave
 
 !insertmacro MUI_PAGE_INSTFILES
 
-; FINISH-Page: Browser oeffnen
+; FINISH-Page: Browser öffnen
 !define MUI_FINISHPAGE_TITLE "Installation abgeschlossen"
-!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft laeuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberflaeche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\nPIN: $PIN_CODE (bitte notieren!)"
+!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft läuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberfläche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\n$FINISH_PIN_TEXT$\r$\n$\r$\nOhne Ollama ist keine KI-Analyse möglich."
 !define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Browser jetzt oeffnen"
+!define MUI_FINISHPAGE_RUN_TEXT "Browser jetzt öffnen"
 !define MUI_FINISHPAGE_RUN_FUNCTION "OpenBrowser"
 !define MUI_FINISHPAGE_SHOWREADME ""
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Logs im Datenordner ansehen"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION "OpenLogs"
+!define MUI_FINISHPAGE_LINK "Ollama herunterladen (für die KI-Analyse nötig)"
+!define MUI_FINISHPAGE_LINK_LOCATION "${OLLAMA_DOWNLOAD_URL}"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -72,18 +107,105 @@ Page custom DataDirPage DataDirPageLeave
 
 ; --- Init ---
 Function .onInit
+    SetRegView 64
     StrCpy $DATA_DIR "$DOCUMENTS\Zettelwirtschaft"
     StrCpy $SERVER_PORT "8080"
+    StrCpy $UPGRADE "0"
+    StrCpy $LEGACY_REGVIEW "0"
 
-    ; PIN automatisch generieren — 6-stellig numerisch
-    Push 1000000
-    Call GenerateRandomNumber
-    Pop $PIN_CODE
+    Call DetectExistingInstall
+
+    ; GenerateSecret braucht new-secret.ps1 im PLUGINSDIR — immer entpacken:
+    ; auch ein Upgrade ohne config.toml erzeugt in der Install-Section einen PIN.
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\new-secret.ps1" "${DIST}\new-secret.ps1"
+
+    ${If} $UPGRADE == "1"
+        StrCpy $FINISH_PIN_TEXT "PIN: unverändert (steht in $CONFIG_PATH)."
+    ${Else}
+        ; PIN automatisch generieren — 6-stellig numerisch, kryptografischer Zufall
+        Push "pin"
+        Call GenerateSecret
+        Pop $PIN_CODE
+        ${If} $PIN_CODE == ""
+            MessageBox MB_OK|MB_ICONSTOP "Der Zugangs-PIN konnte nicht erzeugt werden (PowerShell nicht verfügbar?).$\r$\nDas Setup wird beendet." /SD IDOK
+            Abort
+        ${EndIf}
+        StrCpy $FINISH_PIN_TEXT "PIN: $PIN_CODE (bitte notieren!)"
+    ${EndIf}
+FunctionEnd
+
+; Bestehende Installation erkennen (64-Bit-Ansicht, Fallback: alte 32-Bit-Werte).
+Function DetectExistingInstall
+    ReadRegStr $R0 HKLM "${REG_KEY}" "InstallDir"
+    ${If} $R0 == ""
+        SetRegView 32
+        ReadRegStr $R0 HKLM "${REG_KEY}" "InstallDir"
+        ${If} $R0 != ""
+            StrCpy $LEGACY_REGVIEW "1"
+        ${EndIf}
+    ${EndIf}
+    ReadRegStr $R1 HKLM "${REG_KEY}" "ConfigPath"
+    ReadRegStr $R2 HKLM "${REG_KEY}" "DataDir"
+    ReadRegStr $R3 HKLM "${REG_KEY}" "Version"
+    SetRegView 64
+
+    ${If} $R0 == ""
+    ${OrIfNot} ${FileExists} "$R0\backend\zettelwirtschaft-backend.exe"
+        ; Kein Setup-Eintrag. Ein manuell registrierter Dienst (z.B. nach einer
+        ; Docker-Migration per service-install.bat) wuerde von einer
+        ; Erstinstallation ueberschrieben -> abbrechen statt raten.
+        nsExec::ExecToStack 'sc query ${SERVICE_NAME}'
+        Pop $R4
+        Pop $R5
+        ${If} $R4 == "0"
+            MessageBox MB_OK|MB_ICONSTOP "Der Dienst ${SERVICE_NAME} ist bereits eingerichtet, aber nicht über dieses Setup installiert worden.$\r$\n$\r$\nBitte diese Installation mit dem Update-Assistenten (update-wizard.bat) aktualisieren." /SD IDOK
+            Abort
+        ${EndIf}
+        Return
+    ${EndIf}
+
+    MessageBox MB_YESNO|MB_ICONQUESTION "Zettelwirtschaft $R3 ist bereits installiert:$\r$\n$R0$\r$\n$\r$\nJetzt auf Version ${VERSION} aktualisieren?$\r$\n$\r$\nDatenbank, Dokumente, Einstellungen und PIN bleiben erhalten. Vorher wird ein Sicherungs-Backup erstellt." /SD IDYES IDYES upgrade
+    Abort
+    upgrade:
+    StrCpy $UPGRADE "1"
+    StrCpy $INSTDIR $R0
+    StrCpy $CONFIG_PATH $R1
+    StrCpy $DATA_DIR $R2
+    StrCpy $OLD_VERSION $R3
+    ${If} $CONFIG_PATH == ""
+        StrCpy $CONFIG_PATH "$DATA_DIR\config.toml"
+    ${EndIf}
+    Call ReadConfigPort
+FunctionEnd
+
+; SERVER_PORT aus einer vorhandenen config.toml uebernehmen (Upgrade bzw.
+; Erstinstallation in einen Datenordner mit config.toml): Firewall-Regel,
+; Verknuepfungen und Abschlussseite muessen den tatsaechlichen Port nennen.
+Function ReadConfigPort
+    Push $R4
+    ${If} ${FileExists} "$CONFIG_PATH"
+        ClearErrors
+        ${ConfigRead} "$CONFIG_PATH" "SERVER_PORT = " $R4
+        ${IfNot} ${Errors}
+            StrCpy $SERVER_PORT $R4
+        ${EndIf}
+    ${EndIf}
+    Pop $R4
+FunctionEnd
+
+Function SkipPageOnUpgrade
+    ${If} $UPGRADE == "1"
+        Abort
+    ${EndIf}
 FunctionEnd
 
 ; --- Custom Page: Datenordner ---
 Function DataDirPage
-    !insertmacro MUI_HEADER_TEXT "Datenordner" "Hier landen Datenbank, Archiv, Uploads. Frei waehlbar — NAS, externes Laufwerk, Cloud-Sync."
+    ${If} $UPGRADE == "1"
+        Abort
+    ${EndIf}
+    !insertmacro MUI_HEADER_TEXT "Datenordner" "Hier landen Datenbank, Archiv, Uploads. Frei wählbar — NAS, externes Laufwerk, Cloud-Sync."
 
     nsDialogs::Create 1018
     Pop $0
@@ -101,35 +223,41 @@ Function DataDirPage
     ${NSD_CreateLabel} 0 60u 100% 36u "Tipp: ein Pfad in OneDrive/Dropbox/Nextcloud erzeugt automatisch ein Cloud-Backup deiner Dokumente. Ein NAS-Pfad (Z:\) bindet das Familienarchiv ins NAS-Snapshot-System ein."
     Pop $0
 
-    ${NSD_CreateLabel} 0 110u 100% 12u "Port der Weboberflaeche:"
+    ${NSD_CreateLabel} 0 110u 100% 12u "Port der Weboberfläche:"
     Pop $0
     ${NSD_CreateNumber} 0 124u 60u 14u "$SERVER_PORT"
-    Pop $0
-    ${NSD_OnChange} $0 OnPortChange
+    Pop $PORT_TEXT
 
     nsDialogs::Show
 FunctionEnd
 
 Function OnBrowseDataDir
-    Var /GLOBAL TMP_DIR
-    nsDialogs::SelectFolderDialog "Datenordner waehlen" "$DATA_DIR"
-    Pop $TMP_DIR
-    ${If} $TMP_DIR != "error"
-        StrCpy $DATA_DIR "$TMP_DIR"
+    Pop $0  ; Button-Handle
+    nsDialogs::SelectFolderDialog "Datenordner wählen" "$DATA_DIR"
+    Pop $1
+    ${If} $1 != "error"
+        StrCpy $DATA_DIR "$1"
         ${NSD_SetText} $DATA_DIR_TEXT "$DATA_DIR"
     ${EndIf}
 FunctionEnd
 
-Function OnPortChange
-    Pop $0
-    ${NSD_GetText} $0 $1
-    StrCpy $SERVER_PORT $1
-FunctionEnd
-
 Function DataDirPageLeave
     ${NSD_GetText} $DATA_DIR_TEXT $DATA_DIR
+    ${NSD_GetText} $PORT_TEXT $SERVER_PORT
+    ; Abschliessenden Backslash entfernen ("D:\" -> "D:"): sonst escaped er das
+    ; schliessende Anfuehrungszeichen der Kommandozeile fuer New-NativeConfig.ps1.
+    StrCpy $0 $DATA_DIR 1 -1
+    ${If} $0 == "\"
+        StrCpy $DATA_DIR $DATA_DIR -1
+    ${EndIf}
     ${If} $DATA_DIR == ""
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Bitte einen Datenordner waehlen."
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Bitte einen Datenordner wählen."
+        Abort
+    ${EndIf}
+    ${If} $SERVER_PORT == ""
+    ${OrIf} $SERVER_PORT < 1
+    ${OrIf} $SERVER_PORT > 65535
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Bitte einen Port zwischen 1 und 65535 angeben."
         Abort
     ${EndIf}
     ; Pfad anlegen
@@ -138,10 +266,42 @@ Function DataDirPageLeave
     StrCpy $CONFIG_PATH "$DATA_DIR\config.toml"
 FunctionEnd
 
+; --- Upgrade: Backup + Dienst stoppen + alte Programmdateien entfernen ---
+Function PrepareUpgrade
+    DetailPrint "Erstelle Sicherungs-Backup (Version $OLD_VERSION)..."
+    nsExec::ExecToLog '"$INSTDIR\backend\zettelwirtschaft-backend.exe" --config "$CONFIG_PATH" --backup'
+    Pop $R0
+    ${If} $R0 != "0"
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION "Das Sicherungs-Backup ist fehlgeschlagen (Code $R0).$\r$\n$\r$\nTrotzdem aktualisieren?" /SD IDNO IDYES backup_done
+        Abort "Update abgebrochen: kein Sicherungs-Backup."
+    ${EndIf}
+    backup_done:
+
+    DetailPrint "Stoppe Dienst ${SERVICE_NAME}..."
+    ; Exit-Code egal: der Dienst kann bereits gestoppt sein.
+    nsExec::ExecToLog 'net stop ${SERVICE_NAME}'
+    Pop $R0
+
+    ; Programm-Unterordner gehoeren komplett zur installierten Version: vor dem
+    ; Entpacken leeren, damit keine veralteten Dateien (alte .pyd/dist-info,
+    ; Frontend-Assets) liegen bleiben. Nutzerdaten liegen nicht darin.
+    RMDir /r "$INSTDIR\backend"
+    RMDir /r "$INSTDIR\frontend"
+    RMDir /r "$INSTDIR\bin"
+    ${If} ${FileExists} "$INSTDIR\backend\*.*"
+        MessageBox MB_OK|MB_ICONSTOP "Die alten Programmdateien in $INSTDIR\backend konnten nicht entfernt werden (Dienst läuft noch?).$\r$\nBitte den Dienst ${SERVICE_NAME} beenden und das Setup erneut starten." /SD IDOK
+        Abort "Update abgebrochen: Programmdateien gesperrt."
+    ${EndIf}
+FunctionEnd
+
 ; --- Install Section ---
 Section "Zettelwirtschaft" SecMain
     SectionIn RO
     SetOutPath "$INSTDIR"
+
+    ${If} $UPGRADE == "1"
+        Call PrepareUpgrade
+    ${EndIf}
 
     ; Bundle entpacken — Inhalt von %DIST% kommt 1:1 in $INSTDIR
     File /r "${DIST}\backend"
@@ -152,88 +312,80 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\service-uninstall.bat"
     File "${DIST}\config.toml.example"
     File "${DIST}\VERSION"
-    File "scripts\Convert-Env-To-Config.ps1"
+    File "${DIST}\Convert-Env-To-Config.ps1"
+    File "${DIST}\New-NativeConfig.ps1"
+    File "${DIST}\new-secret.ps1"
     File "${DIST}\update-wizard.bat"
     File "${DIST}\update-wizard.ps1"
     File "${DIST}\backup.bat"
     File "${DIST}\restore-backup.bat"
     File "${DIST}\restore-backup.ps1"
 
-    ; FRONTEND_DIST_PATH fuer config.toml
-    StrCpy $FRONTEND_DIST_PATH "$INSTDIR\frontend"
+    ; config.toml nur bei Erstinstallation (oder wenn sie fehlt) schreiben —
+    ; ein neuer EMAIL_ENCRYPTION_KEY wuerde gespeicherte IMAP-Passwoerter
+    ; unbrauchbar machen.
+    ${If} ${FileExists} "$CONFIG_PATH"
+        DetailPrint "Behalte bestehende config.toml: $CONFIG_PATH"
+        ; Auch bei einer Erstinstallation in einen Datenordner mit vorhandener
+        ; config.toml gelten deren PIN und Port, nicht die aus dem Setup-Dialog.
+        StrCpy $FINISH_PIN_TEXT "PIN: unverändert (steht in $CONFIG_PATH)."
+        Call ReadConfigPort
+    ${Else}
+        ${If} $PIN_CODE == ""
+            ; Upgrade ohne config.toml: frischen PIN erzeugen.
+            Push "pin"
+            Call GenerateSecret
+            Pop $PIN_CODE
+            StrCpy $FINISH_PIN_TEXT "PIN: $PIN_CODE (bitte notieren!)"
+        ${EndIf}
+        DetailPrint "Schreibe config.toml..."
+        nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\New-NativeConfig.ps1" -OutPath "$CONFIG_PATH" -DataDir "$DATA_DIR" -FrontendDistDir "$INSTDIR\frontend" -Port $SERVER_PORT -PinCode "$PIN_CODE" -Version "${VERSION}"'
+        Pop $R0
+        ${If} $R0 != "0"
+            MessageBox MB_OK|MB_ICONSTOP "Die Konfiguration (config.toml) konnte nicht geschrieben werden (Code $R0).$\r$\nDetails stehen im Installationsprotokoll." /SD IDOK
+            Abort "Installation abgebrochen: config.toml fehlt."
+        ${EndIf}
+    ${EndIf}
 
-    ; config.toml schreiben (mit / statt \\ — TOML/Python tolerant)
-    Push "$DATA_DIR"
-    Call BackslashToForwardSlash
-    Pop $R0
-    Push "$FRONTEND_DIST_PATH"
-    Call BackslashToForwardSlash
-    Pop $R1
+    ; Firewall-Rule (nur Erstinstallation — sonst entstehen doppelte Regeln)
+    ${If} $UPGRADE != "1"
+        DetailPrint "Firewall-Regel..."
+        nsExec::ExecToLog '${POWERSHELL} -Command "New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue"'
+        Pop $R0
+    ${EndIf}
 
-    DetailPrint "Schreibe config.toml..."
-    FileOpen $0 "$CONFIG_PATH" w
-    FileWrite $0 "# Zettelwirtschaft Native ${VERSION} - generiert vom Setup$\r$\n"
-    FileWrite $0 "SERVER_HOST = $\"0.0.0.0$\"$\r$\n"
-    FileWrite $0 "SERVER_PORT = $SERVER_PORT$\r$\n"
-    FileWrite $0 "DATABASE_URL = $\"sqlite+aiosqlite:///$R0/data/zettelwirtschaft.db$\"$\r$\n"
-    FileWrite $0 "UPLOAD_DIR = $\"$R0/data/uploads$\"$\r$\n"
-    FileWrite $0 "ARCHIVE_DIR = $\"$R0/data/archive$\"$\r$\n"
-    FileWrite $0 "THUMBNAIL_DIR = $\"$R0/data/thumbnails$\"$\r$\n"
-    FileWrite $0 "WATCH_DIR = $\"$R0/data/watch$\"$\r$\n"
-    FileWrite $0 "EXPORT_DIR = $\"$\"$\r$\n"
-    FileWrite $0 "FRONTEND_DIST_DIR = $\"$R1$\"$\r$\n"
-    FileWrite $0 "OLLAMA_BASE_URL = $\"http://localhost:11434$\"$\r$\n"
-    FileWrite $0 "OLLAMA_MODEL = $\"qwen2.5:7b-instruct$\"$\r$\n"
-    FileWrite $0 "PIN_ENABLED = true$\r$\n"
-    FileWrite $0 "PIN_CODE = $\"$PIN_CODE$\"$\r$\n"
-    FileWrite $0 "CHROMADB_MODE = $\"embedded$\"$\r$\n"
-    FileWrite $0 "CHROMADB_PATH = $\"$R0/data/chromadb$\"$\r$\n"
-    FileWrite $0 "EMBEDDING_MODEL = $\"bge-m3$\"$\r$\n"
-    FileWrite $0 "LOG_LEVEL = $\"INFO$\"$\r$\n"
-    ; Fernet-Key generieren via PowerShell (kryptografisch sicher)
-    nsExec::ExecToStack 'powershell -NoProfile -Command "$bytes=New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); [Convert]::ToBase64String($bytes).Replace(''+'',''-'').Replace(''/'',''_'')"'
-    Pop $R2  ; exit code
-    Pop $R3  ; output (Key)
-    ; Newline trimmen
-    Push $R3
-    Call TrimNewlines
-    Pop $R3
-    FileWrite $0 "EMAIL_ENCRYPTION_KEY = $\"$R3$\"$\r$\n"
-    FileClose $0
-
-    ; Firewall-Rule
-    DetailPrint "Firewall-Regel..."
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue"'
-
-    ; Service installieren
+    ; Service installieren (idempotent, ersetzt einen vorhandenen Dienst)
     DetailPrint "Service registrieren..."
     nsExec::ExecToLog '"$INSTDIR\service-install.bat" "$INSTDIR" "$CONFIG_PATH" "$DATA_DIR\logs"'
+    Pop $R0
+    ${If} $R0 != "0"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Der Dienst ${SERVICE_NAME} konnte nicht gestartet werden (Code $R0).$\r$\nDetails: $DATA_DIR\logs\backend.log" /SD IDOK
+    ${EndIf}
 
     ; Uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-    ; Registry
-    WriteRegStr HKLM "Software\Zettelwirtschaft" "InstallDir" "$INSTDIR"
-    WriteRegStr HKLM "Software\Zettelwirtschaft" "DataDir" "$DATA_DIR"
-    WriteRegStr HKLM "Software\Zettelwirtschaft" "ConfigPath" "$CONFIG_PATH"
-    WriteRegStr HKLM "Software\Zettelwirtschaft" "Version" "${VERSION}"
+    ; Registry (64-Bit-Ansicht, siehe Kopfkommentar)
+    ${If} $LEGACY_REGVIEW == "1"
+        SetRegView 32
+        DeleteRegKey HKLM "${REG_KEY}"
+        DeleteRegKey HKLM "${UNINST_KEY}"
+        SetRegView 64
+    ${EndIf}
+    WriteRegStr HKLM "${REG_KEY}" "InstallDir" "$INSTDIR"
+    WriteRegStr HKLM "${REG_KEY}" "DataDir" "$DATA_DIR"
+    WriteRegStr HKLM "${REG_KEY}" "ConfigPath" "$CONFIG_PATH"
+    WriteRegStr HKLM "${REG_KEY}" "Version" "${VERSION}"
 
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "DisplayName" "Zettelwirtschaft ${VERSION}"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "DisplayVersion" "${VERSION}"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "UninstallString" '"$INSTDIR\Uninstall.exe"'
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "InstallLocation" "$INSTDIR"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "Publisher" "Zettelwirtschaft Open Source"
-    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "NoModify" 1
-    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft" \
-        "NoRepair" 1
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "Zettelwirtschaft ${VERSION}"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
+    WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+    WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "Zettelwirtschaft Open Source"
+    WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
+    WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair" 1
 
-    ; Startmenue
+    ; Startmenü
     CreateDirectory "$SMPROGRAMS\Zettelwirtschaft"
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Zettelwirtschaft oeffnen.lnk" \
         "http://localhost:$SERVER_PORT" "" "$SYSDIR\shell32.dll" 13
@@ -247,9 +399,18 @@ Section "Zettelwirtschaft" SecMain
         "$INSTDIR\backup.bat" "" "$SYSDIR\shell32.dll" 45
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Backup wiederherstellen.lnk" \
         "$INSTDIR\restore-backup.bat" "" "$SYSDIR\shell32.dll" 238
+
+    ; Ollama-Hinweis (wird nicht mitinstalliert, siehe Willkommensseite)
+    Call DetectOllama
+    Pop $R0
+    ${If} $R0 != "1"
+        MessageBox MB_YESNO|MB_ICONINFORMATION "Ollama (lokaler KI-Server) wurde auf diesem Rechner nicht gefunden.$\r$\n$\r$\nOhne Ollama werden Dokumente zwar archiviert, aber nicht automatisch analysiert. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach der Ollama-Installation selbst herunter.$\r$\n$\r$\nDownload-Seite von Ollama jetzt öffnen?" /SD IDNO IDNO ollama_done
+        ExecShell "open" "${OLLAMA_DOWNLOAD_URL}"
+        ollama_done:
+    ${EndIf}
 SectionEnd
 
-; --- Browser oeffnen ---
+; --- Browser öffnen ---
 Function OpenBrowser
     ExecShell "open" "http://localhost:$SERVER_PORT"
 FunctionEnd
@@ -258,73 +419,45 @@ Function OpenLogs
     ExecShell "open" "$DATA_DIR\logs"
 FunctionEnd
 
-; --- Helper: Random-Number ---
-Function GenerateRandomNumber
-    Exch $0  ; max
-    Push $1
-    Push $2
-    ; PowerShell-Roundtrip (Get-Random 0..999999)
-    nsExec::ExecToStack 'powershell -NoProfile -Command "Get-Random -Minimum 0 -Maximum $0 | ForEach-Object { $_.ToString().PadLeft(6,$\'0$\') }"'
-    Pop $1  ; exit code
-    Pop $2  ; output
-    Push $2
-    Call TrimNewlines
-    Pop $2
-    Pop $1
-    Exch $2
-FunctionEnd
-
-Function TrimNewlines
-    Exch $R0
+; --- Helper: Ollama vorhanden? Stack out: "1" oder "0" ---
+Function DetectOllama
+    Push $R0
     Push $R1
-    StrCpy $R1 0
-    loop:
-        StrCpy $R2 $R0 1 $R1
-        StrCmp $R2 "$\r" trim
-        StrCmp $R2 "$\n" trim
-        StrCmp $R2 " " trim
-        StrCmp $R2 "" done
-        IntOp $R1 $R1 + 1
-        Goto loop
-    trim:
-        StrCpy $R0 $R0 $R1
-        Goto done
-    done:
-        Pop $R1
-        Exch $R0
-FunctionEnd
-
-Function BackslashToForwardSlash
+    nsExec::ExecToStack 'sc query Ollama'
+    Pop $R0  ; exit code
+    Pop $R1  ; output (verworfen)
+    StrCpy $R1 "0"
+    ${If} $R0 == "0"
+        StrCpy $R1 "1"
+    ${ElseIf} ${FileExists} "$LOCALAPPDATA\Programs\Ollama\ollama.exe"
+        StrCpy $R1 "1"
+    ${ElseIf} ${FileExists} "$PROGRAMFILES64\Ollama\ollama.exe"
+        StrCpy $R1 "1"
+    ${EndIf}
+    StrCpy $R0 $R1
+    Pop $R1
     Exch $R0
-    Push $R1
-    Push $R2
-    Push $R3
-    StrCpy $R3 ""
-    StrCpy $R1 0
-    loop:
-        StrCpy $R2 $R0 1 $R1
-        StrCmp $R2 "" done
-        StrCmp $R2 "\" 0 +3
-            StrCpy $R3 "$R3/"
-            Goto next
-        StrCpy $R3 "$R3$R2"
-        next:
-        IntOp $R1 $R1 + 1
-        Goto loop
-    done:
-        StrCpy $R0 $R3
-        Pop $R3
-        Pop $R2
-        Pop $R1
-        Exch $R0
 FunctionEnd
 
 ; --- Uninstall ---
+Function un.onInit
+    SetRegView 64
+FunctionEnd
+
 Section "Uninstall"
+    ; Pfade aus der 64-Bit-Ansicht, Fallback auf Altwerte (32-Bit-Ansicht)
+    ReadRegStr $1 HKLM "${REG_KEY}" "ConfigPath"
+    ReadRegStr $0 HKLM "${REG_KEY}" "DataDir"
+    ${If} $1 == ""
+        SetRegView 32
+        ReadRegStr $1 HKLM "${REG_KEY}" "ConfigPath"
+        ReadRegStr $0 HKLM "${REG_KEY}" "DataDir"
+        SetRegView 64
+    ${EndIf}
+
     ; Sicherungs-Backup vor dem Entfernen (best-effort, Dienst laeuft ggf. noch).
     ; WICHTIG: --out-dir nach $DOCUMENTS, NICHT in den Datenordner — sonst loescht
     ; das RMDir /r unten (bei "Daten loeschen? Ja") genau dieses Backup wieder mit.
-    ReadRegStr $1 HKLM "Software\Zettelwirtschaft" "ConfigPath"
     StrCpy $R2 ""   ; Backup-Status-Text fuer den Loesch-Dialog (leer = kein Backup versucht)
     ${If} ${FileExists} "$INSTDIR\backend\zettelwirtschaft-backend.exe"
     ${AndIf} $1 != ""
@@ -340,6 +473,7 @@ Section "Uninstall"
 
     ; Service entfernen
     nsExec::ExecToLog '"$INSTDIR\service-uninstall.bat" "$INSTDIR"'
+    Pop $R0
 
     ; Files
     RMDir /r "$INSTDIR\backend"
@@ -351,6 +485,8 @@ Section "Uninstall"
     Delete "$INSTDIR\config.toml.example"
     Delete "$INSTDIR\VERSION"
     Delete "$INSTDIR\Convert-Env-To-Config.ps1"
+    Delete "$INSTDIR\New-NativeConfig.ps1"
+    Delete "$INSTDIR\new-secret.ps1"
     Delete "$INSTDIR\update-wizard.bat"
     Delete "$INSTDIR\update-wizard.ps1"
     Delete "$INSTDIR\backup.bat"
@@ -358,7 +494,7 @@ Section "Uninstall"
     Delete "$INSTDIR\restore-backup.ps1"
     Delete "$INSTDIR\Uninstall.exe"
 
-    ; Startmenue
+    ; Startmenü
     Delete "$SMPROGRAMS\Zettelwirtschaft\Zettelwirtschaft oeffnen.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Logs ansehen.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Deinstallieren.lnk"
@@ -368,11 +504,10 @@ Section "Uninstall"
     RMDir "$SMPROGRAMS\Zettelwirtschaft"
 
     ; Daten: User fragen
-    ReadRegStr $0 HKLM "Software\Zettelwirtschaft" "DataDir"
     ${If} $0 != ""
     ${AndIf} ${FileExists} "$0\data\*.*"
         MessageBox MB_YESNO|MB_ICONQUESTION \
-            "Sollen die Daten (Dokumente, Datenbank, Backups) in$\r$\n$0$\r$\nebenfalls geloescht werden?$\r$\n$\r$\n$R2Dies kann NICHT rueckgaengig gemacht werden." \
+            "Sollen die Daten (Dokumente, Datenbank, Backups) in$\r$\n$0$\r$\nebenfalls gelöscht werden?$\r$\n$\r$\n$R2Dies kann NICHT rückgängig gemacht werden." \
             /SD IDNO IDNO keep_data
         RMDir /r "$0"
         keep_data:
@@ -381,7 +516,11 @@ Section "Uninstall"
     ; INSTDIR (sollte leer sein)
     RMDir "$INSTDIR"
 
-    ; Registry
-    DeleteRegKey HKLM "Software\Zettelwirtschaft"
-    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft"
+    ; Registry (beide Ansichten, falls noch Altwerte existieren)
+    DeleteRegKey HKLM "${REG_KEY}"
+    DeleteRegKey HKLM "${UNINST_KEY}"
+    SetRegView 32
+    DeleteRegKey HKLM "${REG_KEY}"
+    DeleteRegKey HKLM "${UNINST_KEY}"
+    SetRegView 64
 SectionEnd

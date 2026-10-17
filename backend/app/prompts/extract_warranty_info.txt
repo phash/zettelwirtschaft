@@ -18,7 +18,4 @@ Hinweise:
 - Manche Hersteller bieten laengere Garantien
 - Kaufbelege (RECHNUNG, QUITTUNG) fuer Produkte haben immer Gewaehrleistung
 
-OCR-Text des Dokuments:
----
-{ocr_text}
----
+{document_ocr_block}

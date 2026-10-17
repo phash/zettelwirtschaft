@@ -1,10 +1,11 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -20,6 +21,10 @@ class JobStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+# Maschinenlesbare Fehlerursache auf FAILED-Jobs (error_code).
+JOB_ERROR_DUPLICATE = "DUPLICATE"
 
 
 class ProcessingJob(Base):
@@ -46,28 +51,39 @@ class ProcessingJob(Base):
         index=True,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Maschinenlesbare Ursache (z.B. JOB_ERROR_DUPLICATE) — das Frontend und der
+    # Retry-Endpoint unterscheiden so Duplikate von echten Systemfehlern, ohne
+    # den deutschen Fehlertext zu parsen.
+    error_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # B5: Heartbeat fuer Stuck-Job-Recovery. Wird beim Claim gesetzt; die
-    # Recovery-Logik in main.py setzt nur Jobs zurueck, deren Heartbeat
-    # aelter als RECOVERY_STALE_MINUTES ist — verhindert doppelte LLM-Calls
-    # bei legitimen Container-Restarts.
+    # B5: Heartbeat (Claim + zwischen den Verarbeitungsphasen). Diagnose-
+    # Information: Beim Start setzt queue_worker_service.recover_interrupted_jobs
+    # JEDEN noch PROCESSING-Job zurueck — es gibt nur einen In-Process-Worker,
+    # nach einem Neustart kann ihn also niemand mehr bearbeiten.
     processing_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     # H-ARCH-4: Index fuer Reverse-Lookups (Welche Jobs gehoeren zu Konto X?).
     email_account_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("email_accounts.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Erzeugtes Dokument (gesetzt bei der Archivierung, COMPLETED/NEEDS_REVIEW).
+    # Upload-/Dashboard-Ansicht verlinken darueber auf /dokumente/<id> — die
+    # Job-ID ist nicht die Dokument-ID.
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     analysis_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         server_default=func.now(),
         nullable=False,
+        index=True,  # Migration 011 (Queue-Reihenfolge, Job-Liste)
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,

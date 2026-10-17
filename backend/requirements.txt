@@ -20,5 +20,8 @@ chromadb-client>=1.5.9,<1.6
 cryptography>=50,<51
 croniter>=6.2.4,<7
 
-# Rate-Limiting (Defense-in-Depth, ergaenzt das Auth-spezifische Limit)
-slowapi>=0.1.10,<0.2
+# Rate-Limiting (Defense-in-Depth, ergaenzt das Auth-spezifische Limit) -
+# globales Limit als App-Dependency in app/core/rate_limit.py
+limits>=5.8,<6
+# Zeitzonen-Datenbank fuer zoneinfo (Windows bringt keine IANA-Daten mit; TIMEZONE-Setting)
+tzdata>=2025.2

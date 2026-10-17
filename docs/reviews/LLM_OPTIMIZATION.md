@@ -1,6 +1,27 @@
 # Zettelwirtschaft – LLM-, OCR- und RAG-Optimierung
 
 Stand: Mai 2026
+
+> **Status (Review 1.6.0, Oktober 2026):** Historisches Planungsdokument — der Text unten
+> ist der Analyse-Stand von Mai 2026 und wird nicht fortgeschrieben. Umgesetzt wurden seither
+> (v1.3.0, Commits `62175bb` + `dc8fac3`):
+>
+> - JSON-Schema-Mode (`format=<schema>`) für die kombinierte Analyse
+> - Few-Shot aus `CorrectionMapping` (Top-8, `occurrence_count >= 2`)
+> - Embedding-Wechsel auf `bge-m3` (eine ChromaDB-Collection pro Embedding-Modell, `documents_<modell>`)
+> - Hybrid Search FTS5 + Vektor mit Reciprocal Rank Fusion
+> - optionaler Reranker (`RAG_USE_RERANKER`) — als LLM-Score-Pass statt des vorgeschlagenen `bge-reranker-v2-m3`
+> - optionaler Verifier-Pass (`LLM_USE_VERIFIER`, Schwelle `LLM_VERIFIER_THRESHOLD`) — ohne Self-Consistency
+> - OCR-Vorverarbeitung: Auto-Upscale, MedianFilter, Autocontrast — **kein** Deskew / adaptive Threshold
+> - Default-Modell `qwen2.5:7b-instruct` (der Ollama-Tag ist bereits Q4_K_M quantisiert; die
+>   `-q4_K_M`-Schreibweise unten ist gleichbedeutend) — Hardware-Auswahl nur als einfache
+>   RAM-Schwelle in den Docker-Installern (`install-gui.ps1`/`install.ps1`: `qwen2.5:7b-instruct`
+>   oder `llama3.2`), nicht im Native-Setup und ohne die Matrix aus §5
+> - konfigurierbares `num_ctx` / `keep_alive` (`OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE`, 1.6.0)
+>
+> Weiterhin offen: Hardware-Selector nach der Matrix in §5 (auch im Native-Setup), dokumenttyp-spezifische Prompts,
+> Self-Consistency, PaddleOCR / VLM-OCR, Late Chunking, HyDE / MultiQuery,
+> Confidence-Calibration via Logprobs, Deskew / adaptive Threshold.
 Bezieht sich auf: `backend/app/services/{llm,analysis,ocr,embedding,vectorize,rag}_service.py` + `backend/app/prompts/*.txt`
 
 ---
@@ -310,18 +331,18 @@ Bei kurzen User-Queries („Stromrechnung?") kann ein billiges LLM 3 Reformulier
 ## 4. Migrations-Roadmap
 
 ### Phase 1 — Sofort (1 Tag, kein Architektur-Risiko)
-- [ ] **JSON-Schema-Mode**: `format=<schema>` statt `format=json`. Pydantic-Schema von `AnalysisResult` als JSON-Schema exportieren.
-- [ ] **OCR-Vorverarbeitung**: Deskew + adaptive Threshold in `_ocr_image_sync`.
-- [ ] **CorrectionMapping als Few-Shot**: in `analyze_document.txt` injizieren.
+- [x] **JSON-Schema-Mode**: `format=<schema>` statt `format=json`. Pydantic-Schema von `AnalysisResult` als JSON-Schema exportieren.
+- [ ] **OCR-Vorverarbeitung**: Deskew + adaptive Threshold in `_ocr_image_sync`. *(teilweise: Upscale + MedianFilter + Autocontrast umgesetzt, Deskew/adaptive Threshold offen)*
+- [x] **CorrectionMapping als Few-Shot**: in `analyze_document.txt` injizieren.
 
 ### Phase 2 — kurzfristig (2–3 Tage)
-- [ ] **Embedding-Wechsel** auf `bge-m3` (Settings + ChromaDB-Reindex-Migration + Modell-Pull im Installer).
-- [ ] **Hybrid Search**: FTS5 + Vector + RRF + bge-reranker-v2-m3.
-- [ ] **Default-Modell-Wechsel** auf `qwen2.5:7b-instruct-q4_K_M` mit Hardware-Detection im Installer.
+- [x] **Embedding-Wechsel** auf `bge-m3` (Settings + ChromaDB-Reindex-Migration + Modell-Pull im Installer).
+- [x] **Hybrid Search**: FTS5 + Vector + RRF + bge-reranker-v2-m3. *(Reranker als optionaler LLM-Score-Pass statt bge-reranker)*
+- [x] **Default-Modell-Wechsel** auf `qwen2.5:7b-instruct-q4_K_M` mit Hardware-Detection im Installer. *(Default `qwen2.5:7b-instruct` = Q4_K_M umgesetzt; Hardware-Detection nur als RAM-Schwelle in den Docker-Installern, Matrix aus §5 offen)*
 
 ### Phase 3 — mittelfristig (1–2 Wochen)
 - [ ] **Document-Type-spezifische Prompts**: Stage1-Klassifikation + Stage2-Extraktion.
-- [ ] **Verifier-Pass + Self-Consistency** für `confidence < threshold`.
+- [x] **Verifier-Pass + Self-Consistency** für `confidence < threshold`. *(Verifier umgesetzt, Self-Consistency offen)*
 - [ ] **PaddleOCR-VL** als Opt-in OCR-Backend (`OCR_BACKEND=paddle`).
 
 ### Phase 4 — strategisch (2–4 Wochen)

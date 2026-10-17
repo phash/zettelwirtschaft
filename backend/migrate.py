@@ -9,17 +9,19 @@ Unterstützt Legacy-Installationen ohne alembic_version-Tracking:
 - Führt dann `alembic upgrade head` aus
 - Stellt sicher, dass der Default-Ablagebereich "Privat" existiert
 """
-import os
 import sqlite3
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "sqlite+aiosqlite:///./data/zettelwirtschaft.db"
-)
-DB_PATH = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+
+def db_path() -> Path:
+    """SQLite-Datei aus den App-Settings (DATABASE_URL: ENV > config.toml > .env) —
+    derselbe Parser wie Native (``app/entrypoint.py``) und die App selbst."""
+    from app.config import get_settings
+
+    return get_settings().sqlite_db_path
 
 
 def has_table(cur: sqlite3.Cursor, table: str) -> bool:
@@ -65,10 +67,21 @@ def column_type(cur: sqlite3.Cursor, table: str, column: str) -> str | None:
 def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     """Erkennt die höchste angewandte Migration anhand des tatsächlichen Schemas.
 
-    Reihenfolge: neueste zuerst. B-01 (CODE_REVIEW_v3): bisher fehlten 010 + 011,
+    Reihenfolge: neueste zuerst. B-01 (docs/reviews/CODE_REVIEW_v3.md): bisher fehlten 010 + 011,
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
+    # 017_review_data_fixes ist eine reine (idempotente) Datenmigration ohne
+    # Schema-Merkmal: eine auf 016 gestempelte DB fuehrt sie einfach erneut aus.
+    # 016_schema_consistency: Partial Unique Index auf documents.file_hash.
+    if has_index(cur, "ux_documents_file_hash_active"):
+        return "016_schema_consistency"
+    # 015_job_document_id: Verknuepfung Job -> erzeugtes Dokument.
+    if has_column(cur, "processing_jobs", "document_id"):
+        return "015_job_document_id"
+    # 014_background_tasks: Tabelle fuer Hintergrund-Vorgaenge.
+    if has_table(cur, "background_tasks"):
+        return "014_background_tasks"
     # H-ARCH: 013 prüft an der **FK-Existenz** (nicht nur Index) — sonst stempelt
     # ein Legacy-Schema, dessen Index zufaellig via create_all entstanden ist,
     # auf 013 und die Migration legt den FK nie an (K-1 Re-Review).
@@ -126,18 +139,16 @@ def create_fresh_schema() -> None:
     und danach vom Aufrufer auf head gestempelt — gemeinsamer Pfad fuer Docker
     (``main`` unten) und Native (``app/entrypoint.py``).
 
-    Nutzt die App-Engine (DATABASE_URL aus den Settings) — im Docker-Betrieb
-    dieselbe ENV-Variable, aus der ``DB_PATH`` oben abgeleitet ist.
+    Nutzt die App-Engine (DATABASE_URL aus den Settings) — dieselbe Quelle
+    wie ``db_path()``.
     """
     import asyncio
 
     from app.database import Base, engine
 
     async def _create() -> None:
-        # Alle Models registrieren — app.models/__init__ importiert die
-        # E-Mail-Models nicht, daher explizit.
+        # Alle Models registrieren (app.models/__init__ importiert jedes Model).
         import app.models  # noqa: F401
-        from app.models import email_account, processed_email  # noqa: F401
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -170,7 +181,7 @@ def ensure_default_filing_scope(cur: sqlite3.Cursor) -> bool:
 
 def fix_alembic_version() -> None:
     """Stempelt Legacy-DBs ohne alembic_version-Tracking auf die korrekte Version."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path())
     cur = conn.cursor()
 
     cur.execute(
@@ -210,9 +221,9 @@ def run_alembic(*args: str) -> None:
 
 
 def main() -> None:
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    db_path().parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path())
     try:
         fresh = is_fresh_db(conn.cursor())
     finally:
@@ -232,7 +243,7 @@ def main() -> None:
     print("[migrate] Fuehre alembic upgrade head aus...", flush=True)
     run_alembic("upgrade", "head")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path())
     try:
         if ensure_default_filing_scope(conn.cursor()):
             conn.commit()

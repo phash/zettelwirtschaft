@@ -1,7 +1,9 @@
 # Zettelwirtschaft - Native-Konfiguration (Windows)
-# Kopiere diese Datei nach %LOCALAPPDATA%\Zettelwirtschaft\config.toml
-# oder dem im Setup gewaehlten Pfad. Das Backend liest ZETTELWIRTSCHAFT_CONFIG
-# als Pfad zur aktuellen Datei (vom Installer im Service-ENV gesetzt).
+# Das Setup schreibt die echte Datei nach <Datenordner>\config.toml
+# (Default: %USERPROFILE%\Documents\Zettelwirtschaft\config.toml; der Pfad steht
+# in HKLM\SOFTWARE\Zettelwirtschaft -> ConfigPath). Diese Datei ist nur eine
+# kommentierte Vorlage. Das Backend liest ZETTELWIRTSCHAFT_CONFIG als Pfad zur
+# aktuellen Datei (vom Installer im Service-ENV gesetzt).
 #
 # Aenderungen werden nach Service-Neustart wirksam.
 
@@ -14,9 +16,11 @@ SERVER_PORT = 8080
 
 # ---- HTTPS (optional, fuer Smartphone-Scan im LAN) ----
 # Die Kamera-API und der PWA-Service-Worker verlangen einen Secure Context
-# (HTTPS oder localhost). Zertifikat erzeugen:
-#   <install>\bin\python.exe ssl\generate-self-signed-cert.py
-# Dann beide Pfade setzen (leer = HTTP):
+# (HTTPS oder localhost). Das Native-Bundle enthaelt keinen Zertifikats-
+# Generator; cert.pem + key.pem z.B. auf einem Rechner mit Python erzeugen:
+#   python ssl\generate-self-signed-cert.py <LAN-IP> <Zielordner>
+# (Skript aus dem Quellcode-Repository, braucht das Paket "cryptography").
+# Dann beide Pfade setzen (leer = HTTP) und den Dienst neu starten:
 # SERVER_SSL_CERTFILE = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/cert.pem"
 # SERVER_SSL_KEYFILE  = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/key.pem"
 
@@ -33,8 +37,18 @@ EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-
 # ---- KI / Ollama ----
 OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)
 OLLAMA_MODEL = "qwen2.5:7b-instruct"
+# Fehlende Modelle (OLLAMA_MODEL, EMBEDDING_MODEL) laedt das Backend beim Start selbst.
 OLLAMA_TIMEOUT = 300
 OLLAMA_MAX_RETRIES = 2
+# OLLAMA_ANALYSIS_TIMEOUT = 120   # Timeout (s) der JSON-Dokumentanalyse
+# OLLAMA_NUM_CTX = 8192           # Kontextfenster
+# OLLAMA_NUM_PREDICT = 1024       # max. Antwort-Tokens der Analyse
+# OLLAMA_KEEP_ALIVE = "30m"       # Modell nach einem Aufruf so lange geladen halten
+# OLLAMA_THINK = false            # nur fuer Modelle mit "thinking"-Faehigkeit
+
+# ---- E-Mail-Import ----
+# IMAP_TIMEOUT = 30               # Socket-Timeout (s)
+# EMAIL_MAX_PER_RUN = 25          # max. E-Mails pro Abruf, Rest beim naechsten Lauf
 
 # ---- OCR ----
 OCR_LANGUAGES = "deu+eng"
@@ -47,6 +61,10 @@ ALLOWED_FILE_TYPES = "pdf,jpg,jpeg,png,tiff,bmp"
 
 # ---- Logging ----
 LOG_LEVEL = "INFO"
+
+# ---- Zeitzone ----
+# Fuer CRON-Zeitplaene der E-Mail-Konten (Ortszeit statt UTC).
+TIMEZONE = "Europe/Berlin"
 
 # ---- PIN-Schutz ----
 # In der Native-Version aktiviert der Installer den PIN per Default und

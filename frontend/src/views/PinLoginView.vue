@@ -22,7 +22,7 @@
           />
         </div>
 
-        <div v-if="error" class="text-red-600 text-sm text-center">
+        <div v-if="error" role="alert" class="text-red-600 text-sm text-center">
           {{ error }}
         </div>
 
@@ -31,7 +31,7 @@
           class="btn btn-primary w-full"
           :disabled="!pin || auth.loading"
         >
-          {{ auth.loading ? 'Pruefen...' : 'Anmelden' }}
+          {{ auth.loading ? 'Prüfen…' : 'Anmelden' }}
         </button>
       </form>
     </div>
@@ -42,6 +42,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { safeRedirect } from '../router'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -53,18 +54,6 @@ const pinInput = ref(null)
 onMounted(() => {
   pinInput.value?.focus()
 })
-
-// H-FE-1: redirect-Param muss einem internen Pfad entsprechen. Werte wie
-// `https://evil.com`, `//evil.com/x`, oder `javascript:` werden ignoriert und
-// fallen auf `/` zurueck. Vue-Router interpretiert "//evil" als Pfad, aber
-// das LAN-Risiko reicht fuer die Whitelist-Pruefung.
-function safeRedirect(raw) {
-  if (typeof raw !== 'string' || raw.length === 0) return '/'
-  if (!raw.startsWith('/')) return '/'
-  if (raw.startsWith('//')) return '/'
-  if (raw.startsWith('/\\')) return '/'
-  return raw
-}
 
 async function handleLogin() {
   error.value = ''

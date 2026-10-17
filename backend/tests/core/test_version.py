@@ -26,7 +26,20 @@ class TestReadAppVersion:
     def test_unknown_when_nothing_found(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.delattr(sys, "frozen", raising=False)
+        # Modul "liegt" in einem Repo ohne VERSION-Datei
+        monkeypatch.setattr(v, "__file__", str(tmp_path / "repo" / "backend" / "app" / "core" / "version.py"))
         assert v.read_app_version() == v.UNKNOWN_VERSION
+
+    def test_dev_start_from_backend_dir_reads_repo_version(self, tmp_path, monkeypatch):
+        """Dev: CWD = backend/ (uvicorn app.main:app) -> VERSION im Repo-Root."""
+        repo = tmp_path / "repo"
+        backend = repo / "backend"
+        (backend / "app" / "core").mkdir(parents=True)
+        (repo / "VERSION").write_text("1.6.0-dev", encoding="utf-8")
+        monkeypatch.chdir(backend)
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setattr(v, "__file__", str(backend / "app" / "core" / "version.py"))
+        assert v.read_app_version() == "1.6.0-dev"
 
     def test_native_frozen_reads_install_root(self, tmp_path, monkeypatch):
         """Native: CWD = <install>/backend (NSSM AppDirectory), VERSION liegt in <install>/."""

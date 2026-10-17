@@ -2,36 +2,27 @@
 
 import uuid
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
-from app.models.document import Document, DocumentType, TaxCategory
+from app.models.document import Document, TaxCategory
 from app.services.tax_export_service import get_tax_summary, validate_export
+from tests.factories import make_document
 
 
 async def _create_tax_doc(session, year: int, amount: float, category: TaxCategory) -> Document:
     """Hilfsfunktion: Erstellt ein steuerrelevantes Dokument."""
-    doc_id = str(uuid.uuid4())
-    doc = Document(
-        id=doc_id,
-        original_filename="beleg.pdf",
-        stored_filename=f"{doc_id}_beleg.pdf",
-        file_path=f"./data/archive/{doc_id}_beleg.pdf",
-        file_type="pdf",
-        file_size_bytes=1000,
-        file_hash=str(uuid.uuid4()),
-        document_type=DocumentType.RECHNUNG,
+    return await make_document(
+        session,
+        commit=True,
         title="Testbeleg",
-        ocr_text="test",
         tax_relevant=True,
         tax_year=year,
         tax_category=category,
         amount=amount,
         document_date=date(year, 6, 15),
     )
-    session.add(doc)
-    await session.commit()
-    return doc
 
 
 @pytest.mark.asyncio
@@ -75,25 +66,15 @@ class TestTaxValidation:
 
     async def test_warnings_for_missing_amount(self, db_session):
         """Warnung bei fehlendem Betrag."""
-        doc_id = str(uuid.uuid4())
-        doc = Document(
-            id=doc_id,
-            original_filename="beleg.pdf",
-            stored_filename=f"{doc_id}_beleg.pdf",
-            file_path=f"./data/archive/{doc_id}_beleg.pdf",
-            file_type="pdf",
-            file_size_bytes=1000,
-            file_hash=str(uuid.uuid4()),
-            document_type=DocumentType.RECHNUNG,
+        await make_document(
+            db_session,
+            commit=True,
             title="Beleg ohne Betrag",
-            ocr_text="test",
             tax_relevant=True,
             tax_year=2025,
             tax_category=TaxCategory.WERBUNGSKOSTEN,
             amount=None,
         )
-        db_session.add(doc)
-        await db_session.commit()
 
         result = await validate_export(db_session, 2025)
         assert any("Betrag" in w for w in result["warnings"])
@@ -104,6 +85,7 @@ class TestBuildZip:
 
     def _doc_data(self, file_path, category: TaxCategory, amount):
         return {
+            "id": uuid.uuid4().hex,
             "tax_category": category,
             "document_date": date(2025, 3, 1),
             "title": "Handwerker Bad",
@@ -116,7 +98,6 @@ class TestBuildZip:
         }
 
     def test_zip_contains_pdf_and_csv(self, tmp_path):
-        import io
         import zipfile
 
         from app.services.tax_export_service import _build_zip_sync
@@ -125,13 +106,14 @@ class TestBuildZip:
         beleg.write_bytes(b"%PDF-1.4 dummy")
         cat_a, cat_b = list(TaxCategory)[:2]
         docs = [
-            self._doc_data(beleg, cat_a, 119.99),
+            self._doc_data(beleg, cat_a, Decimal("119.99")),
             self._doc_data(beleg, cat_b, None),
         ]
 
-        data = _build_zip_sync(docs, 2025, include_pdf=True, include_csv=True)
+        target = tmp_path / "out.zip"
+        _build_zip_sync(docs, 2025, include_pdf=True, include_csv=True, target=target)
 
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        with zipfile.ZipFile(target) as zf:
             names = zf.namelist()
             assert "Steuerpaket_2025/Uebersicht.pdf" in names
             assert "Steuerpaket_2025/Gesamtuebersicht.csv" in names
@@ -139,23 +121,25 @@ class TestBuildZip:
             assert pdf.startswith(b"%PDF")
             assert len(pdf) > 1000
             csv_text = zf.read("Steuerpaket_2025/Gesamtuebersicht.csv").decode("utf-8-sig")
-            assert "119.99" in csv_text
+            # Deutsches Zahlenformat (Excel-tauglich mit ';'-Trenner)
+            assert "119,99" in csv_text
+            assert "119.99" not in csv_text
             # Zwei Belege, je eine Kategorie-Datei
             assert sum(1 for n in names if n.endswith(".pdf") and "Uebersicht" not in n) == 2
 
     def test_zip_without_pdf(self, tmp_path):
-        import io
         import zipfile
 
         from app.services.tax_export_service import _build_zip_sync
 
         beleg = tmp_path / "beleg.pdf"
         beleg.write_bytes(b"%PDF-1.4 dummy")
-        docs = [self._doc_data(beleg, list(TaxCategory)[0], 10)]
+        docs = [self._doc_data(beleg, list(TaxCategory)[0], Decimal("10"))]
 
-        data = _build_zip_sync(docs, 2025, include_pdf=False, include_csv=False)
+        target = tmp_path / "out.zip"
+        _build_zip_sync(docs, 2025, include_pdf=False, include_csv=False, target=target)
 
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        with zipfile.ZipFile(target) as zf:
             names = zf.namelist()
         assert "Steuerpaket_2025/Uebersicht.pdf" not in names
         assert not any(n.endswith(".csv") for n in names)

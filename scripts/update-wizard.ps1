@@ -5,8 +5,10 @@
 # Flow:
 #   1. Backup (Service laeuft noch) via Backend-Exe --backup
 #   2. Service ZettelwirtschaftBackend stoppen
-#   3. Dateien aktualisieren (robocopy, additiv, ohne Uninstall.exe)
-#   4. Service starten (Alembic-Migrationen laufen beim Start)
+#   3. Dateien aktualisieren: backend\, frontend\, bin\ gespiegelt (robocopy /MIR,
+#      keine Altdateien), Dateien im Hauptordner additiv (Uninstall.exe bleibt)
+#   4. Dienst-Einstellungen nachziehen (NSSM AppRotateOnline), Service starten
+#      (Alembic-Migrationen laufen beim Start)
 
 [CmdletBinding()]
 param(
@@ -29,10 +31,21 @@ $WizardDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServiceName = 'ZettelwirtschaftBackend'
 
 # ------------------------------------------------------------ Hilfsfunktionen
+# 64-Bit-Ansicht zuerst; Fallback WOW6432Node: aeltere Setups schrieben als
+# 32-Bit-NSIS-Prozess ohne SetRegView 64 dorthin.
+$RegViews = @(
+    @{ App = 'HKLM:\SOFTWARE\Zettelwirtschaft'; Uninstall = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft' },
+    @{ App = 'HKLM:\SOFTWARE\WOW6432Node\Zettelwirtschaft'; Uninstall = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft' }
+)
+
 function Get-RegValue([string]$name) {
-    try {
-        return (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Zettelwirtschaft' -Name $name -ErrorAction Stop).$name
-    } catch { return $null }
+    foreach ($key in ($RegViews | ForEach-Object { $_.App })) {
+        try {
+            $val = (Get-ItemProperty -Path $key -Name $name -ErrorAction Stop).$name
+            if ($val) { return $val }
+        } catch { }
+    }
+    return $null
 }
 
 function Get-AppVersion([string]$dir) {
@@ -160,7 +173,7 @@ function Show-WelcomePage {
     $lbl2.Text = "Dieser Assistent aktualisiert Zettelwirtschaft auf eine neuere Version.`r`n`r`n" +
         "   1. Sicherungs-Backup (Service laeuft noch)`r`n" +
         "   2. Dienst stoppen`r`n" +
-        "   3. Neue Dateien ueber die bestehenden kopieren`r`n" +
+        "   3. Programmdateien ersetzen (Daten und Einstellungen bleiben)`r`n" +
         "   4. Dienst starten (Datenbank-Migrationen laufen automatisch)"
     $lbl2.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $lbl2.Location = New-Object System.Drawing.Point(20, 50)
@@ -310,9 +323,22 @@ function Step-Backup {
         $psi.RedirectStandardError = $true
         $psi.CreateNoWindow = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
-        $stdout = $proc.StandardOutput.ReadToEnd()
-        $stderr = $proc.StandardError.ReadToEnd()
+        # Beide Pipes asynchron lesen: sequentielles ReadToEnd blockiert, sobald
+        # der Prozess mehr als den Pipe-Puffer (~4 KB) auf stderr schreibt.
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        $deadline = (Get-Date).AddMinutes(30)
+        while (-not $proc.WaitForExit(200)) {
+            if (-not $Headless) { [System.Windows.Forms.Application]::DoEvents() }
+            if ((Get-Date) -gt $deadline) {
+                try { $proc.Kill() } catch { }
+                Write-Log 'WARNUNG: Backup nach 30 Minuten abgebrochen (Zeitlimit)'
+                Set-StepStatus 'backup' 'warn'; return $true
+            }
+        }
         $proc.WaitForExit()
+        $stdout = $outTask.Result
+        $stderr = $errTask.Result
         if ($proc.ExitCode -eq 0) {
             Write-Log "Backup erstellt: $($stdout.Trim())"
             Set-StepStatus 'backup' 'ok'; return $true
@@ -347,28 +373,53 @@ function Step-StopService {
     }
 }
 
+# Ordner, die komplett zur installierten Version gehoeren (keine Nutzerdaten):
+# werden gespiegelt, damit veraltete Dateien (alte .pyd/.dll, doppelte
+# *.dist-info, gehashte Frontend-Assets) nicht liegen bleiben.
+$VersionOwnedDirs = @('backend', 'frontend', 'bin')
+$RobocopyQuiet = @('/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS', '/R:2', '/W:2')
+
 function Step-CopyFiles {
     Set-StepStatus 'copy' 'running'
-    Write-Log 'Kopiere neue Dateien (robocopy, additiv)...'
+    Write-Log 'Kopiere neue Dateien (robocopy)...'
     if ($DryRun) { Start-Sleep -Seconds 1; Set-StepStatus 'copy' 'ok'; return $true }
     try {
-        $rcArgs = @(
-            $WizardDirResolved, $InstallDir, '/E',
-            '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS',
-            '/R:2', '/W:2',
-            '/XF', 'Uninstall.exe'
-        )
-        Write-Log "  robocopy $WizardDirResolved -> $InstallDir"
-        $out = & robocopy.exe @rcArgs 2>&1
+        # Vorab pruefen: ein unvollstaendiges Update-Paket darf die Installation
+        # nicht per /MIR leeren.
+        foreach ($sub in $VersionOwnedDirs) {
+            if (-not (Test-Path -LiteralPath (Join-Path $WizardDirResolved $sub))) {
+                Write-Log "FEHLER: Update-Paket unvollstaendig - Ordner '$sub' fehlt in $WizardDirResolved"
+                Set-StepStatus 'copy' 'fail'; return $false
+            }
+        }
+        foreach ($sub in $VersionOwnedDirs) {
+            $src = Join-Path $WizardDirResolved $sub
+            $dst = Join-Path $InstallDir $sub
+            Write-Log "  robocopy /MIR $src -> $dst"
+            $out = & robocopy.exe (@($src, $dst, '/MIR') + $RobocopyQuiet) 2>&1
+            if ($LASTEXITCODE -ge 8) {
+                Write-Log "FEHLER: robocopy ($sub) exit=$LASTEXITCODE"
+                foreach ($line in $out) { Write-Log "  $line" }
+                Set-StepStatus 'copy' 'fail'; return $false
+            }
+        }
+        # Dateien im Hauptordner (Skripte, VERSION, nssm.exe ...) additiv und ohne
+        # Unterordner: Uninstall.exe und eigene Dateien bleiben erhalten.
+        Write-Log "  robocopy $WizardDirResolved -> $InstallDir (nur Dateien im Hauptordner)"
+        $out = & robocopy.exe (@($WizardDirResolved, $InstallDir, '/XF', 'Uninstall.exe') + $RobocopyQuiet) 2>&1
         $rc = $LASTEXITCODE
         if ($rc -lt 8) {
             Write-Log "Dateien aktualisiert (robocopy exit=$rc)"
             # M2: Registry-Version nachziehen. Sonst zeigen HKLM und "Programme &
             # Features" weiter die alte Version -> falsche Basis fuer eine spaetere
             # Update-/Uninstall-Entscheidung. Nicht-fatal bei Fehler.
+            # In die Ansicht schreiben, in der die Installation registriert ist
+            # (aeltere Setups: WOW6432Node, siehe $RegViews).
             try {
-                Set-ItemProperty -Path 'HKLM:\SOFTWARE\Zettelwirtschaft' -Name 'Version' -Value $NewVersion -ErrorAction Stop
-                Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft' -Name 'DisplayVersion' -Value $NewVersion -ErrorAction SilentlyContinue
+                $view = @($RegViews | Where-Object { Test-Path -LiteralPath $_.App }) | Select-Object -First 1
+                if (-not $view) { throw 'Registry-Schluessel der Installation nicht gefunden' }
+                Set-ItemProperty -Path $view.App -Name 'Version' -Value $NewVersion -ErrorAction Stop
+                Set-ItemProperty -Path $view.Uninstall -Name 'DisplayVersion' -Value $NewVersion -ErrorAction SilentlyContinue
                 Write-Log "Registry-Version aktualisiert: $NewVersion"
             } catch {
                 Write-Log "WARNUNG: Registry-Version nicht aktualisiert: $_"
@@ -384,6 +435,17 @@ function Step-CopyFiles {
     }
 }
 
+# Dienst-Einstellungen, die neuere Versionen von service-install.bat setzen,
+# auch bei bestehenden Installationen nachziehen (der Wizard registriert den
+# Dienst nicht neu). Nicht-fatal.
+function Update-ServiceSettings {
+    $nssm = Join-Path $InstallDir 'nssm.exe'
+    if (-not (Test-Path -LiteralPath $nssm)) { Write-Log 'WARNUNG: nssm.exe fehlt - Dienst-Einstellungen unveraendert'; return }
+    $null = & $nssm set $ServiceName AppRotateOnline 1 2>&1
+    if ($LASTEXITCODE -eq 0) { Write-Log 'Log-Rotation im laufenden Betrieb aktiviert (AppRotateOnline)' }
+    else { Write-Log "WARNUNG: nssm set AppRotateOnline fehlgeschlagen (exit=$LASTEXITCODE)" }
+}
+
 function Step-StartService {
     Set-StepStatus 'start' 'running'
     Write-Log "Starte Dienst $ServiceName (Migrationen laufen beim Start)..."
@@ -396,6 +458,7 @@ function Step-StartService {
             Write-Log "WARNUNG: Dienst $ServiceName nicht gefunden - Start uebersprungen"
             Set-StepStatus 'start' 'warn'; return $true
         }
+        Update-ServiceSettings
         Start-Service -Name $ServiceName -ErrorAction Stop
         $svc.WaitForStatus('Running', (New-TimeSpan -Seconds 120))
         Write-Log 'Dienst laeuft'

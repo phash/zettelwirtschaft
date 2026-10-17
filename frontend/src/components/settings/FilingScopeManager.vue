@@ -4,29 +4,39 @@ import { createFilingScope, updateFilingScope, deleteFilingScope } from '../../s
 import { useNotificationStore } from '../../stores/notifications'
 import { useFilingScopes } from '../../composables/useFilingScopes'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
+import { apiErrorMessage } from '../../utils/apiErrors'
 
 const notify = useNotificationStore()
 
-// H-FE-5: scopes aus dem shared Composable. CRUD-Operationen invalidieren
-// den Cache, sodass alle anderen Views (Documents, Search, Tax, Chat, Detail)
-// die Aenderung beim naechsten Mount oder direkt ueber Reactivity sehen.
-const { scopes, ensureLoaded, invalidate } = useFilingScopes()
+// H-FE-5: scopes aus dem shared Composable. Nach CRUD-Operationen laedt
+// reload() frisch; die alte Liste bleibt bis dahin stehen, sodass alle anderen
+// Views (Documents, Search, Tax, Chat, Detail) nie kurz leer laufen.
+const { scopes, ensureLoaded, reload } = useFilingScopes()
 const scopeForm = ref({ name: '', description: '', keywords: '', is_default: false, color: '#3B82F6' })
 const editingScopeId = ref(null)
 const showScopeForm = ref(false)
 const deletingScopeId = ref(null)
+const nameError = ref('')
 
-async function loadScopes() {
-  await ensureLoaded(true)
+// Nach einer erfolgreichen Aenderung: Liste neu laden; ein Ladefehler wird
+// gemeldet, die bisherige Liste bleibt sichtbar.
+async function reloadScopes() {
+  try {
+    await reload()
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Ablagebereiche konnten nicht neu geladen werden.'))
+  }
 }
 
 function startNewScope() {
+  nameError.value = ''
   editingScopeId.value = null
   scopeForm.value = { name: '', description: '', keywords: '', is_default: false, color: '#3B82F6' }
   showScopeForm.value = true
 }
 
 function startEditScope(scope) {
+  nameError.value = ''
   editingScopeId.value = scope.id
   scopeForm.value = {
     name: scope.name,
@@ -39,13 +49,19 @@ function startEditScope(scope) {
 }
 
 async function saveScope() {
+  const name = scopeForm.value.name.trim()
+  if (!name) {
+    nameError.value = 'Bitte einen Namen eingeben.'
+    return
+  }
+  nameError.value = ''
   const keywords = scopeForm.value.keywords
     .split(',')
     .map(k => k.trim())
     .filter(k => k)
   const payload = {
-    name: scopeForm.value.name,
-    description: scopeForm.value.description || null,
+    name,
+    description: scopeForm.value.description.trim() || null,
     keywords,
     is_default: scopeForm.value.is_default,
     color: scopeForm.value.color,
@@ -59,11 +75,11 @@ async function saveScope() {
       notify.success('Ablagebereich erstellt.')
     }
     showScopeForm.value = false
-    invalidate()
-    await ensureLoaded(true)
   } catch (e) {
-    notify.error(e.response?.data?.detail || 'Fehler beim Speichern.')
+    notify.error(apiErrorMessage(e, 'Fehler beim Speichern.'))
+    return
   }
+  await reloadScopes()
 }
 
 async function confirmDeleteScope() {
@@ -71,12 +87,12 @@ async function confirmDeleteScope() {
     await deleteFilingScope(deletingScopeId.value)
     notify.success('Ablagebereich gelöscht.')
     deletingScopeId.value = null
-    invalidate()
-    await ensureLoaded(true)
   } catch (e) {
-    notify.error(e.response?.data?.detail || 'Löschen fehlgeschlagen.')
+    notify.error(apiErrorMessage(e, 'Löschen fehlgeschlagen.'))
     deletingScopeId.value = null
+    return
   }
+  await reloadScopes()
 }
 
 // H-FE-4: Kind-Komponente laedt selbst, kein defineExpose-Pattern mehr.
@@ -122,21 +138,30 @@ onMounted(async () => {
         {{ editingScopeId ? 'Ablagebereich bearbeiten' : 'Neuer Ablagebereich' }}
       </h3>
       <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Name</label>
-        <input v-model="scopeForm.name" class="input" placeholder="z.B. Praxis Dr. Müller" />
+        <label for="scope-name" class="block text-xs font-medium text-gray-500 mb-1">Name</label>
+        <input
+          id="scope-name"
+          v-model="scopeForm.name"
+          class="input"
+          placeholder="z.B. Praxis Dr. Müller"
+          required
+          :aria-invalid="!!nameError"
+          :aria-describedby="nameError ? 'scope-name-error' : undefined"
+        />
+        <p v-if="nameError" id="scope-name-error" class="mt-1 text-xs text-red-600">{{ nameError }}</p>
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Beschreibung</label>
-        <input v-model="scopeForm.description" class="input" placeholder="Optional" />
+        <label for="scope-description" class="block text-xs font-medium text-gray-500 mb-1">Beschreibung</label>
+        <input id="scope-description" v-model="scopeForm.description" class="input" placeholder="Optional" />
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-500 mb-1">Schlüsselwörter (kommagetrennt)</label>
-        <input v-model="scopeForm.keywords" class="input" placeholder="z.B. KBV, Kassenärztliche, Praxis" />
+        <label for="scope-keywords" class="block text-xs font-medium text-gray-500 mb-1">Schlüsselwörter (kommagetrennt)</label>
+        <input id="scope-keywords" v-model="scopeForm.keywords" class="input" placeholder="z.B. KBV, Kassenärztliche, Praxis" />
       </div>
       <div class="flex items-center gap-4">
         <div class="flex items-center gap-2">
-          <label class="block text-xs font-medium text-gray-500">Farbe</label>
-          <input v-model="scopeForm.color" type="color" class="h-8 w-8 rounded border border-gray-300 cursor-pointer" />
+          <label for="scope-color" class="block text-xs font-medium text-gray-500">Farbe</label>
+          <input id="scope-color" v-model="scopeForm.color" type="color" class="h-8 w-8 rounded border border-gray-300 cursor-pointer" />
         </div>
         <label class="flex items-center gap-2">
           <input type="checkbox" v-model="scopeForm.is_default" class="rounded border-gray-300" />

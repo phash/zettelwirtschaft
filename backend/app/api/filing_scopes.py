@@ -1,19 +1,36 @@
 """Ablagebereiche (Filing Scopes) API."""
 
+import asyncio
 import json
 import logging
-import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.models.document import Document, DocumentStatus
-from app.models.filing_scope import FilingScope, generate_slug
+from app.models.document import Document
+from app.models.filing_scope import FilingScope
 from app.schemas.filing_scope import FilingScopeCreate, FilingScopeResponse, FilingScopeUpdate
+from app.services import vectorize_service
+from app.services.file_relocation import (
+    FileMove,
+    RelocationError,
+    copy_files,
+    discard_copies,
+    is_strict_subdir,
+    known_scope_slugs,
+    plan_move,
+    prune_empty_dirs,
+    remove_sources,
+)
+from app.services.filing_scope_service import (
+    SCOPE_NAME_EXISTS_MESSAGE,
+    create_scope,
+    find_scope_by_name,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["filing-scopes"])
@@ -34,7 +51,7 @@ def _scope_to_response(scope: FilingScope) -> dict:
 
 
 @router.get("/filing-scopes", response_model=list[FilingScopeResponse])
-async def list_filing_scopes(session: AsyncSession = Depends(get_db)):
+async def list_filing_scopes(session: AsyncSession = Depends(get_db, scope="function")):
     """Listet alle Ablagebereiche auf."""
     result = await session.execute(
         select(FilingScope).order_by(FilingScope.is_default.desc(), FilingScope.name)
@@ -46,42 +63,20 @@ async def list_filing_scopes(session: AsyncSession = Depends(get_db)):
 @router.post("/filing-scopes", response_model=FilingScopeResponse, status_code=201)
 async def create_filing_scope(
     data: FilingScopeCreate,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Erstellt einen neuen Ablagebereich."""
-    # Pruefen ob Name schon existiert
-    existing = await session.execute(
-        select(FilingScope).where(FilingScope.name == data.name)
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(409, f"Ablagebereich '{data.name}' existiert bereits")
+    if await find_scope_by_name(session, data.name):
+        raise HTTPException(409, SCOPE_NAME_EXISTS_MESSAGE)
 
-    slug = generate_slug(data.name)
-
-    # Slug-Kollision pruefen
-    slug_check = await session.execute(
-        select(FilingScope).where(FilingScope.slug == slug)
-    )
-    if slug_check.scalar_one_or_none():
-        raise HTTPException(409, f"Slug '{slug}' existiert bereits")
-
-    # Wenn neuer Scope Default sein soll, andere zuruecksetzen
-    if data.is_default:
-        from sqlalchemy import update
-        await session.execute(
-            update(FilingScope).values(is_default=False)
-        )
-
-    scope = FilingScope(
-        name=data.name,
-        slug=slug,
+    scope = await create_scope(
+        session,
+        data.name,
         description=data.description,
-        keywords=json.dumps(data.keywords, ensure_ascii=False),
+        keywords=data.keywords,
         is_default=data.is_default,
         color=data.color,
     )
-    session.add(scope)
-    await session.flush()
     return _scope_to_response(scope)
 
 
@@ -89,7 +84,7 @@ async def create_filing_scope(
 async def update_filing_scope(
     scope_id: str,
     data: FilingScopeUpdate,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Aktualisiert einen Ablagebereich."""
     result = await session.execute(
@@ -100,11 +95,9 @@ async def update_filing_scope(
         raise HTTPException(404, "Ablagebereich nicht gefunden")
 
     if data.name is not None and data.name != scope.name:
-        existing = await session.execute(
-            select(FilingScope).where(FilingScope.name == data.name)
-        )
-        if existing.scalar_one_or_none():
-            raise HTTPException(409, f"Name '{data.name}' existiert bereits")
+        existing = await find_scope_by_name(session, data.name)
+        if existing and existing.id != scope.id:
+            raise HTTPException(409, SCOPE_NAME_EXISTS_MESSAGE)
         scope.name = data.name
         # Slug bleibt stabil - Aenderung wuerde Archiv-Dateipfade brechen
 
@@ -118,7 +111,6 @@ async def update_filing_scope(
         scope.color = data.color
 
     if data.is_default is True:
-        from sqlalchemy import update
         await session.execute(
             update(FilingScope).values(is_default=False)
         )
@@ -143,12 +135,18 @@ async def update_filing_scope(
 @router.delete("/filing-scopes/{scope_id}", status_code=204)
 async def delete_filing_scope(
     scope_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    """Loescht einen Ablagebereich. Dokumente + Archiv-Dateien werden auf den
-    Default umgehaengt (H-6). Vorher: Dateien blieben unter dem alten Slug-Ordner
-    liegen (`data/archive/{old_slug}/...`) und waren ueber Backups inkonsistent.
+    """Loescht einen Ablagebereich. Dokumente + Archiv-Dateien wandern in den
+    Standard-Bereich (H-6).
+
+    Rollback-sicher: erst alle Dateien kopieren, dann DB committen, dann
+    Originale loeschen. Kann eine Datei nicht kopiert werden, bricht der
+    Vorgang ohne Aenderung ab. Der alte Slug-Ordner wird nie rekursiv
+    geloescht — nur leer gewordene Ordner werden entfernt. (Vorher: rmtree
+    loeschte Dateien von Dokumenten, die per PATCH/Review in einen anderen
+    Bereich gewechselt waren, und bei leerem Slug das ganze Archiv.)
     """
     result = await session.execute(
         select(FilingScope).where(FilingScope.id == scope_id)
@@ -158,7 +156,7 @@ async def delete_filing_scope(
         raise HTTPException(404, "Ablagebereich nicht gefunden")
 
     if scope.is_default:
-        raise HTTPException(400, "Standard-Ablagebereich kann nicht geloescht werden")
+        raise HTTPException(400, "Standard-Ablagebereich kann nicht gelöscht werden")
 
     # Sicherstellen dass nicht der letzte
     count_result = await session.execute(
@@ -166,7 +164,7 @@ async def delete_filing_scope(
     )
     total = count_result.scalar() or 0
     if total <= 1:
-        raise HTTPException(400, "Der letzte Ablagebereich kann nicht geloescht werden")
+        raise HTTPException(400, "Der letzte Ablagebereich kann nicht gelöscht werden")
 
     # Default-Scope finden
     default_result = await session.execute(
@@ -174,61 +172,78 @@ async def delete_filing_scope(
     )
     default_scope = default_result.scalar_one_or_none()
     if default_scope is None:
-        raise HTTPException(500, "Kein Standard-Ablagebereich konfiguriert — Loeschen abgebrochen")
-
-    # 1. Betroffene Dokumente holen (vor UPDATE) damit wir die Dateien physisch
-    # umkopieren koennen. file_path zeigt aktuell auf {archive}/{old_slug}/...
-    docs_result = await session.execute(
-        select(Document).where(Document.filing_scope_id == scope_id)
-    )
-    docs = docs_result.scalars().all()
+        raise HTTPException(500, "Kein Standard-Ablagebereich konfiguriert — Löschen abgebrochen")
 
     archive_root = Path(settings.ARCHIVE_DIR).resolve()
-    old_prefix = archive_root / scope.slug
-    new_prefix = archive_root / default_scope.slug
+    old_prefix = (archive_root / scope.slug).resolve() if scope.slug else archive_root
+    # Leerer/kaputter Slug (Altbestand): Scope-Ordner waere das Archiv selbst
+    # -> keinerlei Datei-Operationen, nur DB umhaengen.
+    file_ops = is_strict_subdir(old_prefix, archive_root)
 
-    # 2. Dateien verschieben + file_path aktualisieren
+    # 1. Betroffen: Dokumente des Bereichs UND Dateien, die noch unter dem
+    # alten Slug-Ordner liegen (Dokument hat per PATCH/Review den Bereich
+    # gewechselt, die Datei aber nicht).
+    conditions = [Document.filing_scope_id == scope_id]
+    if file_ops:
+        conditions.append(Document.file_path.contains(scope.slug))
+    docs_result = await session.execute(select(Document).where(or_(*conditions)))
+    docs = docs_result.scalars().all()
+    reassigned_ids = [d.id for d in docs if d.filing_scope_id == scope_id]
+
+    moves: list[FileMove] = []
+    if file_ops:
+        slugs = await known_scope_slugs(session)
+        scope_slugs = {s.id: s.slug for s in (await session.execute(select(FilingScope))).scalars()}
+        for doc in docs:
+            source = Path(doc.file_path).resolve()
+            if doc.filing_scope_id != scope_id and not source.is_relative_to(old_prefix):
+                continue  # Treffer der Substring-Vorauswahl, liegt woanders
+            target_slug = (
+                default_scope.slug
+                if doc.filing_scope_id in (scope_id, None)
+                else scope_slugs.get(doc.filing_scope_id, default_scope.slug)
+            )
+            move = plan_move(doc, target_slug, archive_root, slugs)
+            if move:
+                moves.append(move)
+
+    # 2. Alle Dateien kopieren — bei Fehler bleibt alles unveraendert.
+    try:
+        await copy_files(moves)
+    except RelocationError as exc:
+        raise HTTPException(500, f"{exc} Der Ablagebereich wurde nicht gelöscht.")
+
+    # 3. DB umhaengen + committen
+    new_paths = {m.document_id: str(m.target) for m in moves}
     for doc in docs:
-        try:
-            old_path = Path(doc.file_path).resolve()
-            # Sicherheit: nur verschieben wenn die Datei wirklich unter dem
-            # alten Scope-Ordner liegt (verhindert Schaden bei manipuliertem
-            # file_path).
-            if not old_path.is_file():
-                logger.warning("Datei %s existiert nicht, ueberspringe", old_path)
-                continue
-            try:
-                relative = old_path.relative_to(old_prefix)
-            except ValueError:
-                # Datei lebt nicht unter dem alten Scope-Pfad — nur DB-Update,
-                # Datei wird beim naechsten Re-Index/Backup zurechtgerueckt.
-                logger.info("Datei %s liegt nicht unter %s — nur DB aktualisiert", old_path, old_prefix)
-                continue
-            new_path = new_prefix / relative
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(old_path), str(new_path))
-            doc.file_path = str(new_path)
-        except Exception:
-            logger.warning("Konnte Datei fuer Dokument %s nicht verschieben", doc.id, exc_info=True)
-
-    # 3. DB-Verknuepfung umhaengen (UPDATE auf alle, falls oben uebersprungen)
-    from sqlalchemy import update
+        if doc.id in new_paths:
+            doc.file_path = new_paths[doc.id]
     await session.execute(
         update(Document)
         .where(Document.filing_scope_id == scope_id)
         .values(filing_scope_id=default_scope.id)
     )
-
     await session.delete(scope)
-    await session.flush()
-
-    # 4. Leeren alten Scope-Ordner aufraeumen (best-effort)
     try:
-        if old_prefix.exists():
-            shutil.rmtree(old_prefix, ignore_errors=True)
+        await session.commit()
     except Exception:
-        logger.warning("Konnte alten Scope-Ordner nicht entfernen: %s", old_prefix)
+        await discard_copies(moves)
+        raise
 
-    # 204 No Content — Anzahl verschobener Dokumente steht im Server-Log.
-    from fastapi import Response
+    # 4. Originale loeschen + leer gewordene Ordner entfernen (nur leere)
+    await remove_sources(moves, archive_root)
+    if file_ops:
+        await asyncio.to_thread(prune_empty_dirs, old_prefix, archive_root)
+
+    logger.info(
+        "Ablagebereich '%s' gelöscht: %d Dokumente umgehängt, %d Dateien verschoben",
+        scope.name, len(reassigned_ids), len(moves),
+    )
+
+    # 5. Chroma-Metadaten (filing_scope_id) nachziehen — sonst verschwinden
+    # die Dokumente aus dem scope-gefilterten Chat. Best effort, post-commit
+    # (der Helfer loggt Fehler selbst).
+    if reassigned_ids:
+        await vectorize_service.update_scope_metadata(reassigned_ids, default_scope.id, settings)
+
     return Response(status_code=204)

@@ -22,9 +22,20 @@ import sys
 from pathlib import Path
 
 
+class ConfigNotFoundError(Exception):
+    pass
+
+
 def _set_config_from_args(args: argparse.Namespace) -> None:
+    """--config uebernehmen. Eine explizit angegebene, aber fehlende Datei ist
+    ein Fehler — sonst liefe alles still mit den relativen Defaults
+    (./data/... relativ zum CWD) weiter, z.B. ein "erfolgreiches" Backup der
+    falschen bzw. keiner Datenbank."""
     if args.config:
-        os.environ["ZETTELWIRTSCHAFT_CONFIG"] = str(Path(args.config).resolve())
+        config_path = Path(args.config).resolve()
+        if not config_path.is_file():
+            raise ConfigNotFoundError(f"Konfigurationsdatei nicht gefunden: {config_path}")
+        os.environ["ZETTELWIRTSCHAFT_CONFIG"] = str(config_path)
 
 
 def _ensure_data_dirs() -> None:
@@ -61,8 +72,7 @@ def _run_migrations() -> int:
 
     settings = get_settings()
 
-    db_url = settings.DATABASE_URL
-    db_path = db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+    db_path = str(settings.sqlite_db_path)
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     # Gemeinsame Bootstrap-Helfer mit dem Docker-Pfad (migrate.py).
@@ -97,12 +107,7 @@ def _run_migrations() -> int:
                 # Eben angelegtes Schema entspricht head — direkt stampen.
                 # Holen wir den head dynamisch.
                 from alembic.script import ScriptDirectory
-                from alembic.config import Config as AlembicConfig
-                ini_path = _resolve_alembic_ini()
-                _cfg = AlembicConfig(str(ini_path))
-                if getattr(sys, "frozen", False):
-                    _cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
-                head_rev = ScriptDirectory.from_config(_cfg).get_current_head()
+                head_rev = ScriptDirectory.from_config(_alembic_config()).get_current_head()
                 logging.info("[migrate] Frisches Schema stamping auf %s", head_rev)
                 cur.execute("INSERT INTO alembic_version (version_num) VALUES (?)", (head_rev,))
             else:
@@ -114,16 +119,11 @@ def _run_migrations() -> int:
     finally:
         conn.close()
 
-    # 3. Alembic upgrade head via Public-API (keine subprocess-Calls)
+    # 3. Alembic upgrade head via Public-API (keine subprocess-Calls).
+    # Die DB-URL liest alembic/env.py selbst aus den Settings.
     from alembic import command
-    from alembic.config import Config as AlembicConfig
 
-    ini_path = _resolve_alembic_ini()
-    cfg = AlembicConfig(str(ini_path))
-    if getattr(sys, "frozen", False):
-        cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", db_url.replace("+aiosqlite", ""))
-    command.upgrade(cfg, "head")
+    command.upgrade(_alembic_config(), "head")
     logging.info("[migrate] Alembic-Migrationen abgeschlossen")
 
     # 4. Default-Ablagebereich sicherstellen (frische DBs durchlaufen Migration
@@ -143,6 +143,16 @@ def _resolve_alembic_ini() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "alembic.ini"
     return Path(__file__).resolve().parents[1] / "alembic.ini"
+
+
+def _alembic_config():
+    """Alembic-Config fuer Bundle (Skripte in _MEIPASS) und Dev."""
+    from alembic.config import Config as AlembicConfig
+
+    cfg = AlembicConfig(str(_resolve_alembic_ini()))
+    if getattr(sys, "frozen", False):
+        cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -170,12 +180,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _set_config_from_args(args)
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    try:
+        _set_config_from_args(args)
+    except ConfigNotFoundError as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
 
     if args.version:
         from app.core.version import read_app_version
@@ -189,8 +203,15 @@ def main(argv: list[str] | None = None) -> int:
         from app.config import get_settings
         from app.services.backup_service import create_backup
 
-        settings = get_settings()
-        path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
+        # Exit-Code != 0 bei jedem Fehler: Uninstaller und Update-Wizard melden
+        # nur bei 0 "Backup liegt in ..." — direkt vor "Daten loeschen?".
+        try:
+            settings = get_settings()
+            path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
+        except Exception as exc:
+            logging.exception("Backup fehlgeschlagen")
+            print(f"FEHLER: Backup fehlgeschlagen: {exc}", file=sys.stderr)
+            return 1
         print(path)
         return 0
 

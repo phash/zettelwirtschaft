@@ -20,12 +20,15 @@ COPY --from=builder /install /usr/local
 
 WORKDIR /app
 
-COPY . .
+COPY --chown=appuser:appuser . .
 
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
-
-COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# entrypoint.sh: CRs entfernen (Defense-in-Depth - ein Windows-Checkout ohne
+# passende .gitattributes liefert "#!/bin/bash\r", dann startet der Container
+# nicht) und ausfuehrbar machen (git speichert die Datei als 100644).
+RUN mkdir -p /app/data \
+    && sed -i 's/\r$//' entrypoint.sh \
+    && chmod 755 entrypoint.sh \
+    && chown appuser:appuser /app/data
 
 USER appuser
 

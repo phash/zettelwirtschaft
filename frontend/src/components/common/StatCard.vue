@@ -15,10 +15,9 @@ const colorMap = {
   indigo: 'bg-indigo-50 text-indigo-700',
 }
 
-// FE-M2: Die icon-Prop wurde frueher ignoriert (es gab nur einen #icon-Slot),
-// sodass TaxView/WarrantyView mit icon="document" usw. den Platzhalter (erstes
-// Zeichen des Werts) zeigten. Kleine Glyph-Map als Default-Icon; ohne icon-Prop
-// bleibt der erste-Zeichen-Fallback (Dashboard nutzt nur color, unveraendert).
+// FE-M2: Kleine Glyph-Map fuer die icon-Prop (TaxView/WarrantyView/Dashboard).
+// Kein Fallback auf das erste Zeichen des Werts mehr — das ergab "4 | 4" auf
+// dem Dashboard. Ohne icon-Prop und ohne #icon-Slot entfaellt die Icon-Box.
 const iconMap = {
   document: '📄',
   currency: '€',
@@ -26,14 +25,22 @@ const iconMap = {
   check: '✓',
   warning: '⚠️',
   error: '⛔',
+  calendar: '📅',
+  question: '❓',
+  shield: '🛡️',
+  mail: '✉️',
 }
 </script>
 
 <template>
   <div class="card flex items-center gap-4">
-    <div :class="['flex h-12 w-12 items-center justify-center rounded-lg', colorMap[color]]">
+    <div
+      v-if="$slots.icon || iconMap[icon]"
+      :class="['flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg', colorMap[color]]"
+      aria-hidden="true"
+    >
       <slot name="icon">
-        <span class="text-xl font-bold">{{ iconMap[icon] || String(value).charAt(0) }}</span>
+        <span class="text-xl font-bold">{{ iconMap[icon] }}</span>
       </slot>
     </div>
     <div>

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from app.models.document import DocumentStatus, DocumentType, ReviewStatus, TaxCategory
 
@@ -55,10 +55,6 @@ class ReviewQuestionResponse(BaseModel):
     answered_at: datetime | None = None
 
 
-class ReviewQuestionAnswer(BaseModel):
-    answer: str
-
-
 def _resolve_scope_name(cls, data):
     """Model-Validator: extrahiert filing_scope_name aus ORM-Relationship.
 
@@ -108,10 +104,11 @@ class DocumentResponse(BaseModel):
     # Disk-Name disclosed Innenstruktur des Archivs und half bei Path-Traversal.
     # Frontend nutzt `original_filename` fuer Anzeige + `/api/documents/{id}/file`
     # fuer Download; der interne Name ist nicht noetig.
-    thumbnail_path: str | None = None
+    # Gleiches gilt fuer thumbnail_path (absoluter Server-Pfad, im Native-Modus
+    # inkl. Windows-Benutzername) und file_hash — das Frontend laedt Thumbnails
+    # ueber /api/documents/{id}/thumbnail.
     file_type: str
     file_size_bytes: int
-    file_hash: str
     document_type: DocumentType
     title: str
     document_date: date | None = None
@@ -164,7 +161,6 @@ class DocumentListItem(BaseModel):
     filing_scope_id: str | None = None
     filing_scope_name: str | None = None
     created_at: datetime
-    thumbnail_path: str | None = None
     tags: list[TagResponse] = []
 
     resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
@@ -181,20 +177,56 @@ class PaginatedDocumentsResponse(BaseModel):
     page_size: int
 
 
+# Felder, die in der DB NOT NULL sind: explizites null wird abgelehnt (422)
+# statt als IntegrityError (500) zu enden.
+_UPDATE_REQUIRED_FIELDS = ("title", "document_type", "currency", "tax_relevant")
+
+
 class DocumentUpdate(BaseModel):
-    title: str | None = None
+    title: str | None = Field(None, min_length=1, max_length=500)
     document_type: DocumentType | None = None
     document_date: date | None = None
-    amount: Decimal | None = None
-    currency: str | None = None
-    issuer: str | None = None
-    recipient: str | None = None
-    reference_number: str | None = None
+    # Negative Betraege erlaubt (Gutschriften); Grenzen wie Numeric(12,2).
+    amount: Decimal | None = Field(None, max_digits=12, decimal_places=2)
+    currency: str | None = Field(None, pattern=r"^[A-Z]{3}$")
+    issuer: str | None = Field(None, max_length=500)
+    recipient: str | None = Field(None, max_length=500)
+    reference_number: str | None = Field(None, max_length=200)
     summary: str | None = None
     tax_relevant: bool | None = None
-    tax_year: int | None = None
+    tax_year: int | None = Field(None, ge=1990, le=2100)
     tax_category: TaxCategory | None = None
     filing_scope_id: str | None = None
+
+    @field_validator(
+        "document_date", "amount", "issuer", "recipient", "reference_number",
+        "summary", "tax_year", "tax_category", "filing_scope_id",
+        mode="before",
+    )
+    @classmethod
+    def _blank_to_none(cls, value):
+        """Leeres Formularfeld ("") = Wert loeschen. Frueher endete ein geleertes
+        Betrag-/Datumsfeld mit 422 — falsche Werte liessen sich nie entfernen."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("title", "issuer", "recipient", "reference_number", mode="before")
+    @classmethod
+    def _strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _normalize_currency(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _reject_null_for_required(self):
+        for field in _UPDATE_REQUIRED_FIELDS:
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"Feld '{field}' darf nicht leer sein")
+        return self
 
 
 class TagCreate(BaseModel):

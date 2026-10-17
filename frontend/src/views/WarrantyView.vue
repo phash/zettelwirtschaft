@@ -1,12 +1,11 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
 import { getWarranties, getWarrantyStats } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import StatCard from '../components/common/StatCard.vue'
-import { formatDate } from '../utils/formatters'
+import { formatDate, parseDate } from '../utils/formatters'
+import { pluralize } from '../utils/pluralize'
 
-const router = useRouter()
 const notify = useNotificationStore()
 const loading = ref(true)
 const warranties = ref([])
@@ -32,18 +31,26 @@ async function loadData() {
 
 function statusBadge(w) {
   if (w.is_expired) return { text: 'Abgelaufen', class: 'bg-red-100 text-red-700' }
-  if (w.days_remaining <= 90) return { text: `${w.days_remaining} Tage`, class: 'bg-amber-100 text-amber-700' }
+  if (w.days_remaining === 0) return { text: 'Läuft heute ab', class: 'bg-amber-100 text-amber-700' }
+  if (w.days_remaining <= 90) return { text: pluralize(w.days_remaining, 'Tag', 'Tage'), class: 'bg-amber-100 text-amber-700' }
   return { text: 'Aktiv', class: 'bg-green-100 text-green-700' }
 }
 
+// Anteil der verstrichenen Garantiezeit aus den echten Daten (Kauf → Ende),
+// nicht aus Monaten * 30 — sonst falsch, sobald das Enddatum separat
+// bearbeitet wurde. Ohne Kaufdatum: Beginn = Ende minus Laufzeit in Monaten.
 function progressPercent(w) {
-  const totalDays = (w.warranty_duration_months || 1) * 30
-  const elapsed = totalDays - (w.days_remaining || 0)
-  return Math.min(100, Math.max(0, (elapsed / totalDays) * 100))
-}
-
-function goToDocument(docId) {
-  router.push(`/dokumente/${docId}`)
+  const end = parseDate(w.warranty_end_date)
+  if (!end) return 0
+  let start = parseDate(w.purchase_date)
+  if (!start) {
+    start = new Date(end)
+    start.setMonth(start.getMonth() - (w.warranty_duration_months || 0))
+  }
+  const totalMs = end - start
+  if (totalMs <= 0) return 100
+  const elapsed = Date.now() - start
+  return Math.min(100, Math.max(0, (elapsed / totalMs) * 100))
 }
 
 onMounted(loadData)
@@ -54,7 +61,7 @@ onMounted(loadData)
     <div class="flex items-center justify-between">
       <h1 class="text-2xl font-bold text-gray-900">Garantien</h1>
       <div class="flex items-center gap-2">
-        <select v-model="filterStatus" class="input !w-auto !py-1.5" @change="loadData">
+        <select v-model="filterStatus" class="input !w-auto !py-1.5" aria-label="Status-Filter" @change="loadData">
           <option value="all">Alle</option>
           <option value="active">Aktiv</option>
           <option value="expiring">Bald ablaufend</option>
@@ -92,7 +99,7 @@ onMounted(loadData)
           v-for="w in warranties"
           :key="w.id"
           :to="`/dokumente/${w.document_id}`"
-          :aria-label="`Garantie ${w.product_name} oeffnen`"
+          :aria-label="`Garantie ${w.product_name} öffnen`"
           class="card !p-4 block cursor-pointer no-underline text-inherit hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-primary-500"
         >
           <div class="flex items-start gap-4">

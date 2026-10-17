@@ -1,8 +1,11 @@
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { askQuestion, getChatHistory, clearChatHistory } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useFilingScopes } from '../composables/useFilingScopes'
+import ConfirmDialog from '../components/common/ConfirmDialog.vue'
+import { formatDateTime } from '../utils/formatters'
+import { apiErrorMessage } from '../utils/apiErrors'
 
 const notify = useNotificationStore()
 const messages = ref([])
@@ -13,6 +16,16 @@ const loadingHistory = ref(true)
 const { scopes, ensureLoaded } = useFilingScopes()
 const selectedScopeId = ref(null)
 const messagesContainer = ref(null)
+const showClearConfirm = ref(false)
+
+// Verlauf seitenweise: der Server liefert die neuesten HISTORY_PAGE Nachrichten,
+// "Ältere laden" holt weitere per offset. historyOffset = Anzahl der bereits
+// geladenen bzw. seitdem hinzugekommenen Server-Nachrichten.
+const HISTORY_PAGE = 50
+const historyTotal = ref(0)
+const historyOffset = ref(0)
+const loadingOlder = ref(false)
+const hasOlder = computed(() => historyOffset.value < historyTotal.value)
 
 const exampleQuestions = [
   'Wie viel haben wir dieses Jahr für Versicherungen ausgegeben?',
@@ -24,8 +37,10 @@ const exampleQuestions = [
 async function loadHistory() {
   loadingHistory.value = true
   try {
-    const data = await getChatHistory()
+    const data = await getChatHistory(HISTORY_PAGE, 0)
     messages.value = data.messages
+    historyTotal.value = data.total ?? data.messages.length
+    historyOffset.value = data.messages.length
   } catch {
     // ignore
   } finally {
@@ -34,8 +49,30 @@ async function loadHistory() {
   }
 }
 
-async function loadScopes() {
-  await ensureLoaded()
+async function loadOlder() {
+  if (loadingOlder.value) return
+  loadingOlder.value = true
+  const container = messagesContainer.value
+  const prevHeight = container?.scrollHeight ?? 0
+  try {
+    const data = await getChatHistory(HISTORY_PAGE, historyOffset.value)
+    // Doppelte vermeiden (z.B. wenn eine abgebrochene Frage inzwischen
+    // serverseitig gespeichert wurde und sich der offset verschoben hat).
+    const known = new Set(messages.value.map(m => m.id))
+    const older = data.messages.filter(m => !known.has(m.id))
+    messages.value = [...older, ...messages.value]
+    historyTotal.value = data.total ?? historyTotal.value
+    historyOffset.value = data.messages.length
+      ? historyOffset.value + data.messages.length
+      : historyTotal.value
+    // Scrollposition halten: die bisher oberste Nachricht bleibt sichtbar.
+    await nextTick()
+    if (container) container.scrollTop = container.scrollHeight - prevHeight
+  } catch {
+    notify.error('Ältere Nachrichten konnten nicht geladen werden.')
+  } finally {
+    loadingOlder.value = false
+  }
 }
 
 // AbortController fuer laufende Frage — User kann via "Abbrechen"-Button
@@ -77,14 +114,25 @@ async function sendQuestion(text = null) {
       sources: result.sources || [],
       created_at: new Date().toISOString(),
     })
+    // Frage + Antwort liegen jetzt auch serverseitig im Verlauf.
+    historyOffset.value += 2
+    historyTotal.value += 2
   } catch (e) {
+    // Bei Abbruch und Zeitüberschreitung rechnet das Backend ggf. weiter und
+    // speichert die Antwort später im Verlauf — darauf hinweisen und das
+    // Nachladen anbieten, statt einen Fehler zu behaupten.
     let errorMsg
+    let mayStillAnswer = false
     if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
-      errorMsg = 'Anfrage abgebrochen.'
+      errorMsg = 'Anfrage abgebrochen. Falls der Assistent schon an der Antwort gearbeitet hat, kann sie später im Verlauf erscheinen.'
+      mayStillAnswer = true
+    } else if (e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT') {
+      errorMsg = 'Die Antwort dauert länger als erwartet. Der Assistent arbeitet im Hintergrund weiter — lade den Verlauf in ein paar Minuten neu.'
+      mayStillAnswer = true
     } else if (e.response?.status === 503) {
-      errorMsg = 'Der KI-Assistent ist derzeit nicht verfügbar. Prüfe ob Ollama und ChromaDB laufen.'
+      errorMsg = apiErrorMessage(e, 'Der KI-Assistent ist derzeit nicht verfügbar. Prüfe, ob Ollama und die Vektor-Datenbank laufen.')
     } else {
-      errorMsg = 'Fehler bei der Verarbeitung. Bitte versuche es erneut.'
+      errorMsg = apiErrorMessage(e, 'Fehler bei der Verarbeitung. Bitte versuche es erneut.')
     }
     messages.value.push({
       id: 'temp-error-' + Date.now(),
@@ -92,6 +140,8 @@ async function sendQuestion(text = null) {
       content: errorMsg,
       sources: [],
       created_at: new Date().toISOString(),
+      isError: true,
+      offerReload: mayStillAnswer,
     })
   } finally {
     loading.value = false
@@ -101,9 +151,12 @@ async function sendQuestion(text = null) {
 }
 
 async function doClearHistory() {
+  showClearConfirm.value = false
   try {
     await clearChatHistory()
     messages.value = []
+    historyTotal.value = 0
+    historyOffset.value = 0
     notify.success('Chatverlauf gelöscht.')
   } catch {
     notify.error('Löschen fehlgeschlagen.')
@@ -117,18 +170,10 @@ async function scrollToBottom() {
   }
 }
 
-function formatDate(d) {
-  if (!d) return ''
-  return new Date(d).toLocaleString('de-DE', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+const MESSAGE_TIME_FORMAT = { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }
 
 onMounted(async () => {
-  await Promise.all([loadHistory(), loadScopes()])
+  await Promise.all([loadHistory(), ensureLoaded()])
 })
 </script>
 
@@ -142,6 +187,7 @@ onMounted(async () => {
           v-if="scopes.length > 1"
           v-model="selectedScopeId"
           class="input !py-1 !text-sm !w-auto"
+          aria-label="Ablagebereich für die Frage"
         >
           <option :value="null">Alle Bereiche</option>
           <option v-for="scope in scopes" :key="scope.id" :value="scope.id">
@@ -151,7 +197,7 @@ onMounted(async () => {
       </div>
       <button
         v-if="messages.length > 0"
-        @click="doClearHistory"
+        @click="showClearConfirm = true"
         class="text-sm text-gray-400 hover:text-red-500 transition-colors"
       >
         Verlauf löschen
@@ -190,6 +236,16 @@ onMounted(async () => {
 
       <!-- Message List -->
       <template v-else>
+        <div v-if="hasOlder" class="flex justify-center">
+          <button
+            type="button"
+            @click="loadOlder"
+            :disabled="loadingOlder"
+            class="text-xs text-primary-600 hover:text-primary-700 underline disabled:opacity-50"
+          >
+            {{ loadingOlder ? 'Lade …' : 'Ältere Nachrichten laden' }}
+          </button>
+        </div>
         <div
           v-for="msg in messages"
           :key="msg.id"
@@ -206,7 +262,15 @@ onMounted(async () => {
                 : 'bg-gray-100 text-gray-900',
             ]"
           >
-            <p class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
+            <p class="text-sm whitespace-pre-wrap" :role="msg.isError ? 'alert' : undefined">{{ msg.content }}</p>
+            <button
+              v-if="msg.offerReload"
+              type="button"
+              @click="loadHistory"
+              class="mt-2 text-xs text-primary-700 underline hover:text-primary-800"
+            >
+              Verlauf neu laden
+            </button>
             <!-- Sources -->
             <div v-if="msg.sources?.length" class="mt-2 pt-2 border-t" :class="msg.role === 'user' ? 'border-primary-400' : 'border-gray-200'">
               <p class="text-xs font-medium mb-1" :class="msg.role === 'user' ? 'text-primary-200' : 'text-gray-500'">Quellen:</p>
@@ -226,7 +290,7 @@ onMounted(async () => {
               </div>
             </div>
             <p class="text-[10px] mt-1 text-right" :class="msg.role === 'user' ? 'text-primary-300' : 'text-gray-400'">
-              {{ formatDate(msg.created_at) }}
+              {{ formatDateTime(msg.created_at, MESSAGE_TIME_FORMAT) }}
             </p>
           </div>
         </div>
@@ -251,6 +315,7 @@ onMounted(async () => {
           v-model="question"
           type="text"
           placeholder="Stelle eine Frage zu deinen Dokumenten..."
+          aria-label="Frage an den Assistenten"
           class="input flex-1"
           :disabled="loading"
           maxlength="2000"
@@ -280,5 +345,15 @@ onMounted(async () => {
         </button>
       </form>
     </div>
+
+    <ConfirmDialog
+      :show="showClearConfirm"
+      title="Chatverlauf löschen"
+      message="Soll der gesamte Chatverlauf wirklich gelöscht werden? Das kann nicht rückgängig gemacht werden."
+      confirm-text="Löschen"
+      :danger="true"
+      @confirm="doClearHistory"
+      @cancel="showClearConfirm = false"
+    />
   </div>
 </template>

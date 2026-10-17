@@ -16,6 +16,7 @@ class TaxCategorySummary(BaseModel):
     category: str
     label: str
     document_count: int
+    # Summe nur der EUR-Belege (Fremdwaehrungen stehen in non_eur_documents)
     total_amount: Decimal
 
     @field_serializer("total_amount")
@@ -23,11 +24,26 @@ class TaxCategorySummary(BaseModel):
         return _decimal_to_float(v)
 
 
+class NonEurDocument(BaseModel):
+    """Beleg in Fremdwaehrung — nicht in den EUR-Summen enthalten."""
+    id: str
+    title: str
+    document_date: date | None = None
+    amount: Decimal | None = None
+    currency: str
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return _decimal_to_float(v)
+
+
 class TaxYearSummary(BaseModel):
     year: int
     total_documents: int
+    # Summe nur der EUR-Belege — Fremdwaehrungen werden nicht umgerechnet.
     total_amount: Decimal
     categories: list[TaxCategorySummary]
+    non_eur_documents: list[NonEurDocument] = []
     warnings: list[str] = []
 
     @field_serializer("total_amount")
@@ -47,19 +63,3 @@ class TaxExportValidation(BaseModel):
     total_documents: int
     warnings: list[str]
     ready: bool
-
-
-class TaxDocumentItem(BaseModel):
-    id: str
-    title: str
-    document_type: str
-    document_date: date | None = None
-    amount: Decimal | None = None
-    currency: str = "EUR"
-    issuer: str | None = None
-    tax_category: str | None = None
-    file_type: str
-
-    @field_serializer("amount")
-    def _ser_amount(self, v):
-        return _decimal_to_float(v)

@@ -1,6 +1,14 @@
+import ipaddress
+import logging
 import os
+import sys
+from datetime import timezone, tzinfo
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -14,6 +22,20 @@ from pydantic_settings import (
 # ueberschreiben TOML — z.B. fuer Tests + Docker-Compose).
 # Wenn nicht gesetzt oder Datei fehlt, bleibt der bestehende .env-Pfad aktiv.
 _TOML_PATH = os.environ.get("ZETTELWIRTSCHAFT_CONFIG", "")
+
+DeploymentMode = Literal["native", "docker", "dev"]
+
+# Marker-Dateien, die Docker bzw. Podman in jedem Container anlegen.
+_CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def _is_frozen() -> bool:
+    """True im PyInstaller-Bundle (Native-Windows-Setup)."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _in_container() -> bool:
+    return any(os.path.exists(marker) for marker in _CONTAINER_MARKERS)
 
 
 class Settings(BaseSettings):
@@ -33,14 +55,15 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # Reihenfolge: init > env > dotenv > toml > secrets.
+        # Reihenfolge (frueher gewinnt): init > env > toml > dotenv > secrets.
         # ENV-Vars haben Vorrang vor TOML (wichtig fuer Tests, Docker-Compose,
-        # Override im Service-Manager). TOML hat Vorrang vor .env, weil Native
-        # ohne .env laeuft.
-        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings, dotenv_settings]
+        # Override im Service-Manager). TOML hat Vorrang vor .env: die explizit
+        # per ZETTELWIRTSCHAFT_CONFIG gewaehlte Datei darf nicht von einer
+        # zufaellig im Arbeitsverzeichnis liegenden .env ueberstimmt werden.
+        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
         if cls.model_config.get("toml_file"):
             sources.append(TomlConfigSettingsSource(settings_cls))
-        sources.append(file_secret_settings)
+        sources.extend([dotenv_settings, file_secret_settings])
         return tuple(sources)
 
     # Native-Mode HTTP-Bind (in Docker wird uvicorn ueber entrypoint.sh mit
@@ -68,6 +91,21 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
     OLLAMA_TIMEOUT: int = 300
     OLLAMA_MAX_RETRIES: int = 2
+    # Lese-Timeout (Sekunden) fuer einen JSON-Analyse-Aufruf (Dokumentanalyse,
+    # Verifier, Reranker, E-Mail-Relevanz). Timeouts werden NICHT wiederholt —
+    # ein ueberlastetes Modell wuerde sonst ein Vielfaches davon blockieren.
+    OLLAMA_ANALYSIS_TIMEOUT: int = 120
+    # Kontextfenster pro Aufruf (Chat + Embedding). Ollamas Default (4096)
+    # schneidet lange Belege (Kontoauszuege) stillschweigend ab.
+    OLLAMA_NUM_CTX: int = 8192
+    # Obergrenze erzeugter Tokens fuer JSON-Antworten (Schutz gegen
+    # Endlos-Ausgaben); Freitext-Antworten (Chat) sind nicht begrenzt.
+    OLLAMA_NUM_PREDICT: int = 1024
+    # Wie lange Ollama das Modell nach einem Aufruf im RAM haelt.
+    OLLAMA_KEEP_ALIVE: str = "30m"
+    # "Thinking" bei Hybrid-Modellen (qwen3 u.a.). Aus = schnelle Antworten;
+    # wird nur an Modelle gesendet, die laut /api/show "thinking" koennen.
+    OLLAMA_THINK: bool = False
 
     OCR_LANGUAGES: str = "deu+eng"
     CONFIDENCE_THRESHOLD: float = 0.7
@@ -84,6 +122,14 @@ class Settings(BaseSettings):
     PIN_ENABLED: bool = False
     PIN_CODE: str = ""
     PIN_SESSION_TIMEOUT_MINUTES: int = 1440
+
+    # Reverse-Proxy-Netze (kommagetrennte CIDRs), deren X-Real-IP-/X-Forwarded-
+    # Proto-Header uebernommen werden. Wirkt NUR im Docker-Betrieb (nginx vor dem
+    # nur intern erreichbaren Backend); Native/Dev werten die Header nie aus und
+    # nehmen immer die Socket-Adresse — sonst koennte jeder LAN-Client seine
+    # Lockout-/Rate-Limit-Identitaet frei waehlen. Default: Docker-Adresspool
+    # fuer Bridge-/Compose-Netze.
+    TRUSTED_PROXIES: str = "172.16.0.0/12"
 
     # ChromaDB / RAG
     # Native-Mode: "embedded" laed Chroma als PersistentClient in-process (kein HTTP-Service noetig).
@@ -111,6 +157,17 @@ class Settings(BaseSettings):
 
     # E-Mail
     EMAIL_ENCRYPTION_KEY: str = ""
+    # Socket-Timeout (Sekunden) fuer IMAP — gilt fuer Connect und jedes
+    # spaetere Lesen. Ohne Timeout haengt ein stummer Server (z.B. SSL aus auf
+    # Port 993) den Abruf und den Scheduler fuer immer.
+    IMAP_TIMEOUT: int = 30
+    # Maximal verarbeitete E-Mails pro Abruf und Konto (aelteste zuerst). Der
+    # Rest folgt beim naechsten Scheduler-Tick bzw. naechsten manuellen Abruf.
+    EMAIL_MAX_PER_RUN: int = 25
+
+    # Lokale Zeitzone (IANA-Name) — u.a. fuer CRON-Zeitplaene der E-Mail-Konten
+    # ("0 8 * * *" = 8 Uhr Ortszeit, inkl. Sommer-/Winterzeit).
+    TIMEZONE: str = "Europe/Berlin"
 
     # Update-Pruefung (opt-in, telemetriefrei). Standardmaessig AUS — die App
     # macht ohne ausdrueckliche Aktivierung keinen externen Aufruf. Der
@@ -120,11 +177,122 @@ class Settings(BaseSettings):
     UPDATE_CHECK_ENABLED: bool = False
     UPDATE_MANIFEST_URL: str = "https://zettelwirtschaft.mr-development.de/latest.json"
 
+    @model_validator(mode="after")
+    def _validate_llm_rag_settings(self) -> "Settings":
+        # chunk_text braucht Fortschritt pro Schleife: Overlap < halbe Chunk-Groesse.
+        if self.RAG_CHUNK_SIZE <= 0:
+            raise ValueError("RAG_CHUNK_SIZE muss groesser als 0 sein")
+        if not 0 <= self.RAG_CHUNK_OVERLAP < self.RAG_CHUNK_SIZE // 2:
+            raise ValueError(
+                "RAG_CHUNK_OVERLAP muss zwischen 0 und der halben RAG_CHUNK_SIZE liegen"
+            )
+        for name in ("CONFIDENCE_THRESHOLD", "LLM_VERIFIER_THRESHOLD"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ValueError(f"{name} muss zwischen 0 und 1 liegen")
+        for name in ("OLLAMA_NUM_CTX", "OLLAMA_NUM_PREDICT", "OLLAMA_ANALYSIS_TIMEOUT", "OLLAMA_TIMEOUT"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} muss groesser als 0 sein")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_email_settings(self) -> "Settings":
+        # IMAP_TIMEOUT=0 wuerde den Socket non-blocking schalten, ein Limit 0
+        # wuerde nie eine Mail abholen.
+        for name in ("IMAP_TIMEOUT", "EMAIL_MAX_PER_RUN"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} muss groesser als 0 sein")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pin_settings(self) -> "Settings":
+        # Fail-fast: PIN_ENABLED mit leerem/zu kurzem PIN_CODE haette jeden
+        # (leeren) PIN akzeptiert und gleichzeitig den Warn-Banner versteckt —
+        # das System saehe geschuetzt aus, waere es aber nicht.
+        if self.PIN_ENABLED and len(self.PIN_CODE.strip()) < 4:
+            raise ValueError(
+                "PIN_ENABLED=true erfordert einen PIN_CODE mit mindestens 4 Zeichen "
+                "(in .env bzw. config.toml setzen oder PIN_ENABLED=false)"
+            )
+        for cidr in self._trusted_proxy_cidrs():
+            try:
+                ipaddress.ip_network(cidr, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"TRUSTED_PROXIES enthaelt kein gueltiges Netz: {cidr!r}") from exc
+        return self
+
+    def _trusted_proxy_cidrs(self) -> list[str]:
+        return [c.strip() for c in self.TRUSTED_PROXIES.split(",") if c.strip()]
+
     @property
     def allowed_file_types_list(self) -> list[str]:
         return [ft.strip() for ft in self.ALLOWED_FILE_TYPES.split(",")]
+
+    @property
+    def deployment_mode(self) -> DeploymentMode:
+        """Betriebsart — EINZIGE Stelle, an der sie abgeleitet wird.
+
+        - ``native``: Setup.exe-Installation (PyInstaller-Bundle) bzw. Backend
+          liefert das Frontend selbst aus (FRONTEND_DIST_DIR gesetzt + vorhanden).
+        - ``docker``: Backend laeuft in einem Container hinter nginx.
+        - ``dev``: lokaler Entwicklungsstart (uvicorn --reload, Tests).
+        """
+        if _is_frozen() or (self.FRONTEND_DIST_DIR and Path(self.FRONTEND_DIST_DIR).exists()):
+            return "native"
+        if _in_container():
+            return "docker"
+        return "dev"
+
+    @property
+    def data_dir(self) -> Path:
+        """Datenordner (Elternordner von ARCHIVE_DIR) — Basis fuer backups/,
+        .host-mounts.json, .install-path usw."""
+        return Path(self.ARCHIVE_DIR).parent
+
+    @property
+    def sqlite_db_path(self) -> Path:
+        """Dateipfad der SQLite-DB aus DATABASE_URL
+        (``sqlite+aiosqlite:///./data/x.db`` -> ``./data/x.db``)."""
+        url = self.DATABASE_URL
+        for prefix in ("sqlite+aiosqlite:///", "sqlite+pysqlite:///", "sqlite:///"):
+            if url.startswith(prefix):
+                return Path(url[len(prefix):])
+        raise ValueError(f"DATABASE_URL ist keine SQLite-Datei-URL: {url!r}")
+
+    @property
+    def trusted_proxy_networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        """Netze, deren Proxy-Header uebernommen werden — nur im Docker-Betrieb."""
+        if self.deployment_mode != "docker":
+            return []
+        return [ipaddress.ip_network(c, strict=False) for c in self._trusted_proxy_cidrs()]
+
+    @property
+    def local_tz(self) -> tzinfo:
+        """TIMEZONE als ZoneInfo; ungueltiger Name -> UTC (mit Warnung)."""
+        try:
+            return ZoneInfo(self.TIMEZONE)
+        except (ZoneInfoNotFoundError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Unbekannte Zeitzone TIMEZONE=%r — verwende UTC", self.TIMEZONE
+            )
+            # Bewusst nicht ZoneInfo("UTC"): ohne tzdata (Windows) wuerde auch
+            # der Fallback scheitern.
+            return timezone.utc
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def settings_for_app(app) -> Settings:
+    """Settings fuer Code ausserhalb der Dependency-Injection (Middleware,
+    Rate-Limiter). Respektiert ``app.dependency_overrides`` wie ein
+    ``Depends(get_settings)`` — sonst sehen Tests andere Settings als die
+    Endpoints. ``app`` darf None sein (reine ASGI-Scopes ohne App)."""
+    overrides = getattr(app, "dependency_overrides", None) or {}
+    return overrides.get(get_settings, get_settings)()
+
+
+def settings_for_request(request) -> Settings:
+    """Wie ``settings_for_app`` fuer einen Starlette-Request."""
+    return settings_for_app(request.app)

@@ -1,0 +1,7 @@
+# Repo-Root als Build-Context: nur der benannte Context "repo" des Frontend-
+# Builds (docker-compose additional_contexts / release.yml build-contexts) nutzt
+# ihn, und frontend/Dockerfile braucht daraus ausschliesslich VERSION.
+# Allow-List, damit .env (PIN, E-Mail-Schluessel), data/ (Dokumente), .venv,
+# node_modules und .git nie in einen Build-Context gelangen.
+*
+!VERSION

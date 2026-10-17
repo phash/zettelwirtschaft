@@ -1,5 +1,10 @@
 # E-Mail-Anbindung Implementation Plan
 
+> **Historischer Umsetzungsplan (Stand 2026-03).** Code-Ausschnitte unten sind veraltet (u.a. RFC822-Fetch,
+> pauschales EXPUNGE, CRON in UTC). Aktueller Stand und Korrekturen: siehe Kopf von
+> `2026-03-03-email-integration-design.md` (Fernet = AES-128-CBC, Key-503 statt Auto-Generierung,
+> IDLE = 5-Minuten-Polling).
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Automatischer IMAP-Abruf von E-Mails aus mehreren Konten mit LLM-Relevanzpruefung, einspeisen relevanter Dokumente in die bestehende Verarbeitungs-Pipeline.

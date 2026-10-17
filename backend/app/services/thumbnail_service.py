@@ -3,11 +3,13 @@ import logging
 from pathlib import Path
 
 from app.config import Settings
+from app.core.file_utils import is_image_type, is_pdf_type
 
 # S-LOW3: Decompression-Bomb-Schutz zentral in app.core.image_safety —
-# open_image() wirft oberhalb des Pixel-Limits, generate_thumbnail() faengt das
-# als Fehler (None) ab.
-from app.core.image_safety import open_image
+# load_normalized() wirft oberhalb des Pixel-Limits, generate_thumbnail() faengt
+# das als Fehler (None) ab. Zusaetzlich EXIF-Drehung + Modus-Normalisierung
+# (CMYK-JPEGs liessen sich frueher nicht als PNG speichern).
+from app.core.image_safety import load_normalized
 
 logger = logging.getLogger("zettelwirtschaft.thumbnail")
 
@@ -17,10 +19,13 @@ def _generate_image_thumbnail(
     output_path: Path,
     max_size: int,
 ) -> Path:
-    """Generiert ein Thumbnail aus einem Bild."""
-    with open_image(source_path) as img:
+    """Generiert ein Thumbnail aus einem Bild (EXIF-gedreht, RGB/RGBA/L)."""
+    img = load_normalized(source_path)
+    try:
         img.thumbnail((max_size, max_size))
         img.save(output_path, "PNG")
+    finally:
+        img.close()
     return output_path
 
 
@@ -32,7 +37,11 @@ def _generate_pdf_thumbnail(
     """Generiert ein Thumbnail aus der ersten Seite einer PDF."""
     from pdf2image import convert_from_path
 
-    images = convert_from_path(str(source_path), first_page=1, last_page=1)
+    # size=max_size (int) -> pdftoppm -scale-to: rendert direkt in Zielgroesse
+    # statt die erste Seite mit 200 dpi voll zu rastern (riesige MediaBox).
+    images = convert_from_path(
+        str(source_path), first_page=1, last_page=1, size=max_size,
+    )
     if not images:
         raise ValueError("Keine Seiten in der PDF gefunden")
 
@@ -59,14 +68,14 @@ async def generate_thumbnail(
     max_size = settings.THUMBNAIL_MAX_SIZE
 
     try:
-        if file_type in ("jpg", "jpeg", "png", "bmp", "tiff"):
+        if is_image_type(file_type):
             await asyncio.to_thread(
                 _generate_image_thumbnail,
                 file_path,
                 output_path,
                 max_size,
             )
-        elif file_type == "pdf":
+        elif is_pdf_type(file_type):
             await asyncio.to_thread(
                 _generate_pdf_thumbnail,
                 file_path,

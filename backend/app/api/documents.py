@@ -1,29 +1,30 @@
 import json
 import logging
-import tempfile
+import re
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import raiseload
 
 from app.config import Settings, get_settings
-from app.database import get_db
+from app.core.file_utils import mime_type_for
+from app.core.query_params import parse_document_types
+from app.database import get_db, get_session_factory
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentType, DocumentTag, ReviewStatus, Tag
+from app.models.document import Document, DocumentStatus, DocumentTag, ReviewStatus, Tag
+from app.models.filing_scope import FilingScope
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob
-from app.models.review_question import ReviewQuestion
-from app.models.warranty_info import WarrantyInfo
+from app.models.warranty_info import WarrantyInfo, select_active_document_warranties
 from app.schemas.document import (
     DashboardStats,
     DocumentListItem,
     DocumentResponse,
     DocumentUpdate,
     PaginatedDocumentsResponse,
-    ReviewQuestionAnswer,
-    ReviewQuestionResponse,
     TagCreate,
     TagResponse,
 )
@@ -32,12 +33,52 @@ from app.schemas.processing_job import (
     MultiUploadResponse,
     UploadResponse,
 )
+from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.file_validation_service import FileValidationError
-from app.services.upload_service import process_upload
+from app.services.search_service import (
+    FTS_DOCUMENT_FIELDS,
+    reindex_document_fts,
+    remove_document_from_index,
+)
+from app.services.tax_year import ensure_tax_year
+from app.services.vectorize_service import METADATA_CHUNK_FIELDS
+from app.services.upload_service import discard_upload, process_upload_stream
 
 logger = logging.getLogger("zettelwirtschaft.api.documents")
 
 router = APIRouter()
+
+_NOT_FOUND = "Dokument nicht gefunden"
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+async def _get_active_document_or_404(db: AsyncSession, document_id: str) -> Document:
+    """Laedt ein nicht geloeschtes Dokument. Soft-geloeschte Dokumente sind ueber
+    die API nicht mehr erreichbar (Lesen, Bearbeiten, Datei, Tags)."""
+    result = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.status != DocumentStatus.DELETED,
+        )
+    )
+    document = result.scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return document
+
+
+def _schedule_revectorize(
+    background_tasks: BackgroundTasks,
+    document_id: str,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Re-Vektorisierung nach dem Commit (BackgroundTask laeuft nach der
+    Response; laedt das Dokument in eigener Session, best-effort)."""
+    from app.services.vectorize_service import revectorize_document_safe
+
+    background_tasks.add_task(revectorize_document_safe, document_id, settings, session_factory)
 
 
 # === Upload ===
@@ -46,10 +87,14 @@ router = APIRouter()
 @router.post("/documents/upload", response_model=MultiUploadResponse)
 async def upload_documents(
     files: list[UploadFile],
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> MultiUploadResponse:
-    """Akzeptiert eine oder mehrere Dateien per Multipart-Upload."""
+    """Akzeptiert eine oder mehrere Dateien per Multipart-Upload.
+
+    Jede Datei wird direkt in UPLOAD_DIR gestreamt (keine Zwischenkopie, kein
+    vollstaendiges Einlesen in den RAM) und dort validiert.
+    """
     uploaded: list[UploadResponse] = []
     rejected: list[dict] = []
 
@@ -58,43 +103,35 @@ async def upload_documents(
             rejected.append({"filename": "(unbekannt)", "error": "Kein Dateiname"})
             continue
 
+        job = None
         try:
-            content = await file.read()
-            file_size = len(content)
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp:
-                tmp.write(content)
-                tmp_path = Path(tmp.name)
-
-            try:
-                job = await process_upload(
-                    file_path=tmp_path,
-                    original_name=file.filename,
-                    file_size=file_size,
-                    source=JobSource.UPLOAD,
-                    settings=settings,
-                    db=db,
+            job = await process_upload_stream(
+                fileobj=file.file,
+                original_name=file.filename,
+                declared_size=file.size,
+                source=JobSource.UPLOAD,
+                settings=settings,
+                db=db,
+            )
+            # Pro Datei comitten — sonst rollt ein spaeterer Fehler in der
+            # gleichen Session alle vorherigen Uploads zurueck (H-19).
+            await db.commit()
+            uploaded.append(
+                UploadResponse(
+                    job_id=job.id,
+                    original_filename=job.original_filename,
+                    status=job.status,
+                    message="Dokument wurde zum Verarbeiten eingereicht.",
                 )
-                # Pro Datei comitten — sonst rollt ein spaeterer Fehler in der
-                # gleichen Session alle vorherigen Uploads zurueck (H-19).
-                await db.commit()
-                uploaded.append(
-                    UploadResponse(
-                        document_id=job.id,
-                        original_filename=job.original_filename,
-                        status=job.status,
-                        message="Dokument wurde zum Verarbeiten eingereicht.",
-                    )
-                )
-            finally:
-                tmp_path.unlink(missing_ok=True)
-
+            )
         except FileValidationError as e:
             await db.rollback()
             rejected.append({"filename": e.filename or file.filename, "error": e.message})
         except Exception:
             logger.exception("Fehler beim Upload von %s", file.filename)
             await db.rollback()
+            if job is not None:
+                discard_upload(job)
             rejected.append({"filename": file.filename, "error": "Interner Fehler beim Upload"})
 
     return MultiUploadResponse(uploaded=uploaded, rejected=rejected)
@@ -103,18 +140,21 @@ async def upload_documents(
 # === Job Status ===
 
 
-@router.get("/documents/{document_id}/status", response_model=JobStatusResponse)
+@router.get("/documents/{job_id}/status", response_model=JobStatusResponse)
 async def get_document_status(
-    document_id: str,
-    db: AsyncSession = Depends(get_db),
+    job_id: str,
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> JobStatusResponse:
-    """Gibt den aktuellen Verarbeitungsstatus eines Dokuments zurueck."""
+    """Verarbeitungsstatus eines Upload-Jobs (ID aus UploadResponse.job_id).
+
+    Sobald archiviert, verweist ``document_id`` auf das erzeugte Dokument.
+    """
     result = await db.execute(
-        select(ProcessingJob).where(ProcessingJob.id == document_id)
+        select(ProcessingJob).where(ProcessingJob.id == job_id)
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+        raise HTTPException(status_code=404, detail="Verarbeitungsauftrag nicht gefunden")
     return JobStatusResponse.model_validate(job)
 
 
@@ -126,21 +166,25 @@ async def list_documents(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     document_type: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     tax_relevant: bool | None = None,
-    status: str | None = None,
+    status: DocumentStatus | None = None,
     filing_scope_id: str | None = None,
     sort_by: str = Query(default="created_at", pattern="^(created_at|document_date|title|amount|document_type)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> PaginatedDocumentsResponse:
-    """Listet Dokumente mit Filtern und Paginierung."""
+    """Listet Dokumente mit Filtern und Paginierung.
+
+    Ungueltige Filterwerte (Datum, Status, Dokumenttyp) ergeben 422 statt still
+    keine Treffer.
+    """
     query = select(Document).where(Document.status != DocumentStatus.DELETED)
 
     # Filter
-    if document_type:
-        types = [t.strip() for t in document_type.split(",")]
+    types = parse_document_types(document_type)
+    if types:
         query = query.where(Document.document_type.in_(types))
     if date_from:
         query = query.where(Document.document_date >= date_from)
@@ -157,12 +201,11 @@ async def list_documents(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    # Sorting
+    # Sorting — Document.id als Tie-Breaker: ohne eindeutige Ordnung liefert
+    # SQLite gleichrangige Zeilen seitenuebergreifend doppelt oder gar nicht.
     sort_column = getattr(Document, sort_by, Document.created_at)
-    if sort_order == "asc":
-        query = query.order_by(sort_column.asc())
-    else:
-        query = query.order_by(sort_column.desc())
+    ordered = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    query = query.order_by(ordered.nulls_last(), Document.id)
 
     # Pagination
     query = query.offset((page - 1) * page_size).limit(page_size)
@@ -190,15 +233,10 @@ async def list_documents(
 @router.get("/documents/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> DocumentResponse:
     """Gibt ein einzelnes Dokument mit allen Metadaten zurueck."""
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+    document = await _get_active_document_or_404(db, document_id)
     return DocumentResponse.model_validate(document)
 
 
@@ -206,47 +244,70 @@ async def get_document(
 async def update_document(
     document_id: str,
     update: DocumentUpdate,
-    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentResponse:
     """Aktualisiert Metadaten eines Dokuments manuell."""
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+    document = await _get_active_document_or_404(db, document_id)
+    values = update.model_dump(exclude_unset=True)
+
+    new_scope: FilingScope | None = None
+    if values.get("filing_scope_id") is not None:
+        new_scope = await db.get(FilingScope, values["filing_scope_id"])
+        if new_scope is None:
+            raise HTTPException(status_code=422, detail="Ablagebereich nicht gefunden")
 
     changes = {}
-    for field, value in update.model_dump(exclude_unset=True).items():
+    for field, value in values.items():
         old_value = getattr(document, field)
         if old_value != value:
             changes[field] = {"old": str(old_value), "new": str(value)}
             setattr(document, field, value)
 
-    if changes:
-        audit = AuditLog(
-            document_id=document.id,
-            action=AuditAction.UPDATED,
-            details=json.dumps(changes, ensure_ascii=False),
-        )
-        db.add(audit)
+    if not changes:
+        return DocumentResponse.model_validate(document)
 
-    fts_fields = {"title", "issuer", "summary"}
-    if changes and fts_fields & set(changes.keys()):
-        tags_str = " ".join(t.name for t in document.tags) if document.tags else ""
-        await db.execute(text("DELETE FROM documents_fts WHERE doc_id = :doc_id"), {"doc_id": document_id})
-        await db.execute(
-            text("INSERT INTO documents_fts(doc_id, title, ocr_text, issuer, summary, tags) VALUES (:doc_id, :title, :ocr_text, :issuer, :summary, :tags)"),
-            {"doc_id": document_id, "title": document.title or "", "ocr_text": document.ocr_text or "", "issuer": document.issuer or "", "summary": document.summary or "", "tags": tags_str},
-        )
+    # Steuerrelevant ohne Jahr -> Jahr ableiten (abgeleitet, keine Benutzer-
+    # Eingabe: bewusst nicht im AuditLog, damit eine Re-Analyse es aendern darf).
+    ensure_tax_year(document)
 
-    if changes:
-        # Flush + Refresh: das UPDATE expired server-seitig berechnete Spalten
-        # (updated_at via onupdate=func.now()). Ohne Refresh wuerde die
-        # Response-Validierung sie lazy nachladen -> MissingGreenlet im
-        # async-Kontext (seit SQLAlchemy 2.1 autoflusht auch text()).
-        await db.flush()
+    db.add(AuditLog(
+        document_id=document.id,
+        action=AuditAction.UPDATED,
+        details=json.dumps(changes, ensure_ascii=False),
+    ))
+
+    if FTS_DOCUMENT_FIELDS & changes.keys():
+        await reindex_document_fts(db, document.id)
+
+    # Flush + Refresh: das UPDATE expired server-seitig berechnete Spalten
+    # (updated_at via onupdate=func.now()). Ohne Refresh wuerde die
+    # Response-Validierung sie lazy nachladen -> MissingGreenlet im
+    # async-Kontext (seit SQLAlchemy 2.1 autoflusht auch text()).
+    await db.flush()
+    await db.refresh(document)
+    # Commit VOR der Re-Vektorisierung (die eine eigene Session nutzt).
+    scope_changed = "filing_scope_id" in changes
+    if scope_changed and new_scope is not None:
+        # Datei wandert in den Ordner des neuen Bereichs (copy -> commit -> delete),
+        # wie bei der Review-Antwort und der Re-Analyse.
+        try:
+            await relocate_document_file(db, document, new_scope, settings.ARCHIVE_DIR)
+        except RelocationError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        # file_path-UPDATE expired updated_at erneut (s.o.)
         await db.refresh(document)
+    else:
+        await db.commit()
+
+    if METADATA_CHUNK_FIELDS & changes.keys():
+        _schedule_revectorize(background_tasks, document.id, settings, session_factory)
+    elif scope_changed:
+        from app.services.vectorize_service import update_scope_metadata
+
+        background_tasks.add_task(update_scope_metadata, [document.id], document.filing_scope_id, settings)
 
     return DocumentResponse.model_validate(document)
 
@@ -254,103 +315,107 @@ async def update_document(
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ):
-    """Soft-Delete: Setzt Status auf DELETED. Antwort: 204 No Content (M-23)."""
+    """Soft-Delete: Setzt Status auf DELETED. Antwort: 204 No Content (M-23).
+
+    Idempotent: ein bereits geloeschtes Dokument liefert erneut 204, ohne einen
+    weiteren Audit-Eintrag. Es gibt keinen Papierkorb — das Dokument ist danach
+    ueber die API nicht mehr erreichbar; derselbe Upload legt ein neues an.
+    """
     result = await db.execute(
         select(Document).where(Document.id == document_id)
     )
     document = result.scalar_one_or_none()
     if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    if document.status == DocumentStatus.DELETED:
+        return Response(status_code=204)
 
     document.status = DocumentStatus.DELETED
-    audit = AuditLog(
+    db.add(AuditLog(
         document_id=document.id,
         action=AuditAction.DELETED,
-    )
-    db.add(audit)
+    ))
 
     # FTS-Index bereinigen
-    await db.execute(text("DELETE FROM documents_fts WHERE doc_id = :doc_id"), {"doc_id": document_id})
+    await remove_document_from_index(db, document_id)
 
-    # R-02 (Re-Review): DB-Commit zuerst (get_db commit-at-yield), DANN
-    # Vektoren loeschen. Sonst Inkonsistenz: Vektoren weg, Document noch
-    # ACTIVE wenn der Commit fehlschlaegt.
+    # R-02 (Re-Review): DB-Commit zuerst, DANN Vektoren loeschen. Sonst
+    # Inkonsistenz: Vektoren weg, Document noch ACTIVE wenn der Commit fehlschlaegt.
     await db.commit()
 
     # Vektoren best-effort post-commit (orphan-Vektoren sind tolerierbar,
     # `rag_service` filtert sie via DB-Join sowieso aus).
     try:
         from app.services.vectorize_service import delete_document_vectors
-        settings = get_settings()
         await delete_document_vectors(document_id, settings)
     except Exception:
         logger.warning("Vektoren konnten nicht geloescht werden fuer %s", document_id)
 
-    from fastapi import Response
     return Response(status_code=204)
 
 
 @router.get("/documents/{document_id}/file")
 async def download_document_file(
     document_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ) -> FileResponse:
     """Gibt die Originaldatei eines Dokuments zurueck (inline fuer Vorschau)."""
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+    document = await _get_active_document_or_404(db, document_id)
 
-    file_path = Path(document.file_path)
-    if not file_path.exists():
+    file_path = Path(document.file_path).resolve()
+    # Defense in depth: nur Dateien innerhalb des Archivs ausliefern.
+    if not file_path.is_relative_to(Path(settings.ARCHIVE_DIR).resolve()) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Datei nicht gefunden")
-
-    # MIME-Typ anhand Dateiendung bestimmen fuer inline-Vorschau
-    mime_types = {
-        "pdf": "application/pdf",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "png": "image/png",
-        "gif": "image/gif",
-        "webp": "image/webp",
-        "tiff": "image/tiff",
-        "tif": "image/tiff",
-        "bmp": "image/bmp",
-    }
-    ext = file_path.suffix.lower().lstrip(".")
-    media_type = mime_types.get(ext, "application/octet-stream")
 
     return FileResponse(
         path=file_path,
         filename=document.original_filename,
-        media_type=media_type,
+        media_type=mime_type_for(file_path.suffix),
         content_disposition_type="inline",
     )
+
+
+def _job_thumbnail_path(job_id: str, settings: Settings) -> Path | None:
+    """Thumbnail eines noch nicht archivierten Jobs (THUMBNAIL_DIR/<job-id>.png).
+
+    Die ID kommt roh aus dem URL-Pfad: nur echte UUIDs zulassen und den
+    aufgeloesten Pfad auf THUMBNAIL_DIR beschraenken — sonst liessen sich unter
+    Windows mit ``..\\`` oder ``C:\\...`` beliebige .png-Dateien abrufen.
+    """
+    if not _UUID_RE.match(job_id):
+        return None
+    thumbnail_dir = Path(settings.THUMBNAIL_DIR).resolve()
+    candidate = (thumbnail_dir / f"{job_id}.png").resolve()
+    if not candidate.is_relative_to(thumbnail_dir):
+        return None
+    return candidate
 
 
 @router.get("/documents/{document_id}/thumbnail")
 async def get_document_thumbnail(
     document_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> FileResponse:
-    """Gibt das Thumbnail eines Dokuments zurueck."""
-    # Try Document first, then ProcessingJob
+    """Gibt das Thumbnail eines Dokuments zurueck — oder, solange der Upload
+    noch verarbeitet wird, das Thumbnail des Jobs (ID = Job-ID)."""
     result = await db.execute(
         select(Document).where(Document.id == document_id)
     )
     document = result.scalar_one_or_none()
 
-    if document and document.thumbnail_path:
+    if document is not None:
+        if document.status == DocumentStatus.DELETED or not document.thumbnail_path:
+            raise HTTPException(status_code=404, detail="Thumbnail nicht gefunden")
         thumb_path = Path(document.thumbnail_path)
     else:
-        thumb_path = Path(settings.THUMBNAIL_DIR) / f"{document_id}.png"
+        thumb_path = _job_thumbnail_path(document_id, settings)
 
-    if not thumb_path.exists():
+    if thumb_path is None or not thumb_path.is_file():
         raise HTTPException(status_code=404, detail="Thumbnail nicht gefunden")
 
     return FileResponse(path=thumb_path, media_type="image/png")
@@ -361,7 +426,7 @@ async def get_document_thumbnail(
 
 @router.get("/tags", response_model=list[TagResponse])
 async def list_tags(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> list[TagResponse]:
     """Listet alle Tags auf."""
     result = await db.execute(select(Tag).order_by(Tag.name))
@@ -373,17 +438,17 @@ async def list_tags(
 async def add_tag_to_document(
     document_id: str,
     tag_data: TagCreate,
-    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentResponse:
     """Fuegt einem Dokument einen Tag hinzu."""
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+    document = await _get_active_document_or_404(db, document_id)
 
     tag_name = tag_data.name.strip().lower()
+    if not tag_name:
+        raise HTTPException(status_code=422, detail="Tag-Name darf nicht leer sein")
 
     # Tag holen oder erstellen
     tag_result = await db.execute(select(Tag).where(Tag.name == tag_name))
@@ -404,55 +469,60 @@ async def add_tag_to_document(
     )
     if existing_link.scalar_one_or_none() is None:
         db.add(DocumentTag(document_id=document.id, tag_id=tag.id))
-        audit = AuditLog(
+        db.add(AuditLog(
             document_id=document.id,
             action=AuditAction.TAG_ADDED,
             details=json.dumps({"tag": tag_name}, ensure_ascii=False),
-        )
-        db.add(audit)
-        await db.flush()
+        ))
+        await reindex_document_fts(db, document.id)
         # Tags fuer Response neu laden — Relationship cache war u.U. stale.
         await db.refresh(document, ["tags"])
+        await db.commit()
+        _schedule_revectorize(background_tasks, document.id, settings, session_factory)
 
     return DocumentResponse.model_validate(document)
 
 
-@router.delete("/documents/{document_id}/tags/{tag_name}")
+@router.delete("/documents/{document_id}/tags/{tag_id:int}")
 async def remove_tag_from_document(
     document_id: str,
-    tag_name: str,
-    db: AsyncSession = Depends(get_db),
+    tag_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> dict:
-    """Entfernt einen Tag von einem Dokument."""
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Dokument nicht gefunden")
+    """Entfernt einen Tag per ID; 404 wenn der Tag nicht existiert oder nicht
+    zugewiesen ist (frueher: 200 "war nicht zugewiesen", die UI entfernte den
+    Chip und nach dem Neuladen war er wieder da).
 
-    tag_result = await db.execute(select(Tag).where(Tag.name == tag_name.lower()))
-    tag = tag_result.scalar_one_or_none()
+    Bewusst nur per ID: die fruehere Namens-Route scheiterte an '/', '#', '?'
+    und '%' im Namen, und neben einer ID-Route waere ein rein numerischer
+    Tag-Name ("2024") mehrdeutig.
+    """
+    document = await _get_active_document_or_404(db, document_id)
+    tag = await db.get(Tag, tag_id)
     if tag is None:
-        return {"message": f"Tag '{tag_name}' war nicht zugewiesen"}
+        raise HTTPException(status_code=404, detail="Tag nicht gefunden")
 
-    from sqlalchemy import delete as sa_delete
     delete_result = await db.execute(
-        sa_delete(DocumentTag).where(
+        delete(DocumentTag).where(
             DocumentTag.document_id == document.id,
             DocumentTag.tag_id == tag.id,
         )
     )
-    if delete_result.rowcount:
-        audit = AuditLog(
-            document_id=document.id,
-            action=AuditAction.TAG_REMOVED,
-            details=json.dumps({"tag": tag_name}, ensure_ascii=False),
-        )
-        db.add(audit)
-        await db.flush()
+    if not delete_result.rowcount:
+        raise HTTPException(status_code=404, detail="Tag ist diesem Dokument nicht zugewiesen")
 
-    return {"message": f"Tag '{tag_name}' entfernt"}
+    db.add(AuditLog(
+        document_id=document.id,
+        action=AuditAction.TAG_REMOVED,
+        details=json.dumps({"tag": tag.name}, ensure_ascii=False),
+    ))
+    await reindex_document_fts(db, document.id)
+    await db.commit()
+    _schedule_revectorize(background_tasks, document.id, settings, session_factory)
+    return {"message": f"Tag '{tag.name}' entfernt"}
 
 
 # === Dashboard Stats ===
@@ -460,24 +530,28 @@ async def remove_tag_from_document(
 
 @router.get("/stats", response_model=DashboardStats)
 async def get_dashboard_stats(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ) -> DashboardStats:
     """Gibt Dashboard-Statistiken zurueck."""
-    from datetime import date, timedelta
-
     # Total documents
     total_result = await db.execute(
         select(func.count(Document.id)).where(Document.status != DocumentStatus.DELETED)
     )
     total = total_result.scalar() or 0
 
-    # This month
-    today = date.today()
-    first_of_month = today.replace(day=1)
+    # This month — Monatsbeginn in lokaler Zeit (TIMEZONE), als UTC verglichen:
+    # created_at wird in UTC gespeichert.
+    local_now = datetime.now(settings.local_tz)
+    month_start_utc = (
+        local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+        .replace(tzinfo=None)
+    )
     month_result = await db.execute(
         select(func.count(Document.id)).where(
             Document.status != DocumentStatus.DELETED,
-            Document.created_at >= first_of_month.isoformat(),
+            Document.created_at >= month_start_utc,
         )
     )
     this_month = month_result.scalar() or 0
@@ -491,15 +565,16 @@ async def get_dashboard_stats(
     )
     pending_reviews = review_result.scalar() or 0
 
-    # Expiring warranties in 30 days
-    thirty_days = today + timedelta(days=30)
-    warranty_result = await db.execute(
-        select(func.count(WarrantyInfo.id)).where(
-            WarrantyInfo.warranty_end_date >= today.isoformat(),
-            WarrantyInfo.warranty_end_date <= thirty_days.isoformat(),
-        )
+    # Garantien, die in den naechsten 30 Tagen ablaufen — nur nicht geloeschte
+    # Dokumente; Grenzen wie der "laeuft ab"-Filter der Garantie-Liste
+    # (heute <= Enddatum <= heute + N, am Enddatum gilt sie noch).
+    today = date.today()
+    expiring_query = select_active_document_warranties().where(
+        WarrantyInfo.warranty_end_date.between(today, today + timedelta(days=30))
     )
-    expiring = warranty_result.scalar() or 0
+    expiring = (
+        await db.execute(select(func.count()).select_from(expiring_query.subquery()))
+    ).scalar() or 0
 
     # Processing jobs
     jobs_result = await db.execute(

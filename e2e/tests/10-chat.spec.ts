@@ -1,211 +1,159 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import {
   setupChatMocks,
   MOCK_CHAT_RESPONSE,
   MOCK_CHAT_HISTORY,
+  MOCK_CHAT_HISTORY_EMPTY,
 } from '../helpers/mock.helpers';
+
+const chatInput = (page: Page) => page.getByRole('textbox', { name: 'Frage an den Assistenten' });
+const sendButton = (page: Page) => page.getByRole('button', { name: 'Frage abschicken' });
+
+async function emptyHistory(page: Page) {
+  await page.route('**/api/chat/history*', (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: MOCK_CHAT_HISTORY_EMPTY });
+    return route.fallback();
+  });
+}
+
+/** Naechster POST /api/chat; liefert den Request-Body. */
+async function nextQuestion(page: Page, action: () => Promise<unknown>) {
+  const [req] = await Promise.all([
+    page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/chat'),
+    action(),
+  ]);
+  return req.postDataJSON() as { question: string; filing_scope_id?: string | null };
+}
 
 test.describe('KI-Assistent (Chat)', () => {
   test.beforeEach(async ({ page }) => {
     await setupChatMocks(page);
   });
 
-  test('Shows chat input and send button', async ({ page }) => {
+  test('Shows chat input and disabled send button when empty', async ({ page }) => {
     await page.goto('/assistent');
+    await expect(chatInput(page)).toBeVisible();
+    await expect(chatInput(page)).toHaveValue('');
+    await expect(sendButton(page)).toBeDisabled();
 
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await expect(chatInput).toBeVisible();
-
-    const sendBtn = page.locator('button[type="submit"], button:has(svg)').last();
-    await expect(sendBtn).toBeVisible();
+    await chatInput(page).fill('Frage');
+    await expect(sendButton(page)).toBeEnabled();
   });
 
   test('Shows example questions when chat is empty', async ({ page }) => {
-    // Override history to be empty
-    await page.route('**/api/chat/history*', (route) =>
-      route.fulfill({ json: { messages: [], total: 0 } })
-    );
-
+    await emptyHistory(page);
     await page.goto('/assistent');
 
-    // Wait for the empty state heading to render (confirms data loading is done)
-    await expect(page.locator('text=Frag deine Dokumente').first()).toBeVisible({ timeout: 10000 });
-
-    // Example question buttons should be visible
-    const buttons = page.locator('button').filter({ hasText: /\?/ });
-    await expect(buttons.first()).toBeVisible();
-    const count = await buttons.count();
-    expect(count).toBeGreaterThanOrEqual(1);
+    await expect(page.getByRole('heading', { name: 'Frag deine Dokumente' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /\?$/ })).toHaveCount(4);
   });
 
-  test('Send a question and receive answer', async ({ page }) => {
-    await page.route('**/api/chat/history*', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({ json: { messages: [], total: 0 } });
-      }
-      return route.continue();
-    });
-
+  test('Send a question and receive answer with source links', async ({ page }) => {
+    await emptyHistory(page);
     await page.goto('/assistent');
 
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await chatInput.fill('Was war meine letzte Stromrechnung?');
-    await chatInput.press('Enter');
+    await chatInput(page).fill('Was war meine letzte Stromrechnung?');
+    const body = await nextQuestion(page, () => chatInput(page).press('Enter'));
+    expect(body.question).toBe('Was war meine letzte Stromrechnung?');
 
-    // Answer should appear
-    await expect(page.locator(`text=${MOCK_CHAT_RESPONSE.answer}`).first()).toBeVisible({ timeout: 10000 });
-  });
+    // Frage erscheint sofort als eigene Nachricht, Eingabe wird geleert
+    await expect(page.getByText('Was war meine letzte Stromrechnung?')).toBeVisible();
+    await expect(chatInput(page)).toHaveValue('');
+    await expect(page.getByText(MOCK_CHAT_RESPONSE.answer)).toBeVisible();
 
-  test('User message appears on the right', async ({ page }) => {
-    await page.route('**/api/chat/history*', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({ json: { messages: [], total: 0 } });
-      }
-      return route.continue();
-    });
-
-    await page.goto('/assistent');
-
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await chatInput.fill('Testfrage');
-    await chatInput.press('Enter');
-
-    // User message bubble should be visible
-    await expect(page.locator('text=Testfrage').first()).toBeVisible();
-  });
-
-  test('Send button is disabled when input is empty', async ({ page }) => {
-    await page.goto('/assistent');
-
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await expect(chatInput).toHaveValue('');
-
-    // Send button should be disabled
-    const sendBtn = page.locator('button[type="submit"]').first();
-    if (await sendBtn.isVisible()) {
-      await expect(sendBtn).toBeDisabled();
-    }
+    const source = MOCK_CHAT_RESPONSE.sources[0];
+    await expect(page.getByRole('link', { name: `1. ${source.title}` })).toHaveAttribute('href', `/dokumente/${source.document_id}`);
   });
 
   test('Click example question sends it', async ({ page }) => {
-    let questionSent = '';
-    await page.route('**/api/chat', (route) => {
-      if (route.request().method() === 'POST') {
-        const body = JSON.parse(route.request().postData() || '{}');
-        questionSent = body.question;
-        return route.fulfill({ json: MOCK_CHAT_RESPONSE });
-      }
-      return route.continue();
-    });
-    await page.route('**/api/chat/history*', (route) =>
-      route.fulfill({ json: { messages: [], total: 0 } })
-    );
-
+    await emptyHistory(page);
     await page.goto('/assistent');
 
-    // Click first example question
-    const exampleBtn = page.locator('button').filter({ hasText: /\?/ }).first();
-    if (await exampleBtn.isVisible()) {
-      await exampleBtn.click();
-      await page.waitForTimeout(1000);
-      expect(questionSent.length).toBeGreaterThan(0);
-    }
-  });
-
-  test('Source references link to documents', async ({ page }) => {
-    await page.route('**/api/chat/history*', (route) =>
-      route.fulfill({ json: { messages: [], total: 0 } })
-    );
-
-    await page.goto('/assistent');
-
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await chatInput.fill('Stromrechnung');
-    await chatInput.press('Enter');
-
-    // Wait for answer
-    await page.waitForTimeout(1000);
-
-    // Source link should be visible
-    const sourceLink = page.locator('a').filter({ hasText: /Stromrechnung/ }).first();
-    if (await sourceLink.isVisible()) {
-      const href = await sourceLink.getAttribute('href');
-      expect(href).toContain('/dokumente/');
-    }
-  });
-
-  test('Clear history button works', async ({ page }) => {
-    let historyCleaned = false;
-    await page.route('**/api/chat/history*', (route) => {
-      if (route.request().method() === 'DELETE') {
-        historyCleaned = true;
-        return route.fulfill({ json: { message: 'Geloescht' } });
-      }
-      return route.fulfill({ json: MOCK_CHAT_HISTORY });
-    });
-
-    await page.goto('/assistent');
-
-    const clearBtn = page.getByRole('button', { name: /verlauf.*löschen|löschen/i }).first();
-    if (await clearBtn.isVisible()) {
-      await clearBtn.click();
-      await page.waitForTimeout(500);
-      expect(historyCleaned).toBeTruthy();
-    }
-  });
-
-  test('Scope filter dropdown shown with multiple scopes', async ({ page }) => {
-    await page.goto('/assistent');
-
-    const scopeSelect = page.locator('select').filter({ has: page.locator('option:has-text("Alle Bereiche")') }).first();
-    if (await scopeSelect.isVisible()) {
-      await expect(scopeSelect).toBeVisible();
-    }
+    const example = 'Wann läuft die Garantie für die Waschmaschine ab?';
+    const body = await nextQuestion(page, () => page.getByRole('button', { name: example }).click());
+    expect(body.question).toBe(example);
+    await expect(page.getByText(MOCK_CHAT_RESPONSE.answer)).toBeVisible();
   });
 
   test('Scope filter is included in chat request', async ({ page }) => {
-    let requestBody: Record<string, unknown> = {};
-    await page.route('**/api/chat', (route) => {
-      if (route.request().method() === 'POST') {
-        requestBody = JSON.parse(route.request().postData() || '{}');
-        return route.fulfill({ json: MOCK_CHAT_RESPONSE });
-      }
-      return route.continue();
-    });
-    await page.route('**/api/chat/history*', (route) =>
-      route.fulfill({ json: { messages: [], total: 0 } })
-    );
-
+    await emptyHistory(page);
     await page.goto('/assistent');
 
-    // Select scope filter if visible
-    const scopeSelect = page.locator('select').filter({ has: page.locator('option:has-text("Alle Bereiche")') }).first();
-    if (await scopeSelect.isVisible()) {
-      await scopeSelect.selectOption({ index: 1 }); // Select first real scope
-    }
+    const scopeSelect = page.getByLabel('Ablagebereich für die Frage');
+    await expect(scopeSelect.locator('option', { hasText: 'Alle Bereiche' })).toHaveCount(1);
 
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    await chatInput.fill('Test');
-    await chatInput.press('Enter');
+    await chatInput(page).fill('Ohne Bereich');
+    const all = await nextQuestion(page, () => chatInput(page).press('Enter'));
+    expect(all.filing_scope_id ?? null).toBeNull();
+    await expect(page.getByText(MOCK_CHAT_RESPONSE.answer)).toBeVisible();
 
-    await page.waitForTimeout(1000);
-    // Request should have been sent (with or without scope)
-    expect(requestBody).toHaveProperty('question');
+    await scopeSelect.selectOption({ label: 'Praxis' });
+    await chatInput(page).fill('Mit Bereich');
+    const scoped = await nextQuestion(page, () => chatInput(page).press('Enter'));
+    expect(scoped.filing_scope_id).toBe('scope-praxis');
   });
 
   test('Chat history loads previous messages', async ({ page }) => {
     await page.goto('/assistent');
+    for (const msg of MOCK_CHAT_HISTORY.messages) {
+      await expect(page.getByText(msg.content)).toBeVisible();
+    }
+  });
 
-    // Previous messages from mock history should be visible (uses role/content format)
-    const firstMessage = MOCK_CHAT_HISTORY.messages[0];
-    await expect(page.locator(`text=${firstMessage.content}`).first()).toBeVisible();
+  test('Clear history asks for confirmation and empties the chat', async ({ page }) => {
+    let deletes = 0;
+    await page.route('**/api/chat/history*', (route) => {
+      if (route.request().method() === 'DELETE') {
+        deletes += 1;
+        return route.fulfill({ json: { message: 'Gelöscht' } });
+      }
+      return route.fallback();
+    });
+    await page.goto('/assistent');
+
+    await page.getByRole('button', { name: 'Verlauf löschen' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('Chatverlauf löschen');
+    expect(deletes).toBe(0);
+    await dialog.getByRole('button', { name: 'Löschen' }).click();
+
+    await expect(page.getByText('Chatverlauf gelöscht.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Frag deine Dokumente' })).toBeVisible();
+    expect(deletes).toBe(1);
+  });
+
+  test('Running question can be cancelled', async ({ page }) => {
+    await emptyHistory(page);
+    // Antwort kommt nie — der Nutzer bricht ab.
+    await page.route('**/api/chat', () => new Promise<void>(() => {}));
+    await page.goto('/assistent');
+
+    await chatInput(page).fill('Dauert lange');
+    await chatInput(page).press('Enter');
+    await expect(chatInput(page)).toBeDisabled();
+    await page.getByRole('button', { name: 'Anfrage abbrechen' }).click();
+
+    await expect(page.getByRole('alert').filter({ hasText: 'Anfrage abgebrochen.' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Verlauf neu laden' })).toBeVisible();
+    await expect(chatInput(page)).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Anfrage abbrechen' })).toHaveCount(0);
+  });
+
+  test('Unavailable assistant (503) shows the server message', async ({ page }) => {
+    await emptyHistory(page);
+    await page.route('**/api/chat', (route) =>
+      route.fulfill({ status: 503, json: { detail: 'Vektor-Datenbank nicht erreichbar' } })
+    );
+    await page.goto('/assistent');
+
+    await chatInput(page).fill('Frage');
+    await chatInput(page).press('Enter');
+    await expect(page.getByRole('alert').filter({ hasText: 'Vektor-Datenbank nicht erreichbar' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Verlauf neu laden' })).toHaveCount(0);
   });
 
   test('Input has max length constraint', async ({ page }) => {
     await page.goto('/assistent');
-
-    const chatInput = page.getByPlaceholder(/frage/i).first();
-    const maxLength = await chatInput.getAttribute('maxlength');
-    expect(parseInt(maxLength || '0')).toBe(2000);
+    await expect(chatInput(page)).toHaveAttribute('maxlength', '2000');
   });
 });

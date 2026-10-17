@@ -8,10 +8,22 @@ import axios from 'axios'
 // beim Modul-Eval.
 import { useAuthStore } from '../stores/auth'
 import router from '../router/index'
+import { apiErrorMessage } from '../utils/apiErrors'
+
+// Timeouts zentral: Standard fuer normale API-Aufrufe; LONG fuer synchrone
+// Endpunkte, die auf dem Ziel-Hardware-Profil (7B-Modell auf CPU) laenger
+// brauchen (Steuerpaket-ZIP/PDF, RAG-Chat mit optionalem Reranker). Wert =
+// nginx proxy_read_timeout (frontend/nginx.conf, ssl/nginx-ssl.conf) — laenger
+// zu warten waere sinnlos, nginx bricht dort ab. Re-Analyse, E-Mail-Abruf und
+// Backup laufen als Hintergrund-Vorgang (202 + Polling) und brauchen keinen.
+// Uploads: kein Timeout (50 MB ueber WLAN/Mobilfunk), Fortschritt per Callback.
+export const DEFAULT_TIMEOUT_MS = 30000
+export const LONG_OPERATION_TIMEOUT_MS = 120000
+export const NO_TIMEOUT = 0
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: DEFAULT_TIMEOUT_MS,
 })
 
 // Response interceptor for error handling
@@ -19,11 +31,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      const auth = useAuthStore()
-      auth.reset()
-      const currentPath = router.currentRoute.value.fullPath
-      if (currentPath !== '/pin') {
-        router.replace({ name: 'pin-login', query: { redirect: currentPath } })
+      // Sitzung abgelaufen/ungueltig. Nur EINMAL zur PIN-Seite: steht der
+      // Nutzer schon dort (fullPath ist dann '/pin?redirect=...'), nichts tun —
+      // sonst verschachtelt jeder weitere 401 den redirect-Parameter.
+      useAuthStore().markSessionExpired()
+      const current = router.currentRoute.value
+      if (current.name !== 'pin-login') {
+        router.replace({ name: 'pin-login', query: { redirect: current.fullPath } })
       }
       return Promise.reject(error)
     }
@@ -59,16 +73,55 @@ export async function deleteDocument(id) {
 
 // === Upload ===
 
+// Jede Datei in einem eigenen Request: nginx begrenzt den GANZEN Request-Body
+// auf 50 MB (client_max_body_size) — ein Sammel-Upload mehrerer Scans scheiterte
+// dort komplett mit einer 413-HTML-Seite, obwohl jede Datei einzeln erlaubt war.
+// Ergebnis bleibt die MultiUploadResponse-Form { uploaded, rejected } ueber alle
+// Dateien; ein Fehler bei einer Datei landet als { filename, error } in rejected.
+// onProgress bekommt den Gesamtfortschritt { loaded, total } (Bytes ueber alle
+// Dateien) plus { fileIndex, fileCount, filename } der gerade laufenden Datei.
 export async function uploadDocuments(files, onProgress) {
-  const formData = new FormData()
-  for (const file of files) {
+  const list = Array.from(files || [])
+  const totalBytes = list.reduce((sum, f) => sum + (f.size || 0), 0)
+  const result = { uploaded: [], rejected: [] }
+  let doneBytes = 0
+
+  for (const [index, file] of list.entries()) {
+    const formData = new FormData()
     formData.append('files', file)
+    try {
+      const { data } = await api.post('/documents/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: NO_TIMEOUT,
+        onUploadProgress: (event) => {
+          if (!onProgress) return
+          const fileLoaded = Math.min(event.loaded || 0, file.size || event.loaded || 0)
+          onProgress({
+            loaded: doneBytes + fileLoaded,
+            total: totalBytes,
+            fileIndex: index,
+            fileCount: list.length,
+            filename: file.name,
+          })
+        },
+      })
+      result.uploaded.push(...(data?.uploaded || []))
+      result.rejected.push(...(data?.rejected || []))
+    } catch (error) {
+      // 401 hat der Interceptor bereits behandelt (Redirect zur PIN-Seite) —
+      // weitere Dateien waeren ebenfalls abgelehnt.
+      if (error.response?.status === 401) throw error
+      result.rejected.push({
+        filename: file.name,
+        error: apiErrorMessage(error, 'Upload fehlgeschlagen.'),
+      })
+    }
+    doneBytes += file.size || 0
+    if (onProgress) {
+      onProgress({ loaded: doneBytes, total: totalBytes, fileIndex: index, fileCount: list.length, filename: file.name })
+    }
   }
-  const { data } = await api.post('/documents/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    onUploadProgress: onProgress,
-  })
-  return data
+  return result
 }
 
 export async function getJobStatus(id) {
@@ -78,18 +131,17 @@ export async function getJobStatus(id) {
 
 // === Tags ===
 
-export async function getTags() {
-  const { data } = await api.get('/tags')
-  return data
-}
-
 export async function addTag(documentId, name) {
   const { data } = await api.post(`/documents/${documentId}/tags`, { name })
   return data
 }
 
-export async function removeTag(documentId, tagName) {
-  const { data } = await api.delete(`/documents/${documentId}/tags/${tagName}`)
+// Per Tag-ID statt Name: Namen sind Freitext ('strom/gas', 'Test #1') und
+// zerlegten den URL-Pfad ('/' -> 404, '#'/'?' -> falscher Tag "entfernt").
+export async function removeTag(documentId, tagId) {
+  const { data } = await api.delete(
+    `/documents/${encodeURIComponent(documentId)}/tags/${encodeURIComponent(tagId)}`,
+  )
   return data
 }
 
@@ -105,21 +157,24 @@ export async function getReviewDetail(documentId) {
   return data
 }
 
-export async function answerReviewQuestion(documentId, questionId, answer) {
+export async function answerReviewQuestion(questionId, answer) {
   const { data } = await api.post(`/review/questions/${questionId}/answer`, { answer })
   return data
 }
 
+// "Bestätigen"/"Freigeben": Antworten bestätigen (auch mit offenen Rückfragen erlaubt)
 export async function approveReview(documentId) {
   const { data } = await api.post(`/review/documents/${documentId}/approve`)
   return data
 }
 
-export async function skipReview(documentId) {
-  const { data } = await api.post(`/review/documents/${documentId}/skip`)
+// "So übernehmen": das KI-Ergebnis unverändert als geprüft akzeptieren
+export async function acceptReview(documentId) {
+  const { data } = await api.post(`/review/documents/${documentId}/accept`)
   return data
 }
 
+// Badge "Zu prüfen" (composables/useReviewCount.js): { open_documents, ... }
 export async function getReviewStats() {
   const { data } = await api.get('/review/stats')
   return data
@@ -181,7 +236,21 @@ export async function getTaxValidation(year, params = {}) {
 export async function exportTaxPackage(year, filingScopeId = null) {
   const body = { year }
   if (filingScopeId) body.filing_scope_id = filingScopeId
-  const response = await api.post('/tax/export', body, { responseType: 'blob' })
+  let response
+  try {
+    response = await api.post('/tax/export', body, {
+      responseType: 'blob',
+      timeout: LONG_OPERATION_TIMEOUT_MS,
+    })
+  } catch (error) {
+    // Bei responseType 'blob' kommt auch die Fehler-JSON als Blob — fuer
+    // apiErrorMessage() in ein normales Objekt zurueckwandeln.
+    const blob = error.response?.data
+    if (blob instanceof Blob && blob.type.includes('json')) {
+      try { error.response.data = JSON.parse(await blob.text()) } catch { /* bleibt Blob */ }
+    }
+    throw error
+  }
   // Browser-Download ausloesen
   const url = window.URL.createObjectURL(new Blob([response.data]))
   const link = document.createElement('a')
@@ -202,11 +271,6 @@ export async function getWarranties(params = {}) {
 
 export async function getWarrantyStats() {
   const { data } = await api.get('/warranties/stats')
-  return data
-}
-
-export async function updateWarranty(id, updates) {
-  const { data } = await api.patch(`/warranties/${id}`, updates)
   return data
 }
 
@@ -259,6 +323,12 @@ export async function getBackups() {
   return data
 }
 
+// Download-Link (<a href>) fuer ein Backup — Dateiname kodiert, damit Sonder-
+// zeichen den Pfad nicht zerlegen. Der Service-Worker cached diesen Pfad nie.
+export function backupDownloadUrl(filename) {
+  return `/api/system/backups/${encodeURIComponent(filename)}`
+}
+
 export async function getSystemSettings() {
   const { data } = await api.get('/system/settings')
   return data
@@ -306,7 +376,7 @@ export async function deleteFilingScope(id) {
 export async function askQuestion(question, filingScopeId = null, signal = null) {
   const body = { question }
   if (filingScopeId) body.filing_scope_id = filingScopeId
-  const { data } = await api.post('/chat', body, { timeout: 60000, signal })
+  const { data } = await api.post('/chat', body, { timeout: LONG_OPERATION_TIMEOUT_MS, signal })
   return data
 }
 
@@ -320,8 +390,9 @@ export async function clearChatHistory() {
   return data
 }
 
+// Hintergrund-Vorgang (202 + Task, kind "rebuild_vectors"); Status ueber getTask/listTasks.
 export async function rebuildVectors() {
-  const { data } = await api.post('/system/maintenance/rebuild-vectors', null, { timeout: 300000 })
+  const { data } = await api.post('/system/maintenance/rebuild-vectors')
   return data
 }
 
@@ -361,6 +432,11 @@ export async function resumeQueue() {
 export async function retryJob(jobId) {
   const { data } = await api.post(`/jobs/${jobId}/retry`)
   return data
+}
+
+// Fehlgeschlagenen Job verwerfen (nur FAILED): entfernt Eintrag + behaltene Upload-Datei.
+export async function deleteJob(jobId) {
+  await api.delete(`/jobs/${jobId}`)
 }
 
 export async function reanalyzeDocument(documentId) {
@@ -406,6 +482,26 @@ export async function getEmailHistory(id, params = {}) {
 
 export async function getEmailStats() {
   const { data } = await api.get('/email/stats')
+  return data
+}
+
+// Feste Abruf-Regeln fuer die UI-Hinweise: { timezone, unseen_only, max_per_run, idle_interval_minutes }
+export async function getEmailSettings() {
+  const { data } = await api.get('/email/settings')
+  return data
+}
+
+// === Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) ===
+// Polling bitte ueber composables/useBackgroundTask.js, nicht direkt.
+
+export async function getTask(id) {
+  const { data } = await api.get(`/tasks/${id}`)
+  return data
+}
+
+// params: { kind, key, active, limit } — z.B. beim Mount laufende Vorgaenge finden.
+export async function listTasks(params = {}) {
+  const { data } = await api.get('/tasks', { params })
   return data
 }
 

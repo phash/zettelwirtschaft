@@ -1,0 +1,43 @@
+# Zeilenenden explizit festlegen (statt sich auf core.autocrlf zu verlassen).
+# Im Repository liegt alles mit LF; beim Checkout:
+* text=auto
+
+# Shell-Skripte laufen in Linux-Containern bzw. unter bash: immer LF.
+# (Mit CRLF bricht z.B. backend/entrypoint.sh: "#!/bin/bash\r" not found.)
+*.sh text eol=lf
+
+# Windows-Skripte immer CRLF. cmd.exe parst Sprungmarken (goto/call :label)
+# in LF-Dateien fehlerhaft; NSIS/PowerShell sind damit ebenfalls konsistent.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.nsi text eol=crlf
+*.nsh text eol=crlf
+
+# Binaerdateien nie konvertieren (keine autocrlf-Warnungen, keine Korruption).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.tif binary
+*.tiff binary
+*.bmp binary
+*.webp binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.db binary
+*.sqlite binary
+*.jks binary
+*.aab binary
+*.apk binary

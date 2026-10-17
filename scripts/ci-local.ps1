@@ -5,11 +5,17 @@
 #   pwsh scripts/ci-local.ps1            # alles
 #   pwsh scripts/ci-local.ps1 -SkipE2E   # ohne Playwright
 #   pwsh scripts/ci-local.ps1 -SkipDocker
+#   pwsh scripts/ci-local.ps1 -SkipScripts  # ohne Installer-/Ops-Skript-Smoke-Tests
+#
+# E2E laeuft gegen einen eigenen Preview-Server des aktuellen Builds (Port
+# E2E_PORT, Standard 4181 — startet Playwright selbst per webServer), NIE gegen
+# Port 8080: dort laeuft die echte Installation. Alle API-Aufrufe sind gemockt.
 param(
     [switch]$SkipE2E,
     [switch]$SkipDocker,
     [switch]$SkipFrontendBuild,
-    [switch]$SkipBackendTests
+    [switch]$SkipBackendTests,
+    [switch]$SkipScripts
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,7 +54,7 @@ if (-not $SkipBackendTests) {
     }
 }
 
-# Frontend-Build (npm ci + build)
+# Frontend-Build (npm ci + build) und Unit-Tests (Vitest)
 if (-not $SkipFrontendBuild) {
     Run-Step "Frontend npm build" {
         Push-Location frontend
@@ -60,6 +66,21 @@ if (-not $SkipFrontendBuild) {
             npm run build
             if ($LASTEXITCODE -ne 0) { throw "npm run build exit $LASTEXITCODE" }
         } finally { Pop-Location }
+    }
+    Run-Step "Frontend Vitest" {
+        Push-Location frontend
+        try {
+            npm test
+            if ($LASTEXITCODE -ne 0) { throw "vitest exit $LASTEXITCODE" }
+        } finally { Pop-Location }
+    }
+}
+
+# Smoke-Tests fuer Installer- und Betriebs-Skripte (.bat/.ps1/NSIS-Config)
+if (-not $SkipScripts) {
+    Run-Step "Skript-Smoke-Tests" {
+        pwsh -NoProfile -File scripts/test-scripts.ps1
+        if ($LASTEXITCODE -ne 0) { throw "test-scripts exit $LASTEXITCODE" }
     }
 }
 
@@ -75,26 +96,30 @@ if (-not $SkipDocker) {
     }
 }
 
-# E2E-Tests (Playwright) — braucht laufenden Stack
+# E2E-Tests (Playwright) — gemockte API, kein Backend/Stack noetig. Playwright
+# baut das Frontend und startet `vite preview --strictPort` auf E2E_PORT
+# (Standard 4181); belegter Port -> Abbruch statt Ausweichen. Beide Projekte
+# (Desktop-Chromium + Pixel 5), damit mobile-only-Regressionen auffallen.
 if (-not $SkipE2E) {
     Run-Step "Playwright E2E" {
-        # Stack hochfahren falls nötig
-        $running = (docker compose ps --format json 2>&1 | Out-String)
-        if ($running -notmatch "frontend") {
-            docker compose up -d
-            if ($LASTEXITCODE -ne 0) { throw "docker compose up exit $LASTEXITCODE" }
-            Start-Sleep -Seconds 10
-        }
         Push-Location e2e
+        $savedBaseUrl = $env:BASE_URL
         try {
             if (-not (Test-Path node_modules)) {
                 npm ci
                 if ($LASTEXITCODE -ne 0) { throw "e2e npm ci exit $LASTEXITCODE" }
                 npx playwright install --with-deps chromium
             }
-            npx playwright test --project=chromium --reporter=list
+            npm run typecheck
+            if ($LASTEXITCODE -ne 0) { throw "e2e typecheck exit $LASTEXITCODE" }
+            # Ein gesetztes BASE_URL wuerde den eigenen Preview-Server umgehen.
+            Remove-Item Env:BASE_URL -ErrorAction SilentlyContinue
+            npx playwright test --reporter=list
             if ($LASTEXITCODE -ne 0) { throw "playwright exit $LASTEXITCODE" }
-        } finally { Pop-Location }
+        } finally {
+            if ($null -ne $savedBaseUrl) { $env:BASE_URL = $savedBaseUrl }
+            Pop-Location
+        }
     }
 }
 

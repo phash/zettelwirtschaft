@@ -1,5 +1,6 @@
 <script setup>
 import { useOnboardingStore } from '../stores/onboarding'
+import { FILE_TYPES_LABEL, MAX_UPLOAD_SIZE_MB } from '../constants/fileTypes'
 
 const onboarding = useOnboardingStore()
 
@@ -10,7 +11,7 @@ const steps = [
 ]
 
 const features = [
-  { to: '/upload', icon: 'upload', title: 'Upload', text: 'Dateien per Drag & Drop hinzufügen (PDF, JPG, PNG, TIFF).' },
+  { to: '/upload', icon: 'upload', title: 'Upload', text: `Dateien per Drag & Drop hinzufügen (${FILE_TYPES_LABEL}).` },
   { to: '/scan', icon: 'camera', title: 'Scan', text: 'Dokumente mit der Smartphone-Kamera erfassen (PWA).' },
   { to: '/dokumente', icon: 'folder', title: 'Dokumente', text: 'Archiv durchsehen, filtern, sortieren und einzelne Dokumente öffnen.' },
   { to: '/pruefen', icon: 'check', title: 'Zu prüfen', text: 'Rückfragen der KI beantworten, Erkennung bestätigen oder korrigieren.' },
@@ -18,22 +19,23 @@ const features = [
   { to: '/assistent', icon: 'chat', title: 'KI-Assistent', text: 'Fragen in natürlicher Sprache stellen — mit Quellenangaben.' },
   { to: '/steuer', icon: 'calculator', title: 'Steuer', text: 'Steuerrelevante Belege filtern und als ZIP-Paket exportieren.' },
   { to: '/garantien', icon: 'shield', title: 'Garantien', text: 'Ablaufdaten verfolgen, mit Erinnerungen vor Garantieende.' },
-  { to: '/einstellungen', icon: 'cog', title: 'System', text: 'Health, Backups, Ablagebereiche, E-Mail-Konten und Updates.' },
+  { to: '/einstellungen', icon: 'cog', title: 'System', text: 'Systemstatus, Backups, Ablagebereiche, E-Mail-Konten und Updates.' },
 ]
 
 const faqs = [
-  { q: 'Wie füge ich ein Dokument hinzu?', a: 'Vier Wege: über „Upload“ per Drag & Drop, über „Scan“ mit der Handykamera, über den Watch-Ordner (automatisch erkannt) oder per E-Mail-Abruf (in den Einstellungen einrichten). Erlaubt sind PDF, JPG, PNG, TIFF und BMP bis 50 MB.' },
+  { q: 'Wie füge ich ein Dokument hinzu?', a: `Vier Wege: über „Upload“ per Drag & Drop, über „Scan“ mit der Handykamera, über den Watch-Ordner (automatisch erkannt) oder per E-Mail-Abruf (unter „System“ einrichten). Erlaubt sind ${FILE_TYPES_LABEL} bis ${MAX_UPLOAD_SIZE_MB} MB pro Datei.` },
+  { q: 'Welche E-Mails werden abgerufen?', a: 'Nur ungelesene E-Mails im eingestellten Posteingangs-Ordner. Die KI prüft, ob eine Mail ein Dokument enthält; relevante Anhänge werden importiert, verarbeitete Mails anschließend in den eingestellten Zielordner verschoben. Bereits gelesene Mails werden bewusst nicht angefasst.' },
   { q: 'Was bedeutet „Zu prüfen“?', a: 'Wenn die KI bei der Erkennung unsicher ist (z. B. unklarer Betrag oder Ablagebereich), landet das Dokument unter „Zu prüfen“ statt blind archiviert zu werden. Dort beantwortest du gezielte Rückfragen und bestätigst oder korrigierst die erkannten Werte.' },
   { q: 'Wie funktioniert die automatische Erkennung?', a: 'Zuerst extrahiert eine Texterkennung (OCR) den Inhalt. Anschließend bestimmt ein lokales Sprachmodell (Ollama) Dokumenttyp, Datum, Betrag, Aussteller, Steuer- und Garantieangaben und ordnet das Dokument einem Ablagebereich zu.' },
-  { q: 'Etwas wurde falsch erkannt — was kann ich tun?', a: 'Öffne das Dokument in der Detailansicht und korrigiere die Felder direkt. Die App merkt sich wiederkehrende Korrekturen und wendet sie künftig automatisch an — die Erkennung wird mit der Zeit besser.' },
+  { q: 'Etwas wurde falsch erkannt — was kann ich tun?', a: 'Öffne das Dokument in der Detailansicht und korrigiere die Felder direkt. Korrekturen, die du beim Beantworten von Rückfragen unter „Zu prüfen“ machst, merkt sich die App: Sie dienen der KI als Beispiele, und dieselbe Korrektur wird ab dem dritten Mal bei neuen Dokumenten automatisch angewendet.' },
   { q: 'Wo werden meine Dokumente gespeichert?', a: 'Alles liegt lokal auf deiner Hardware im Ordner „data“: Originale, das geordnete Archiv (nach Bereich/Jahr/Monat/Typ) und die Sicherungen. Nichts wird in eine Cloud hochgeladen.' },
   { q: 'Wie suche ich in meinen Dokumenten?', a: 'Nutze die Suchleiste oben oder die Seite „Suche“. Sie durchsucht den Volltext aller Dokumente und lässt sich nach Typ, Zeitraum und weiteren Facetten filtern. Häufige Suchen kannst du speichern.' },
   { q: 'Was kann der KI-Assistent?', a: 'Stell Fragen in natürlicher Sprache, z. B. „Wie viel habe ich 2025 für Handwerker ausgegeben?“. Der Assistent durchsucht deine Dokumente und antwortet mit Verweisen auf die zugrunde liegenden Belege.' },
-  { q: 'Wie exportiere ich Steuerbelege?', a: 'Auf der Seite „Steuer“ wählst du das Jahr und die Kategorien aus und erzeugst ein ZIP-Paket mit allen Belegen, einer Übersichts-PDF und einer CSV-Liste — fertig für die Steuererklärung.' },
+  { q: 'Wie exportiere ich Steuerbelege?', a: 'Auf der Seite „Steuer“ wählst du das Jahr (und bei mehreren Ablagebereichen optional einen Bereich) und erzeugst ein ZIP-Paket mit allen steuerrelevanten Belegen, einer Übersichts-PDF und einer CSV-Liste. Die Summen enthalten nur Beträge in Euro; Belege in anderen Währungen werden gesondert aufgeführt.' },
   { q: 'Wie scanne ich mit dem Smartphone?', a: 'Öffne die App im Handy-Browser (gleiches WLAN) und nutze „Scan“. Die Kamera-Funktion benötigt eine sichere Verbindung (HTTPS oder localhost); ist die App nur über http erreichbar, richte HTTPS ein (siehe Installationshinweise) oder lade die Fotos stattdessen über „Upload“ hoch.' },
   { q: 'Brauche ich eine Internetverbindung?', a: 'Nein. Erfassung, OCR, KI-Analyse und Suche laufen vollständig lokal. Eine Verbindung nach außen entsteht nur, wenn du die optionale Update-Prüfung in den Einstellungen aktivierst.' },
-  { q: 'Wie schütze ich den Zugang?', a: 'In der Konfiguration lässt sich ein optionaler PIN-Schutz aktivieren. Danach fragt die App beim Öffnen nach dem PIN. Für ein privates Heimnetz ist das meist ausreichend.' },
-  { q: 'Wie sichere ich meine Daten?', a: 'Unter „System“ kannst du jederzeit ein Backup erstellen; zusätzlich läuft täglich eine automatische Sicherung. Für ein vollständiges Backup inklusive Originaldateien den Datenordner mitsichern (z. B. auf NAS).' },
+  { q: 'Wie schütze ich den Zugang?', a: 'Der Zugang ist standardmäßig per PIN geschützt: Bei der Installation wird automatisch ein PIN vergeben, nach dem die App beim Öffnen fragt. PIN ändern oder den Schutz abschalten kannst du in der Konfiguration (PIN_CODE bzw. PIN_ENABLED). Ist der Schutz aus, weist ein Hinweis in der App darauf hin.' },
+  { q: 'Wie sichere ich meine Daten?', a: 'Unter „System“ → „Backups“ sichert „Backup (DB)“ die Datenbank, „Vollbackup“ zusätzlich alle Originaldokumente. Täglich läuft außerdem automatisch ein Datenbank-Backup (ohne Originaldateien). Die Sicherungen liegen im Datenordner — kopiere sie regelmäßig auf ein anderes Laufwerk oder ein NAS.' },
 ]
 
 const icons = {

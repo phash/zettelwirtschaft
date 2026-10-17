@@ -15,9 +15,9 @@ async def _create_notifications(db: AsyncSession) -> list[Notification]:
         is_read=False,
     )
     n2 = Notification(
-        type=NotificationType.PROCESSING_DONE,
-        title="Verarbeitung abgeschlossen",
-        message="Dokument Rechnung-2024.pdf wurde erfolgreich verarbeitet.",
+        type=NotificationType.REVIEW_NEEDED,
+        title="Bitte prüfen: Rechnung-2024",
+        message="Die KI hat eine Rückfrage.",
         is_read=False,
     )
     n3 = Notification(

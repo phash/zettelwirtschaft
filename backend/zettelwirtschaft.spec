@@ -2,7 +2,7 @@
 #
 # Build:
 #   cd backend
-#   pyinstaller zettelwirtschaft.spec --clean --noconfirm
+#   python -m PyInstaller zettelwirtschaft.spec --clean --noconfirm
 #
 # Output: dist/zettelwirtschaft-backend/ (onedir)
 # Entry:  dist/zettelwirtschaft-backend/zettelwirtschaft-backend.exe
@@ -10,8 +10,6 @@
 # noqa - PyInstaller-Spec ist kein normales Python-Modul
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
-
-block_cipher = None
 
 # --- Data-Files: nicht-Python-Assets in das Bundle packen ---
 datas = [
@@ -76,7 +74,6 @@ hiddenimports = [
     "pdf2image",
     "pdfplumber",
     "pytesseract",
-    "PIL._tkinter_finder",
 
     # Crypto / Email
     "cryptography.hazmat.primitives.kdf.pbkdf2",
@@ -85,14 +82,28 @@ hiddenimports = [
     "email.mime.multipart",
     "email.mime.application",
 
-    # slowapi-Backend (limits-package)
-    "limits.aio.storage",
-    "limits.aio.strategies",
+    # Globales Rate-Limit (app/core/rate_limit.py): limits-Package, Memory-
+    # Backend + Moving-Window — statisch importiert, Daten sammelt der
+    # pyinstaller-hooks-contrib-Hook "hook-limits".
+    "limits.storage",
+    "limits.strategies",
+
+    # Zeitzonen-Daten fuer TIMEZONE (E-Mail-CRON in Ortszeit): Windows hat
+    # keine System-tzdata, zoneinfo laedt das tzdata-Package erst zur Laufzeit
+    # (fuer die Analyse unsichtbar). Der Eintrag triggert "hook-tzdata", der
+    # Daten + Unterpakete (zoneinfo.Europe ...) einsammelt — sonst faellt
+    # TIMEZONE im Bundle still auf UTC zurueck.
+    "tzdata",
 ]
 
 # Submodules die manchmal lazy-loaded sind
 hiddenimports += collect_submodules("chromadb")
-hiddenimports += collect_submodules("alembic.versions")
+# Alle App-Module: die Migrationen unter alembic/versions/ werden als datas zur
+# Laufzeit geladen; ihre Imports (z.B. app.core.sqlite_migration) sieht die
+# PyInstaller-Analyse nicht -> sonst ModuleNotFoundError bei --migrate-only.
+hiddenimports += collect_submodules("app")
+# Die App-Migrationen (alembic/versions/*.py) sind kein Paket: sie liegen als
+# datas im Bundle (oben) und werden von alembic/env.py zur Laufzeit geladen.
 
 # --- Analyse ---
 a = Analysis(
@@ -114,13 +125,10 @@ a = Analysis(
         "matplotlib",
         "tornado",
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 # Wichtig: onedir-Mode (kein --onefile). Das gibt:
 #   1. Schnelleren Startup (kein Selbst-Entpacken bei jedem Start)
@@ -148,7 +156,6 @@ exe = EXE(
 coll = COLLECT(
     exe,
     a.binaries,
-    a.zipfiles,
     a.datas,
     strip=False,
     upx=False,

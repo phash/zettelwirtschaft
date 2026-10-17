@@ -76,3 +76,30 @@ def test_backup_cli_out_dir(test_settings: Settings, monkeypatch, capsys, tmp_pa
     zip_path = Path(printed)
     assert zip_path.exists()
     assert zip_path.parent == out_dir, f"Backup nicht im out-dir: {zip_path}"
+
+
+def test_backup_cli_missing_config_fails(tmp_path, capsys):
+    """Regression: --config <fehlt> lief still mit den Defaults weiter und meldete
+    ein (leeres) Backup mit Exit-Code 0 — direkt vor "Daten loeschen?"."""
+    from app.entrypoint import main
+
+    out_dir = tmp_path / "out"
+    rc = main(["--config", str(tmp_path / "gibt-es-nicht.toml"), "--backup", "--out-dir", str(out_dir)])
+    assert rc == 2
+    assert "Konfigurationsdatei nicht gefunden" in capsys.readouterr().err
+    assert not out_dir.exists()
+
+
+def test_backup_cli_missing_database_fails(test_settings: Settings, monkeypatch, capsys, tmp_path):
+    import app.config
+    monkeypatch.setattr(app.config, "get_settings", lambda: test_settings)
+
+    from app.entrypoint import main
+    out_dir = tmp_path / "out"
+    rc = main(["--backup", "--out-dir", str(out_dir)])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out.strip() == ""
+    assert "Datenbankdatei nicht gefunden" in captured.err
+    assert not any(out_dir.glob("backup_*.zip")) if out_dir.exists() else True

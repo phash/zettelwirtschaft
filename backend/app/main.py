@@ -24,11 +24,13 @@ from app.api.notifications import router as notifications_router
 from app.api.review import router as review_router
 from app.api.search import router as search_router
 from app.api.system import router as system_router
+from app.api.tasks import router as tasks_router, task_conflict_handler
 from app.api.tax import router as tax_router
 from app.api.warranties import router as warranties_router
-from app.config import get_settings
+from app.config import get_settings, settings_for_request
 from app.core.version import read_app_version
 from app.database import async_session_factory
+from app.services.task_service import TaskConflictError
 
 
 @asynccontextmanager
@@ -56,7 +58,8 @@ async def lifespan(app: FastAPI):
         Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
         logger.info("Export-Verzeichnis bereit: %s", settings.EXPORT_DIR)
 
-    # DB-Schema wird von entrypoint.sh via migrate.py + Alembic verwaltet
+    # DB-Schema wird vor dem App-Start migriert: Docker ueber entrypoint.sh ->
+    # migrate.py, Native ueber app/entrypoint.py (beide Alembic).
 
     # FTS5-Index sicherstellen
     from app.services.search_service import ensure_fts_table
@@ -72,65 +75,44 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "SICHERHEITSHINWEIS: PIN-Schutz ist deaktiviert (PIN_ENABLED=false). "
             "Alle Dokumente und Einstellungen sind im Heimnetz ohne Passwort "
-            "zugaenglich. Aktivieren in .env: PIN_ENABLED=true + PIN_CODE=xxxx, "
-            "danach Backend-Container neu starten."
+            "zugaenglich. Aktivieren in .env bzw. config.toml: PIN_ENABLED=true + "
+            "PIN_CODE=xxxx, danach Dienst bzw. Backend-Container neu starten."
         )
 
-    # Stuck-Job-Recovery: Jobs die beim letzten Crash auf PROCESSING haengen
-    # geblieben sind auf PENDING zuruecksetzen, damit der Worker sie erneut
-    # bearbeitet.
-    # B5: Nur Jobs deren Heartbeat (processing_started_at) aelter als 10 Minuten
-    # ist — verhindert dass ein legitimer Container-Restart waehrend laufender
-    # Verarbeitung den Job doppelt verarbeitet.
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import or_, update
-    from app.models.processing_job import JobStatus, ProcessingJob
-
-    STALE_MINUTES = 10
-    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=STALE_MINUTES)
+    # Stuck-Job-Recovery: durch den Neustart unterbrochene Jobs (PROCESSING)
+    # zuruecksetzen — es gibt nur den einen In-Process-Worker.
+    from app.services.queue_worker_service import recover_interrupted_jobs
 
     async with async_session_factory() as session:
-        recovery_result = await session.execute(
-            update(ProcessingJob)
-            .where(ProcessingJob.status == JobStatus.PROCESSING)
-            .where(
-                or_(
-                    ProcessingJob.processing_started_at == None,  # noqa: E711
-                    ProcessingJob.processing_started_at < stale_threshold,
-                )
-            )
-            .values(
-                status=JobStatus.PENDING,
-                processing_started_at=None,
-                error_message=f"Worker neu gestartet (>{STALE_MINUTES} Min steckengeblieben), Job wird wiederholt",
-            )
-        )
-        if recovery_result.rowcount:
-            logger.warning(
-                "%d haengender Job(s) von PROCESSING -> PENDING zurueckgesetzt",
-                recovery_result.rowcount,
-            )
-        await session.commit()
+        await recover_interrupted_jobs(session, settings)
 
-    # Embedding-Modell im Hintergrund sicherstellen — Pull kann bei grossen Modellen
-    # (bge-m3 ~1.2 GB) mehrere Minuten dauern, das darf den HTTP-Server nicht
-    # blockieren. Falls das Modell noch nicht da ist, gibt embed_text() so lange
-    # None zurueck und Vektorisierung schlaegt graceful fehl.
-    async def _ensure_embedding_bg():
-        try:
-            from app.services.embedding_service import ensure_embedding_model
-            if await ensure_embedding_model(settings):
-                logger.info("Embedding-Modell bereit")
-            else:
-                logger.warning("Embedding-Modell konnte nicht geladen werden - Chat nicht verfuegbar")
-        except Exception:
-            logger.warning("Embedding-Modell-Check fehlgeschlagen", exc_info=True)
+    # Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) laufen nur
+    # in-process: beim Start verwaiste PENDING/RUNNING-Eintraege auf FAILED
+    # setzen und alte abgeschlossene Eintraege aufraeumen.
+    from app.services.task_service import prune_finished_tasks, recover_interrupted_tasks
+
+    await recover_interrupted_tasks(async_session_factory)
+    await prune_finished_tasks(async_session_factory)
+
+    # LLM- und Embedding-Modell im Hintergrund sicherstellen (exakter Tag-Abgleich,
+    # fehlende Modelle werden gepullt) — ein Pull (bge-m3 ~1.2 GB, LLM mehrere GB)
+    # kann Minuten dauern und darf den HTTP-Server nicht blockieren. Bis dahin
+    # landen Dokumente mit klarer Rueckfrage ("Modell nicht installiert") in der
+    # Pruefung; der Health-Check meldet "wird heruntergeladen".
+    async def _ensure_models_bg():
+        from app.services.ollama_client import ensure_configured_models
+        results = await ensure_configured_models(settings)
+        missing = [name for name, ok in results.items() if not ok]
+        if missing:
+            logger.warning("Ollama-Modelle nicht verfuegbar: %s", ", ".join(missing))
+        else:
+            logger.info("Ollama-Modelle bereit: %s", ", ".join(results))
 
     # Background-Tasks starten
     background_tasks: list[asyncio.Task] = []
 
-    # Embedding-Modell-Check als ersten Background-Task (non-blocking)
-    background_tasks.append(asyncio.create_task(_ensure_embedding_bg()))
+    # Modell-Check als ersten Background-Task (non-blocking)
+    background_tasks.append(asyncio.create_task(_ensure_models_bg()))
 
     # Queue-Worker
     from app.services.queue_worker_service import run_queue_worker
@@ -156,7 +138,7 @@ async def lifespan(app: FastAPI):
     from app.services.warranty_reminder_service import run_warranty_reminder
 
     reminder_task = asyncio.create_task(
-        run_warranty_reminder(async_session_factory, settings)
+        run_warranty_reminder(async_session_factory)
     )
     background_tasks.append(reminder_task)
 
@@ -176,43 +158,14 @@ async def lifespan(app: FastAPI):
     )
     background_tasks.append(email_task)
 
-    # Initiale Vektorisierung (wenn ChromaDB leer)
-    # ChromaDB ist beim Backend-Start ggf. noch nicht ready; mit kurzem Retry
-    # vermeiden wir falsche „leer"-Reads und verhindern dass die Initial-
-    # Vektorisierung mit Rebuild-Vectors-Endpoint kollidiert (gleicher Lock).
-    async def _initial_vectorize():
-        await asyncio.sleep(5)
-        if getattr(app.state, "rebuild_status", {}).get("in_progress"):
-            logger.info("Rebuild-Vectors laeuft bereits — initiale Vektorisierung uebersprungen")
-            return
-        try:
-            from app.services.vectorize_service import get_collection_count, vectorize_document
-            from app.models.document import Document, DocumentStatus
-            from sqlalchemy import select
+    # Initiale Vektorisierung (wenn ChromaDB leer) — Count-Retry und Schutz vor
+    # Leer-Fehlinterpretation in vectorize_service.run_initial_vectorize; der
+    # Rebuild selbst laeuft als Hintergrund-Vorgang "rebuild_vectors".
+    from app.services.vectorize_service import run_initial_vectorize
 
-            count = get_collection_count(settings)
-            if count > 0:
-                logger.info("ChromaDB enthaelt %d Eintraege, ueberspringe initiale Vektorisierung", count)
-                return
-
-            async with async_session_factory() as session:
-                result = await session.execute(
-                    select(Document).where(Document.status != DocumentStatus.DELETED)
-                )
-                docs = result.scalars().all()
-                if not docs:
-                    return
-
-                logger.info("Starte initiale Vektorisierung fuer %d Dokumente...", len(docs))
-                total_chunks = 0
-                for doc in docs:
-                    chunks = await vectorize_document(doc, settings)
-                    total_chunks += chunks
-                logger.info("Initiale Vektorisierung abgeschlossen: %d Chunks", total_chunks)
-        except Exception:
-            logger.warning("Initiale Vektorisierung fehlgeschlagen", exc_info=True)
-
-    vectorize_task = asyncio.create_task(_initial_vectorize())
+    vectorize_task = asyncio.create_task(
+        run_initial_vectorize(async_session_factory, settings)
+    )
     background_tasks.append(vectorize_task)
 
     yield
@@ -223,37 +176,49 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*background_tasks, return_exceptions=True)
     logger.info("Background-Tasks beendet")
 
-    # H-BE-1: Singleton-LLM-Client sauber schliessen.
-    from app.services.llm_service import aclose_client as aclose_llm_client
-    await aclose_llm_client()
+    # Laufende Hintergrund-Vorgaenge abbrechen (werden als FAILED markiert).
+    from app.services.task_service import shutdown_tasks
+    await shutdown_tasks()
 
+    # H-BE-1: Singleton-LLM-Client sauber schliessen.
+    from app.services.ollama_client import aclose_client as aclose_ollama_client
+    await aclose_ollama_client()
+
+
+# Globales Rate-Limit: 200 Requests/Minute pro Client-IP als App-weite
+# Dependency (laeuft nach dem Routing, kennt also den Endpoint fuer
+# @limiter.exempt). Ergaenzt das auth-spezifische 5/30s aus N-002 — verhindert
+# dass ein einzelner Client das LAN-Backend mit Polling oder Suchen
+# ueberlastet. Die Pin-Login-Route behaelt ihren eigenen, strengeren Lockout.
+from fastapi import Depends, Request
+from app.core.rate_limit import global_rate_limit, limiter
+from app.core.request_limits import RequestBodyLimitMiddleware
 
 app = FastAPI(
     title="Zettelwirtschaft",
     description="Lokales Dokumentenmanagementsystem fuer Privathaushalte",
     version=read_app_version(),
     lifespan=lifespan,
+    dependencies=[Depends(global_rate_limit)],
 )
 
-# slowapi global rate-limit: 200 Requests/Minute pro IP. Ergaenzt das
-# auth-spezifische 5/30s aus N-002 — verhindert dass ein einzelner Client
-# das LAN-Backend mit Polling oder Suchen ueberlastet. Die Pin-Login-Route
-# behaelt ihren eigenen, strengeren Limiter.
-# Limiter-Definition liegt in app.core.rate_limit damit Endpoints
-# (z.B. /api/health) ihn fuer @limiter.exempt importieren koennen.
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from app.core.rate_limit import limiter
+app.add_exception_handler(TaskConflictError, task_conflict_handler)
 
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Unerwartete Fehler einheitlich als JSON ``{"detail": ...}`` (statt
+    Starlettes text/plain "Internal Server Error") — gleicher Vertrag wie alle
+    anderen API-Fehler. Details nur ins Log, nicht an den Client."""
+    logging.getLogger("zettelwirtschaft").error(
+        "Unbehandelter Fehler bei %s %s", request.method, request.url.path, exc_info=exc
+    )
+    return JSONResponse(status_code=500, content={"detail": "Interner Serverfehler"})
+
 
 class PinAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        settings_provider = request.app.dependency_overrides.get(get_settings, get_settings)
-        settings = settings_provider()
+        settings = settings_for_request(request)
         if not settings.PIN_ENABLED:
             return await call_next(request)
 
@@ -281,23 +246,24 @@ class PinAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# Request-Body-Obergrenze (413) — im Native-Betrieb gibt es kein nginx mit
+# client_max_body_size davor, uvicorn wuerde beliebig grosse Uploads puffern.
+# Bewusst VOR PinAuthMiddleware registriert (= innerer Layer): die 413 beim
+# Streamen entsteht im receive() und darf nicht durch die Task-Gruppe der
+# BaseHTTPMiddleware laufen (sonst wird daraus ein generisches 400).
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(PinAuthMiddleware)
 
 # CORS: LAN-Zugriff erlauben (Home-Netzwerk, kein Cloud)
 _settings = get_settings()
-_cors_origins = [
-    f"http://localhost:{_settings.FRONTEND_PORT}" if hasattr(_settings, 'FRONTEND_PORT') else "http://localhost:8080",
-    "http://localhost:8080",
-    "http://localhost:8000",
-]
-# M-1 (Re-Review): CORS-Regex auf private RFC1918-Bereiche.
+# M-1 (Re-Review): CORS-Regex auf localhost + private RFC1918-Bereiche (jeder
+# Port, http/https) — eine zusaetzliche allow_origins-Liste waere redundant.
 # Hinweis: `allow_credentials=True` + breite Origin-Regex bedeutet, dass jede
 # Seite im selben LAN, die Cookies von zettelwirtschaft.local hat, Requests
 # senden kann. Im Heim-LAN akzeptabel, im Firmennetz problematisch — siehe
 # README/CLAUDE.md fuer den Trade-off.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
@@ -317,6 +283,7 @@ app.include_router(notifications_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
+app.include_router(tasks_router, prefix="/api")
 
 
 # Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.
@@ -343,7 +310,9 @@ def _mount_frontend() -> None:
 
     # SPA-Fallback: liefert echte Files wenn vorhanden, sonst index.html
     # (Vue-Router uebernimmt das Routing dann clientseitig).
+    # Statische SPA-Shell zaehlt nicht gegen das API-Rate-Limit (wie /assets).
     @app.get("/{full_path:path}", include_in_schema=False)
+    @limiter.exempt
     async def _spa_fallback(full_path: str, request: Request):
         # Bekannte /api/*-Routen fangen die Router oben ab. Unbekannte API-Pfade
         # landen aber hier und duerfen NICHT index.html (200, text/html) liefern —

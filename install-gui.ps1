@@ -1,4 +1,4 @@
-# Zettelwirtschaft - Grafischer Windows-Installer
+﻿# Zettelwirtschaft - Grafischer Windows-Installer
 $ErrorActionPreference = "Stop"
 $script:ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script:ProjectDir
@@ -35,6 +35,9 @@ $script:Config         = @{ Port=8080; WatchEnabled=$false; Model="qwen2.5:7b-in
 $script:Checks         = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; RAM=0; FreeGB=0 }
 $script:Job            = $null
 $script:Phase          = 0
+# Nicht-fatale Fehler (Backup, Health-Timeout, Modell-Download): die Installation
+# ist nutzbar, wird aber als "mit Warnungen" abgeschlossen.
+$script:Warnings       = @()
 $script:HasSources     = Test-Path (Join-Path $script:ProjectDir "backend")
 
 # --- Colors ---
@@ -570,6 +573,7 @@ function Set-StepStatus {
         "active" { $script:stepLabels[$Idx].Text = "  >  $text";  $script:stepLabels[$Idx].ForeColor = $cAccent }
         "done"   { $script:stepLabels[$Idx].Text = "  +  $text";  $script:stepLabels[$Idx].ForeColor = $cOK }
         "error"  { $script:stepLabels[$Idx].Text = "  X  $text";  $script:stepLabels[$Idx].ForeColor = $cErr }
+        "warn"   { $script:stepLabels[$Idx].Text = "  !  $text";  $script:stepLabels[$Idx].ForeColor = $cWarn }
         "skip"   { $script:stepLabels[$Idx].Text = "  -  $text";  $script:stepLabels[$Idx].ForeColor = $cSub }
     }
 }
@@ -684,21 +688,27 @@ function Phase-Backup {
         Log "  Konfiguration gesichert"
     }
 
-    # Auf API-Backup versuchen (falls Backend noch laeuft).
-    # F-02-Pendant (Re-Review): Backend ist seit N-001 nur ueber Frontend-Port
-    # erreichbar. Port aus Config nehmen statt hardcoded 8000.
-    $apiPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
-    try {
-        $null = Invoke-WebRequest -Uri "http://localhost:$apiPort/api/system/backup" -Method POST -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-        Log "  API-Backup erstellt"
-    } catch {
-        Log "  API-Backup uebersprungen (Backend nicht erreichbar)"
-    }
-
     Log "  Backup-Verzeichnis: $($script:BackupDir)"
-    $script:progressBar.Value = 15
-    Set-StepStatus 0 "done"
-    Next-Phase
+    $script:progressBar.Value = 10
+
+    # Vollstaendiges Backup (DB + Dokumente) direkt im laufenden Backend-Container.
+    # Nicht ueber die HTTP-API: die verlangt bei aktivem PIN-Schutz (Default)
+    # eine Anmeldung und antwortete mit 401. Fehlschlag ist nicht fatal (lokale
+    # Kopie oben existiert) -> Warnung ueber den Timer-Handler.
+    Log "Erstelle vollständiges Backup im Container (Datenbank + Dokumente)..."
+    $dir = $script:ProjectDir
+    $script:Job = Start-Job -ScriptBlock {
+        param($d); Set-Location $d
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $out = & cmd /c "docker compose exec -T backend python -m app.entrypoint --backup --full 2>&1"
+        $rc = $LASTEXITCODE
+        if ($rc -ne 0) {
+            throw "Vollständiges Backup fehlgeschlagen (Exit $rc, Backend läuft evtl. nicht) - die lokale Sicherheitskopie bleibt erhalten."
+        }
+        $last = @($out) | Where-Object { "$_".Trim() } | Select-Object -Last 1
+        Write-Output "Backup erstellt: $last"
+    } -ArgumentList $dir
+    $timer.Start()
 }
 
 function Phase-MigrateConfig {
@@ -819,21 +829,16 @@ function Phase-Health {
     Set-StepStatus 3 "active"
     Log "Warte auf Backend..."
     $script:progressBar.Value = if ($script:IsUpdate) { 75 } else { 70 }
-    # F-02-Pendant: Health-Check ueber Frontend-Port (nginx-Proxy), nicht
-    # direkt auf 8000.
-    $healthPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
-    $script:Job = Start-Job -ArgumentList $healthPort -ScriptBlock {
-        param($port)
-        $elapsed = 0
-        while ($elapsed -lt 120) {
-            try {
-                $null = Invoke-WebRequest -Uri "http://localhost:$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-                Write-Output "Backend ist bereit."; return
-            } catch {}
-            Start-Sleep -Seconds 3; $elapsed += 3
-            Write-Output "  Warte... ($elapsed s)"
+    # Gemeinsamer Helfer wie start.bat/update.bat: prueft ueber nginx
+    # (FRONTEND_PORT aus .env bzw. HTTPS, wenn das SSL-Overlay aktiv ist), nicht
+    # direkt auf 8000. Eigener Prozess, damit die Ausgabe im Log landet.
+    $script:Job = Start-Job -ArgumentList $script:ProjectDir -ScriptBlock {
+        param($d); Set-Location $d
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d "wait-health.ps1") -ProjectDir $d -TimeoutSeconds 120 2>&1 |
+            ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Zettelwirtschaft antwortet nach 120 s nicht. Prüfen mit: docker compose logs backend"
         }
-        Write-Output "Timeout - Backend antwortet noch nicht"
     }
     $timer.Start()
 }
@@ -848,11 +853,17 @@ function Phase-Model {
         param($d, $mod); Set-Location $d
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-        # Pruefen ob Modell bereits vorhanden
-        $existingModels = & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama list 2>&1"
-        $modelBase = $mod -replace ':.*$', ''  # "llama3.2:latest" -> "llama3.2"
-        if ($existingModels -match [regex]::Escape($modelBase)) {
-            Write-Output "Modell '$mod' ist bereits vorhanden, kein Download noetig."
+        # Pruefen ob GENAU dieses Modell (inkl. Tag) vorhanden ist. Ollama sucht
+        # Modelle per exaktem Tag: "qwen2.5:7b" oder "qwen2.5-coder" ersetzen
+        # "qwen2.5:7b-instruct" nicht (sonst 404 bei jeder Analyse). Ohne Tag
+        # meint Ollama ":latest".
+        $wanted = if ($mod -match ':') { $mod } else { "${mod}:latest" }
+        $installed = @(& cmd /c "docker compose exec -T ollama ollama list 2>nul" |
+            Select-Object -Skip 1 |
+            ForEach-Object { ("$_".Trim() -split '\s+')[0] } |
+            Where-Object { $_ })
+        if ($installed -contains $wanted) {
+            Write-Output "Modell '$wanted' ist bereits vorhanden, kein Download nötig."
             return
         }
 
@@ -879,6 +890,9 @@ function Phase-Model {
                     Write-Output $clean
                 }
             }
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Download des LLM-Modells '$mod' fehlgeschlagen (Exit $LASTEXITCODE). Später erneut: docker compose exec ollama ollama pull $mod"
         }
     } -ArgumentList $dir, $m
     $timer.Start()
@@ -932,8 +946,11 @@ $timer.add_Tick({
         4 { $script:progressBar.Value = if ($script:IsUpdate) { 92 } else { 95 } }
     }
 
-    if ($failed -and $script:Phase -le 2) {
-        $idx = $script:Phase
+    # Fatal sind nur Image-Download (1) und Container-Start (2): ohne sie laeuft
+    # nichts. Backup (0, Update), Health-Wartezeit (3) und Modell-Download (4)
+    # lassen eine nutzbare Installation zurueck -> Warnung, weiter.
+    $idx = $script:Phase
+    if ($failed -and ($idx -eq 1 -or $idx -eq 2)) {
         Set-StepStatus $idx "error"
         Log ""; Log "FEHLER: $errMsg"; Log "Pruefe: docker compose logs"
         if ($script:BackupDir) { Log "Backup liegt in: $($script:BackupDir)" }
@@ -941,8 +958,13 @@ $timer.add_Tick({
         return
     }
 
-    $idx = switch ($script:Phase) { 1 {1} 2 {2} 3 {3} 4 {4} default {-1} }
-    if ($idx -ge 0) { Set-StepStatus $idx "done" }
+    if ($failed) {
+        Set-StepStatus $idx "warn"
+        Log "WARNUNG: $errMsg"
+        $script:Warnings += $errMsg
+    } elseif ($idx -ge 0 -and $idx -le 4) {
+        Set-StepStatus $idx "done"
+    }
     Next-Phase
 })
 
@@ -954,13 +976,23 @@ function Show-Complete {
     $pnlContent.Controls.Clear()
     $btnCancel.Visible = $false; $btnNext.Visible = $true; $btnNext.Text = "Schliessen"
 
+    $hasWarnings = $script:Warnings.Count -gt 0
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = if ($script:IsUpdate) { "Update auf v$($script:NewVersion) erfolgreich!" } else { "Installation erfolgreich!" }
+    $lbl.Text = if ($hasWarnings) {
+        if ($script:IsUpdate) { "Update auf v$($script:NewVersion) abgeschlossen – mit Warnungen" } else { "Installation abgeschlossen – mit Warnungen" }
+    } elseif ($script:IsUpdate) { "Update auf v$($script:NewVersion) erfolgreich!" } else { "Installation erfolgreich!" }
     $lbl.Location = [System.Drawing.Point]::new(30, 20); $lbl.Size = [System.Drawing.Size]::new(560, 35)
-    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 15); $lbl.ForeColor = $cOK
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 15)
+    $lbl.ForeColor = if ($hasWarnings) { $cWarn } else { $cOK }
     $pnlContent.Controls.Add($lbl)
 
+    # Gleiche URL-Erkennung wie der Health-Check (HTTPS bei aktivem SSL-Overlay)
     $url = "http://localhost:$($script:Config.Port)"
+    $waitHealth = Join-Path $script:ProjectDir "wait-health.ps1"
+    if (Test-Path -LiteralPath $waitHealth) {
+        $detected = & $waitHealth -ProjectDir $script:ProjectDir -UrlOnly
+        if ($detected) { $url = "$detected" }
+    }
     $link = New-Object System.Windows.Forms.LinkLabel
     $link.Text = "Zettelwirtschaft oeffnen: $url"
     $link.Location = [System.Drawing.Point]::new(30, 65); $link.Size = [System.Drawing.Size]::new(560, 25)
@@ -978,9 +1010,16 @@ function Show-Complete {
 
     $info = New-Object System.Windows.Forms.Label
     $infoY = if ($script:IsUpdate -and $script:BackupDir) { 155 } else { 110 }
-    $info.Location = [System.Drawing.Point]::new(30, $infoY); $info.Size = [System.Drawing.Size]::new(560, 120)
+    $info.Location = [System.Drawing.Point]::new(30, $infoY); $info.Size = [System.Drawing.Size]::new(560, (282 - $infoY))
     $info.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $info.Text = "Nuetzliche Befehle:`r`n`r`n  start.bat        System starten + Browser oeffnen`r`n  stop.bat         System stoppen`r`n  update.bat       System aktualisieren`r`n  uninstall.bat    System deinstallieren"
+    if ($hasWarnings) {
+        # Nachzuholende Schritte statt der Befehlsliste (Meldungen enthalten den
+        # jeweiligen Befehl zum erneuten Versuch).
+        $info.ForeColor = $cWarn
+        $info.Text = "Bitte nachholen:`r`n`r`n" + (($script:Warnings | ForEach-Object { "- $_" }) -join "`r`n`r`n")
+    } else {
+        $info.Text = "Nuetzliche Befehle:`r`n`r`n  start.bat        System starten + Browser oeffnen`r`n  stop.bat         System stoppen`r`n  update.bat       System aktualisieren`r`n  uninstall.bat    System deinstallieren"
+    }
     $pnlContent.Controls.Add($info)
 
     $script:chkBrowser = New-Object System.Windows.Forms.CheckBox

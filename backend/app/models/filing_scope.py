@@ -2,23 +2,28 @@ import re
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
+from app.core.text_utils import transliterate_ascii
 from app.database import Base
 
 
 def generate_slug(name: str) -> str:
-    """Erzeugt einen URL-freundlichen Slug aus einem Namen."""
-    slug = name.lower()
-    replacements = {
-        "\u00e4": "ae", "\u00f6": "oe", "\u00fc": "ue", "\u00df": "ss",
-    }
-    for char, repl in replacements.items():
-        slug = slug.replace(char, repl)
+    """Erzeugt einen URL-/Ordner-freundlichen Slug aus einem Namen.
+
+    Der Slug wird Teil des Archivpfads (``archive/{slug}/...``) und darf daher
+    nie leer sein: ein Name ohne ASCII-Buchstaben ('€', Emoji, CJK) bekommt
+    einen generierten Slug ``bereich-<hex>`` (sonst zeigte der Scope-Ordner
+    auf das Archiv-Wurzelverzeichnis).
+    """
+    slug = transliterate_ascii(name).lower()
     slug = re.sub(r"[^a-z0-9\s-]", "", slug)
     slug = re.sub(r"[\s]+", "-", slug).strip("-")
     slug = re.sub(r"-+", "-", slug)
+    if not slug:
+        slug = f"bereich-{uuid.uuid4().hex[:8]}"
     return slug
 
 
@@ -35,7 +40,7 @@ class FilingScope(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )
 
     @property

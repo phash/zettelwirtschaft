@@ -1,4 +1,4 @@
-# Zettelwirtschaft - Windows Installer
+﻿# Zettelwirtschaft - Windows Installer
 # PowerShell-Installationsassistent
 
 $ErrorActionPreference = "Stop"
@@ -398,7 +398,8 @@ Write-Host ""
 # =============================================
 Write-Step "5/6" "Warte auf Backend-Start"
 
-$healthUrl = "http://localhost:8000/api/health"
+# Backend ist seit N-001 nur ueber nginx (Frontend-Port) erreichbar, nicht auf 8000.
+$healthUrl = "http://localhost:$port/api/health"
 $healthy = Wait-ForHealth -Url $healthUrl -TimeoutSeconds 120
 
 if ($healthy) {

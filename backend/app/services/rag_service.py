@@ -1,18 +1,21 @@
 """RAG-Service: Retrieval-Augmented Generation Pipeline."""
 
 import asyncio
+import json
 import logging
-from collections import OrderedDict
+import re
 
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core.normalize import enum_value
 from app.models.document import Document, DocumentStatus
-from app.services.embedding_service import embed_text
-from app.services.llm_service import call_llm, call_llm_text, load_prompt_template
-from app.services.search_service import _sanitize_fts_query
-from app.services.vectorize_service import search_similar_chunks
+from app.services.embedding_service import embed_batch
+from app.services.llm_service import call_llm, chat_text, fill_prompt, load_prompt_template
+from app.services.ollama_client import OllamaError
+from app.services.search_service import fts_prefix_term, fts_tokens
+from app.services.vectorize_service import best_chunks_for_documents, search_similar_chunks
 
 logger = logging.getLogger("zettelwirtschaft.rag")
 
@@ -20,40 +23,92 @@ logger = logging.getLogger("zettelwirtschaft.rag")
 # Niedrigere Werte gewichten Top-Treffer staerker, hoehere Werte glaetten.
 RRF_K = 60
 
+_RETRY_HINT = "Bitte versuchen Sie es später erneut."
+
+
+class RagServiceUnavailable(Exception):
+    """Embedding oder Antwort-LLM nicht verfuegbar — die API antwortet mit 503
+    und speichert die Frage NICHT im Verlauf."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+# Delimiter-Tags des Prompt-Templates, tolerant gegen Gross-/Kleinschreibung
+# und Leerzeichen ("</ DOCUMENT_EXCERPTS >").
+_DELIMITER_RE = re.compile(r"<\s*(/?)\s*(document_excerpts|user_question)\s*>", re.IGNORECASE)
+
 
 def _sanitize_for_prompt(text: str) -> str:
-    """B6: Entfernt die Delimiter-Tags des Prompt-Templates aus User-Daten.
+    """B6: Entschaerft die Delimiter-Tags des Prompt-Templates in User-Daten.
 
     Das RAG-Template wrappt OCR-Chunks zwischen <document_excerpts>...</document_excerpts>
     und die User-Frage zwischen <user_question>...</user_question>. Wuerde ein
-    Dokument oder eine User-Eingabe diese Tags selbst enthalten, koennte sie aus
-    dem Wrap ausbrechen und neue Instruktionen einschmuggeln. Verhindern wir,
-    indem wir die Tags entschaerfen (Spitze Klammern ersetzen).
+    Dokument oder eine User-Eingabe diese Tags (in beliebiger Schreibweise)
+    selbst enthalten, koennte sie aus dem Wrap ausbrechen und neue
+    Instruktionen einschmuggeln. Die spitzen Klammern werden ersetzt.
     """
     if not text:
         return ""
-    return (
-        text.replace("<document_excerpts>", "&lt;document_excerpts&gt;")
-        .replace("</document_excerpts>", "&lt;/document_excerpts&gt;")
-        .replace("<user_question>", "&lt;user_question&gt;")
-        .replace("</user_question>", "&lt;/user_question&gt;")
-    )
+    return _DELIMITER_RE.sub(lambda m: f"&lt;{m.group(1)}{m.group(2).lower()}&gt;", text)
+
+
+# Fuellwoerter natuerlichsprachiger Fragen. Ohne Filter verknuepfte die Suche
+# alle Woerter per AND ("Wie viel habe ich ...") und fand fast nie etwas.
+_STOPWORDS = frozenset("""
+    a aber alle allem allen aller alles als also am an auch auf aus bei beim bin bis
+    bist da damit dann das dass dem den denen der des dessen die dies diese diesem
+    diesen dieser dieses doch dort du durch ein eine einem einen einer eines er es
+    etwas euch euer fuer für gab gibt hab habe haben hat hatte hatten hier ich ihr
+    ihre im in ist ja jede jedem jeden jeder jedes jetzt kann kannst kein keine
+    mein meine meinem meinen meiner mich mir mit muss nach nicht noch nun nur ob
+    oder ohne sein seine sich sie sind so soll sollte uber über um und uns unser
+    unter viel viele vom von vor war waren warum was weil welche welchem welchen
+    welcher welches wenn wer werde werden wie wieviel wieso wir wird wo wurde
+    wurden zu zum zur
+    about an and are as at be by can could did do does for from had has have how i
+    in is it its me my of on or our that the their them there these this to was
+    we were what when where which who why will with would you your
+""".split())
+
+
+def _rag_fts_query(question: str) -> str:
+    """FTS5-Ausdruck fuer eine natuerlichsprachige Frage.
+
+    Jedes Wort (ohne Fuellwoerter) wird wie von unicode61 tokenisiert und als
+    gequotete Prefix-Phrase gesucht ("RE-2024-0815" -> ``"RE 2024 0815"*``),
+    die Begriffe werden per OR verknuepft; bm25 sortiert Dokumente mit mehr und
+    selteneren Treffern nach vorne. Durch das Quoting erreicht keine
+    FTS5-Syntax den MATCH.
+    """
+    terms: list[str] = []
+    for word in question.split():
+        tokens = fts_tokens(word)
+        if not tokens:
+            continue
+        if len(tokens) == 1 and (len(tokens[0]) < 2 or tokens[0].lower() in _STOPWORDS):
+            continue
+        term = fts_prefix_term(tokens)
+        if term not in terms:
+            terms.append(term)
+    return " OR ".join(terms)
 
 
 async def _fts_top_doc_ids(
     session: AsyncSession,
     query: str,
-    limit: int = 15,
+    limit: int,
     filing_scope_id: str | None = None,
 ) -> list[str]:
-    """FTS5-Suche fuer den Hybrid-Retrieval-Pfad.
+    """FTS5-Suche fuer den Hybrid-Retrieval-Pfad (bm25-sortierte Doc-IDs).
 
     FTS5 ist exzellent fuer Eigennamen, Rechnungsnummern und exakte Begriffe —
     Vector-Search ist exzellent fuer semantische Naehe. Beide werden via RRF
     kombiniert.
     """
-    sanitized = _sanitize_fts_query(query)
-    if not sanitized:
+    match = _rag_fts_query(query)
+    if not match:
         return []
     sql = """
         SELECT documents_fts.doc_id
@@ -62,11 +117,11 @@ async def _fts_top_doc_ids(
         WHERE documents_fts MATCH :q
           AND d.status != 'DELETED'
     """
-    params: dict = {"q": sanitized}
+    params: dict = {"q": match}
     if filing_scope_id:
         sql += " AND d.filing_scope_id = :scope"
         params["scope"] = filing_scope_id
-    sql += " ORDER BY rank LIMIT :lim"
+    sql += " ORDER BY bm25(documents_fts) LIMIT :lim"
     params["lim"] = limit
     try:
         result = await session.execute(sql_text(sql), params)
@@ -98,8 +153,10 @@ async def _llm_rerank(
 
     Sendet alle Kandidaten in EINEM Prompt und laesst das Modell jeden Chunk
     auf einer 0-10-Skala fuer Relevanz zur Frage bewerten. Schema-Mode
-    erzwingt strukturierten Output. Kombiniert die LLM-Scores additiv mit dem
-    bestehenden RRF-Score und sortiert neu.
+    erzwingt strukturierten Output. Der LLM-Score (auf 0..1 skaliert) wird zum
+    RRF-Score addiert; da RRF-Scores nur ~0.01-0.03 betragen, bestimmt
+    praktisch das LLM die Reihenfolge — RRF entscheidet nur noch bei
+    Gleichstand.
 
     Wird nur aufgerufen wenn `RAG_USE_RERANKER=true` und mehr Kandidaten als
     target_k vorhanden sind.
@@ -120,8 +177,7 @@ async def _llm_rerank(
         raw = await call_llm(prompt, settings, schema=_RERANK_SCHEMA)
         if not raw:
             return chunks[:target_k]
-        import json as _json
-        scores = _json.loads(raw).get("scores", [])
+        scores = json.loads(raw).get("scores", [])
         # NEW-007 / H-05: bei Mismatch trotzdem auf target_k stutzen, sonst
         # bekommt das Antwort-LLM 15 statt 5 Chunks (Lost-in-the-Middle).
         if not scores or len(scores) != len(chunks):
@@ -152,29 +208,34 @@ def _apply_rrf(
     chunks: list[dict],
     fts_doc_ids: list[str],
     target_k: int,
+    extra_chunks: list[dict] | None = None,
 ) -> list[dict]:
     """Reciprocal Rank Fusion zwischen Vector-Chunks und FTS5-Doc-Ranking.
 
     Score(chunk) = 1/(k + vec_rank) + 1/(k + fts_rank_of_its_doc)
-    Boost laesst Chunks aus Dokumenten, die FTS5 hoch gewichtet, ueber
-    semantisch nahen aber thematisch fernen Chunks emporsteigen.
+
+    ``extra_chunks`` sind Chunks von Dokumenten, die NUR die Volltextsuche
+    gefunden hat (z.B. exakte Rechnungsnummer); sie haben keinen Vektor-Rang
+    und konkurrieren allein ueber ihren FTS-Rang.
 
     L1: Annotiert jeden Chunk IN PLACE mit dem Schluessel "_rrf_score". Das ist
     bewusst Teil des Datenflusses — `_llm_rerank` liest diesen Score und erhoeht
-    ihn additiv, die finale Sortierung nutzt ihn ebenfalls. Der Aufrufer uebergibt
+    ihn, die finale Sortierung nutzt ihn ebenfalls. Der Aufrufer uebergibt
     frische Chunk-Dicts pro Request (keine Wiederverwendung/kein Caching), daher
     ist die In-Place-Mutation sicher.
     """
     if not fts_doc_ids:
         return chunks[:target_k]
     fts_rank = {doc_id: idx for idx, doc_id in enumerate(fts_doc_ids)}
-    for vec_rank, chunk in enumerate(chunks):
-        score = 1 / (RRF_K + vec_rank)
+    seen = {c["id"] for c in chunks if "id" in c}
+    candidates = list(chunks) + [c for c in (extra_chunks or []) if c.get("id") not in seen]
+    for position, chunk in enumerate(candidates):
+        score = 1 / (RRF_K + position) if position < len(chunks) else 0.0
         fr = fts_rank.get(chunk["doc_id"])
         if fr is not None:
             score += 1 / (RRF_K + fr)
         chunk["_rrf_score"] = score
-    return sorted(chunks, key=lambda c: c["_rrf_score"], reverse=True)[:target_k]
+    return sorted(candidates, key=lambda c: c["_rrf_score"], reverse=True)[:target_k]
 
 
 async def ask_question(
@@ -186,53 +247,59 @@ async def ask_question(
     """Beantwortet eine Frage mittels RAG-Pipeline.
 
     1. Frage embedden
-    2. Aehnliche Chunks suchen
+    2. Hybrid-Retrieval (Vektor + FTS5, RRF, optional LLM-Reranker)
     3. Kontext + Frage an LLM
     4. Antwort + Quellen zurueckgeben
 
     Args:
         question: Die Benutzerfrage.
         settings: App-Konfiguration.
-        session: Datenbank-Session.
+        session: Datenbank-Session (nur lesend).
         filing_scope_id: Optionaler Ablagebereich-Filter.
 
     Returns:
-        Dict mit answer, sources, chunks_found.
+        Dict mit answer, sources, chunks_found. "Keine relevanten Dokumente"
+        ist eine normale Antwort.
+
+    Raises:
+        RagServiceUnavailable: Embedding- oder Antwort-LLM nicht verfuegbar
+            bzw. leere Antwort.
     """
     # 1. Frage embedden
-    query_embedding = await embed_text(question, settings)
-    if not query_embedding:
-        return {
-            "answer": "Der Embedding-Service ist derzeit nicht verfuegbar. Bitte versuche es spaeter erneut.",
-            "sources": [],
-            "chunks_found": 0,
-        }
+    try:
+        query_embedding = (await embed_batch([question], settings))[0]
+    except OllamaError as e:
+        raise RagServiceUnavailable(f"{e.user_message} {_RETRY_HINT}") from e
 
     # 2. Hybrid Retrieval: Vector + FTS5 mit Reciprocal Rank Fusion.
-    # Vector-Side oversamplt (top_k * 3), damit RRF aus mehr Kandidaten waehlen
-    # kann; FTS5-Side liefert Doc-Ids als Boost-Signal.
+    # Beide Seiten oversamplen (top_k * 3), damit RRF aus mehr Kandidaten waehlen kann.
     fetch_k = settings.RAG_TOP_K * 3
     vector_task = asyncio.to_thread(
-        lambda: search_similar_chunks(
-            query_embedding, settings,
-            top_k=fetch_k,
-            filing_scope_id=filing_scope_id,
-        )
+        search_similar_chunks, query_embedding, settings,
+        top_k=fetch_k, filing_scope_id=filing_scope_id,
     )
-    fts_task = _fts_top_doc_ids(session, question, limit=15, filing_scope_id=filing_scope_id)
+    fts_task = _fts_top_doc_ids(session, question, limit=fetch_k, filing_scope_id=filing_scope_id)
     vector_chunks, fts_doc_ids = await asyncio.gather(vector_task, fts_task)
+    vector_chunks = vector_chunks or []
+
+    # Dokumente, die nur die Volltextsuche findet (exakte Nummern, Namen),
+    # bekommen ihren besten Chunk als zusaetzlichen RRF-Kandidaten.
+    vector_doc_ids = {c["doc_id"] for c in vector_chunks}
+    fts_only = [d for d in fts_doc_ids[:settings.RAG_TOP_K] if d not in vector_doc_ids]
+    fts_chunks = (
+        await asyncio.to_thread(best_chunks_for_documents, query_embedding, settings, fts_only)
+        if fts_only else []
+    )
 
     # Reranker-Aware: wenn LLM-Reranker aktiv ist, hier mehr Kandidaten halten
     # damit der Reranker eine echte Auswahl hat. Sonst direkt auf top_k stutzen.
     rrf_target = settings.RAG_TOP_K * 2 if settings.RAG_USE_RERANKER else settings.RAG_TOP_K
-    if vector_chunks and fts_doc_ids:
-        chunks = _apply_rrf(vector_chunks, fts_doc_ids, target_k=rrf_target)
+    chunks = _apply_rrf(vector_chunks, fts_doc_ids, target_k=rrf_target, extra_chunks=fts_chunks)
+    if fts_doc_ids:
         logger.info(
-            "Hybrid-Retrieval: %d vec + %d fts -> %d nach RRF",
-            len(vector_chunks), len(fts_doc_ids), len(chunks),
+            "Hybrid-Retrieval: %d vec + %d fts (%d nur fts) -> %d nach RRF",
+            len(vector_chunks), len(fts_doc_ids), len(fts_chunks), len(chunks),
         )
-    else:
-        chunks = (vector_chunks or [])[:rrf_target]
 
     # Optionales LLM-basiertes Re-Ranking (RAG_USE_RERANKER=true)
     if settings.RAG_USE_RERANKER and len(chunks) > settings.RAG_TOP_K:
@@ -242,22 +309,18 @@ async def ask_question(
 
     if not chunks:
         msg = (
-            "Keine relevanten Dokumente im ausgewaehlten Ablagebereich gefunden."
+            "Keine relevanten Dokumente im ausgewählten Ablagebereich gefunden."
             if filing_scope_id
-            else "Keine relevanten Dokumente gefunden. Stelle sicher, dass der Vektor-Index aufgebaut wurde."
+            else "Keine relevanten Dokumente gefunden. Stellen Sie sicher, dass der Vektor-Index aufgebaut wurde."
         )
-        return {
-            "answer": msg,
-            "sources": [],
-            "chunks_found": 0,
-        }
+        return {"answer": msg, "sources": [], "chunks_found": 0}
 
     # 3. Dokument-Infos laden — DELETED-Filter haengt nur an der DB,
     # daher hier zusaetzlich pruefen und Chunks zu geloeschten Docs verwerfen
     # (deckt Geister-Chunks ab, falls delete_document_vectors gefehlschlagen ist).
     # B7: Bei aktivem Scope-Filter auch DB-seitig filtern. Notwendig fuer den
     # ChromaDB-Fallback-Pfad ohne Metadata-Filter (alte Chunks vor Migration 005).
-    doc_ids = list(OrderedDict.fromkeys(c["doc_id"] for c in chunks))
+    doc_ids = list(dict.fromkeys(c["doc_id"] for c in chunks))
     query = select(Document).where(
         Document.id.in_(doc_ids),
         Document.status != DocumentStatus.DELETED,
@@ -269,31 +332,22 @@ async def ask_question(
 
     filtered_chunks = [c for c in chunks if c["doc_id"] in docs_by_id]
     if not filtered_chunks:
-        return {
-            "answer": "Keine relevanten Dokumente gefunden.",
-            "sources": [],
-            "chunks_found": 0,
-        }
+        return {"answer": "Keine relevanten Dokumente gefunden.", "sources": [], "chunks_found": 0}
 
-    # 4. Kontext aufbauen
+    # 4. Kontext aufbauen: Dokumente in Reihenfolge des ersten Auftretens
+    # nummerieren ([Dok. N]).
     # B6: Chunk-Inhalte werden sanitiert, damit OCR-Text mit Tag-Injection
-    # (</document_excerpts>...<user_question>...</user_question>...) nicht aus
-    # dem Template-Wrap ausbrechen und Anweisungen an das LLM einschmuggeln kann.
+    # (</document_excerpts>...<user_question>...) nicht aus dem Template-Wrap
+    # ausbrechen und Anweisungen an das LLM einschmuggeln kann.
+    doc_numbers: dict[str, int] = {}
     context_parts = []
-    source_doc_ids = OrderedDict()
-    for i, chunk in enumerate(filtered_chunks):
-        doc = docs_by_id.get(chunk["doc_id"])
-        doc_label = f"Dok. {len(source_doc_ids) + 1}" if chunk["doc_id"] not in source_doc_ids else f"Dok. {list(source_doc_ids.keys()).index(chunk['doc_id']) + 1}"
-        if chunk["doc_id"] not in source_doc_ids:
-            source_doc_ids[chunk["doc_id"]] = doc
-        safe_text = _sanitize_for_prompt(chunk["text"])
-        context_parts.append(f"[{doc_label}] {safe_text}")
-
+    for chunk in filtered_chunks:
+        number = doc_numbers.setdefault(chunk["doc_id"], len(doc_numbers) + 1)
+        context_parts.append(f"[Dok. {number}] {_sanitize_for_prompt(chunk['text'])}")
     context = "\n\n---\n\n".join(context_parts)
-    # User-Frage sanitieren (gleicher Mechanismus)
-    safe_question = _sanitize_for_prompt(question)
 
-    # 5. Prompt aufbauen und LLM aufrufen
+    # 5. Prompt aufbauen (ein Durchgang: "{question}" in einem Dokument bleibt
+    # Text) und LLM aufrufen
     try:
         prompt_template = load_prompt_template("rag_answer.txt")
     except FileNotFoundError:
@@ -301,28 +355,26 @@ async def ask_question(
             "Beantworte die folgende Frage basierend auf den Dokumentenausschnitten.\n\n"
             "Dokumentenausschnitte:\n{context}\n\nFrage: {question}"
         )
+    prompt = fill_prompt(prompt_template, {"context": context, "question": _sanitize_for_prompt(question)})
 
-    prompt = prompt_template.replace("{context}", context).replace("{question}", safe_question)
-    answer = await call_llm_text(prompt, settings)
-
+    try:
+        answer = await chat_text(prompt, settings)
+    except OllamaError as e:
+        raise RagServiceUnavailable(f"{e.user_message} {_RETRY_HINT}") from e
     if not answer:
-        return {
-            "answer": "Der KI-Assistent konnte keine Antwort generieren. Bitte versuche es spaeter erneut.",
-            "sources": [],
-            "chunks_found": len(filtered_chunks),
-        }
+        raise RagServiceUnavailable(f"Der KI-Assistent konnte keine Antwort erzeugen. {_RETRY_HINT}")
 
     # 6. Quellen aufbereiten
     sources = []
-    for doc_id, doc in source_doc_ids.items():
-        if doc:
-            sources.append({
-                "document_id": doc_id,
-                "title": doc.title,
-                "document_type": doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type),
-                "document_date": doc.document_date.isoformat() if doc.document_date else None,
-                "issuer": doc.issuer,
-            })
+    for doc_id in doc_numbers:
+        doc = docs_by_id[doc_id]
+        sources.append({
+            "document_id": doc_id,
+            "title": doc.title or doc.original_filename,
+            "document_type": enum_value(doc.document_type),
+            "document_date": doc.document_date.isoformat() if doc.document_date else None,
+            "issuer": doc.issuer,
+        })
 
     return {
         "answer": answer,

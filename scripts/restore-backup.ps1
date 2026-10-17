@@ -12,8 +12,14 @@ $ErrorActionPreference = 'Stop'
 $ServiceName = 'ZettelwirtschaftBackend'
 
 function Get-RegValue([string]$name) {
-    try { return (Get-ItemProperty 'HKLM:\SOFTWARE\Zettelwirtschaft' -Name $name -ErrorAction Stop).$name }
-    catch { return $null }
+    # Fallback WOW6432Node: aeltere Setups schrieben als 32-Bit-Prozess dorthin.
+    foreach ($key in @('HKLM:\SOFTWARE\Zettelwirtschaft', 'HKLM:\SOFTWARE\WOW6432Node\Zettelwirtschaft')) {
+        try {
+            $val = (Get-ItemProperty $key -Name $name -ErrorAction Stop).$name
+            if ($val) { return $val }
+        } catch { }
+    }
+    return $null
 }
 
 if (-not (Test-Path $BackupZip)) { Write-Host "FEHLER: Backup nicht gefunden: $BackupZip"; exit 1 }

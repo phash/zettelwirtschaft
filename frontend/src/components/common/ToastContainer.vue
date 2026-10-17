@@ -11,15 +11,19 @@ const typeClasses = {
 </script>
 
 <template>
-  <div class="fixed bottom-20 right-4 z-50 space-y-2 lg:bottom-4">
+  <!-- aria-live: Screenreader lesen neue Meldungen vor; Fehler sofort (role=alert). -->
+  <div class="fixed bottom-20 right-4 z-50 space-y-2 lg:bottom-4" aria-live="polite" aria-relevant="additions">
     <transition-group name="toast">
       <div
         v-for="n in store.notifications"
         :key="n.id"
+        :role="n.type === 'error' ? 'alert' : 'status'"
         :class="['flex items-center gap-3 rounded-lg border px-4 py-3 shadow-lg text-sm max-w-sm', typeClasses[n.type]]"
       >
         <span class="flex-1">{{ n.message }}</span>
-        <button @click="store.remove(n.id)" class="opacity-60 hover:opacity-100">&times;</button>
+        <button type="button" class="opacity-60 hover:opacity-100" aria-label="Meldung schließen" @click="store.remove(n.id)">
+          <span aria-hidden="true">&times;</span>
+        </button>
       </div>
     </transition-group>
   </div>

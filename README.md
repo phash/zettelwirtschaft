@@ -15,6 +15,7 @@ Läuft ausschließlich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 - **KI-Assistent (RAG)** - Fragen zu eigenen Dokumenten in natürlicher Sprache stellen
 - **Ablagebereiche** - Dokumente nach Bereichen organisieren (z.B. Privat, Praxis)
 - **Rückfrage-System** - KI fragt bei unklaren Dokumenten gezielt nach
+- **E-Mail-Import** - Anhänge aus IMAP-Postfächern übernehmen (nur ungelesene Mails, KI prüft die Relevanz)
 - **Steuerrelevanz** - Direkt in der Dokumentenliste sichtbar und per Klick änderbar
 
 ## Installation (Windows)
@@ -28,24 +29,29 @@ Es gibt zwei Installationspfade:
 
 ### Pfad A — Native (Setup.exe)
 
-Die Setup.exe installiert Zettelwirtschaft als Windows-Dienst. Browser oeffnet sich
-am Ende, im Hintergrund laeuft der Service ohne Konsolenfenster. Aus dem LAN ist
+Die Setup.exe installiert Zettelwirtschaft als Windows-Dienst. Der Browser öffnet sich
+am Ende, im Hintergrund läuft der Dienst ohne Konsolenfenster. Aus dem LAN ist
 das System unter `http://<rechnername>:8080` erreichbar.
 
 1. [Neuestes Release herunterladen](https://github.com/phash/zettelwirtschaft/releases/latest) → `Zettelwirtschaft-<version>-Native-Setup.exe`
-2. Doppelklick. Wizard fragt: Programmordner, Datenordner (frei waehlbar — NAS,
-   externe SSD, OneDrive-Sync moeglich), Port, PIN-Auto-Generierung.
-3. Setup installiert Tesseract+poppler (gebundled), registriert den Backend-Service
-   und erlaubt den Port in der Windows-Firewall (Profil "Privat").
-4. Ollama-Installer wird im Anschluss angeboten (optional, ~600 MB Download).
-   LLM-Modell (qwen2.5:7b-instruct, ~4.5 GB) wird beim ersten Start gepullt.
+2. Doppelklick. Der Wizard fragt: Programmordner, Datenordner (frei wählbar — NAS,
+   externe SSD, OneDrive-Sync möglich), Port, PIN-Auto-Generierung.
+3. Setup installiert Tesseract + poppler (gebündelt), registriert den Backend-Dienst
+   und erlaubt den Port in der Windows-Firewall (Profil „Privat").
+4. **Ollama wird nicht mitinstalliert.** Setup prüft, ob Ollama vorhanden ist, und
+   verlinkt sonst die Download-Seite ([ollama.com/download](https://ollama.com/download)).
+   Ollama selbst installieren — danach lädt Zettelwirtschaft die benötigten Modelle
+   (LLM `OLLAMA_MODEL` und Embedding `bge-m3`, zusammen mehrere GB) beim Start
+   automatisch herunter. Bis dahin landen neue Dokumente zur Prüfung; der
+   System-Status in den Einstellungen zeigt fehlende Modelle bzw. den laufenden Download an.
 
-Der Service heisst `ZettelwirtschaftBackend` und startet automatisch beim Login.
-Steuerbar via `services.msc` oder `net start/stop ZettelwirtschaftBackend`.
+Der Dienst heißt `ZettelwirtschaftBackend` und startet automatisch beim Systemstart.
+Steuerbar über `services.msc` oder `net start/stop ZettelwirtschaftBackend`.
 
-Migration aus einer bestehenden Docker-Installation: Der Wizard erkennt die alte
-`.env` + Docker-Volumes und bietet eine Konvertierung an. ChromaDB-Volume wird
-beim ersten Start re-indexiert (~10 Min bei 1000 Dokumenten).
+Migration aus einer bestehenden Docker-Installation: manuell mit
+`scripts/Convert-Env-To-Config.ps1` (alte `.env` → `config.toml`) und Kopie des
+Datenordners — Ablauf siehe Abschnitt „Native-Service-Ops" in [`CLAUDE.md`](CLAUDE.md).
+Ein leerer ChromaDB-Ordner wird beim ersten Start neu indexiert.
 
 Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md).
 
@@ -84,16 +90,21 @@ Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md
    docker compose up --build -d
    ```
 
-4. LLM-Modelle herunterladen:
+4. KI-Modelle: Das Backend lädt beim Start die in `.env` konfigurierten Modelle
+   (`OLLAMA_MODEL`, `EMBEDDING_MODEL`) automatisch in den Ollama-Container. Wer den
+   Download vorab anstoßen will (exakt derselbe Tag wie in `.env`):
    ```bash
-   docker compose exec ollama ollama pull llama3.2
-   docker compose exec ollama ollama pull nomic-embed-text
+   docker compose exec ollama ollama pull qwen2.5:7b-instruct
+   docker compose exec ollama ollama pull bge-m3
    ```
 
 5. Im Browser öffnen:
    - **Anwendung:** http://localhost:8080
-   - **API-Dokumentation:** http://localhost:8000/docs
-   - **Health-Check:** http://localhost:8000/api/health
+   - **Health-Check:** http://localhost:8080/api/health
+
+   Das Backend (Port 8000) ist im Docker-Betrieb bewusst nur intern erreichbar;
+   die API-Dokumentation (`/docs`) gibt es nur im Entwicklungsmodus
+   (`uvicorn app.main:app --reload` → http://localhost:8000/docs).
 
 ### Konfiguration
 
@@ -102,11 +113,15 @@ Die Konfiguration erfolgt über die `.env`-Datei. Wichtige Einstellungen:
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `FRONTEND_PORT` | `8080` | Port für die Web-Oberfläche |
-| `OLLAMA_MODEL` | `llama3.2` | LLM-Modell (llama3.2 für <=16GB RAM, llama3.1 für >16GB) |
+| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | LLM-Modell für die Analyse (exakter Ollama-Tag; der Installer schlägt bei wenig RAM `llama3.2` vor) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama-Server URL |
 | `OCR_LANGUAGES` | `deu+eng` | OCR-Sprachen |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding-Modell für RAG-Vektorisierung |
+| `EMBEDDING_MODEL` | `bge-m3` | Embedding-Modell für RAG-Vektorisierung (Wechsel erfordert Neuaufbau des Vektor-Index) |
 | `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen für RAG-Antworten |
+| `TIMEZONE` | `Europe/Berlin` | Zeitzone, in der Cron-Zeitpläne der E-Mail-Konten ausgewertet werden |
+
+Vollständige Liste mit Erläuterungen: [`.env.example`](.env.example) (Docker) bzw.
+[`config.toml.example`](config.toml.example) (Native).
 
 ## HTTPS für den Smartphone-Scan (Heim-WLAN)
 
@@ -146,19 +161,19 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 | Verzeichnis | Zweck |
 |---|---|
 | `data/uploads` | Hochgeladene Originaldokumente |
-| `data/watch` | Scanner-Eingabeordner (automatische Erkennung) |
+| `data/watch` | Scanner-Eingabeordner (automatische Erkennung; verarbeitete Dateien werden hier entfernt — bei einem selbst gewählten Watch-Ordner stattdessen in den Unterordner `verarbeitet` verschoben) |
 | `data/archive` | Archivierte, verarbeitete Dokumente |
 | `data/backups` | Automatische und manuelle Backups |
 
 ## Technologie-Stack
 
-- **Backend:** Python 3.12 / FastAPI
+- **Backend:** Python 3.13 / FastAPI
 - **Datenbank:** SQLite (SQLAlchemy + Alembic)
 - **OCR:** Tesseract + pdfplumber
-- **KI:** Ollama mit lokalem LLM (Llama 3.2 / Mistral) + Embeddings (nomic-embed-text)
-- **Vektor-Suche:** ChromaDB (RAG-basierter KI-Assistent)
+- **KI:** Ollama mit lokalem LLM (Default `qwen2.5:7b-instruct`) + Embeddings (`bge-m3`)
+- **Vektor-Suche:** ChromaDB (Hybrid-Suche mit FTS5 für den KI-Assistenten)
 - **Frontend:** Vue.js 3 + TailwindCSS (PWA)
-- **Deployment:** Docker Compose
+- **Deployment:** Native Windows-Dienst (Setup.exe) oder Docker Compose
 
 ## Changelog
 
@@ -316,9 +331,16 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ```bash
 cd backend
-pip install -r requirements.txt
-python -m pytest tests/ -v
+pip install -r requirements-dev.txt
+python -m pytest -q
+
+# E2E (Playwright, API gemockt): baut das Frontend und startet einen eigenen
+# Preview-Server — nie gegen Port 8080 (laufende Installation) testen.
+cd ../e2e
+npx playwright test --project=chromium
 ```
+
+Aktuelle Testzahlen: `python -m pytest --collect-only -q` bzw. `npx playwright test --list`.
 
 ### Releases erstellen
 
@@ -339,9 +361,9 @@ Lokaler Build der `Zettelwirtschaft-<version>-Native-Setup.exe`:
 
 ```powershell
 # Voraussetzungen am Build-Host:
-# - Python 3.12, Node 22, NSIS 3.x (makensis im PATH)
+# - Python 3.13, Node 22.12+ (empfohlen 24 LTS), NSIS 3.x (makensis im PATH)
 # - tools/tesseract/, tools/poppler/, tools/nssm/win64/nssm.exe vorbereitet
-#   (manueller Download — siehe scripts/build-native.ps1 Header)
+#   (idempotent per `pwsh scripts/fetch-build-tools.ps1`, braucht 7-Zip)
 
 # Build-Dependencies installieren:
 pip install -r backend/requirements.txt -r backend/requirements-build.txt

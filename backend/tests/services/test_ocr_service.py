@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -93,21 +93,16 @@ class TestExtractTextImage:
 
 
 class TestExtractTextMocked:
-    async def test_pdf_digital_fallback_to_ocr(self, test_settings: Settings, tmp_path: Path):
-        """Wenn pdfplumber keinen Text findet, wird OCR verwendet."""
+    async def test_pdf_without_text_layer_is_ocrd(self, test_settings: Settings, tmp_path: Path):
+        """Wenn pdfplumber keinen Text findet, wird jede Seite per OCR gelesen."""
         dummy_pdf = tmp_path / "scan.pdf"
         dummy_pdf.write_bytes(b"%PDF-1.4 minimal")
 
         with patch(
-            "app.services.ocr_service._extract_pdf_digital_sync", return_value=None
+            "app.services.ocr_service._read_pdf_text_pages", return_value=[""]
         ), patch(
-            "app.services.ocr_service._extract_pdf_ocr_sync",
-            return_value=OcrResult(
-                full_text="Gescannter Text",
-                pages=[PageText(page_number=1, text="Gescannter Text", confidence=0.85)],
-                average_confidence=0.85,
-                page_count=1,
-            ),
+            "app.services.ocr_service._ocr_pdf_page",
+            return_value=PageText(page_number=1, text="Gescannter Text", confidence=0.85),
         ):
             result = await extract_text(dummy_pdf, "pdf", test_settings)
             assert result is not None

@@ -1,7 +1,6 @@
 """Tests fuer Steuerpaket-Export API."""
 
 import pytest
-from datetime import date
 
 
 @pytest.mark.asyncio

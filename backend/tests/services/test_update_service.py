@@ -159,3 +159,37 @@ class TestCheckForUpdate:
         # andere URL ohne force -> Cache-Miss -> neuer Aufruf (nicht den a-Eintrag liefern)
         await us.check_for_update("https://b/latest.json", force=False)
         assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+class TestManifestValidation:
+    """Regression: nicht-String-Felder im Manifest liessen die Response-
+    Validierung im Endpoint scheitern (HTTP 500, 6 h gecacht)."""
+
+    async def test_non_string_fields_are_normalised(self, monkeypatch):
+        from app.api.system import UpdateCheckResponse
+
+        us._reset_cache()
+        monkeypatch.setattr(us, "read_local_version", lambda: "1.3.1")
+        manifest = {"latest_version": 2, "published_at": 1760000000, "notes": ["a"], "release_url": {"x": 1}}
+        monkeypatch.setattr(us.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload=manifest))
+        res = await us.check_for_update("https://example/latest.json", force=True)
+        assert res["latest_version"] == "2"
+        assert res["published_at"] == "1760000000"
+        assert res["notes"] is None
+        assert res["release_url"] is None
+        # Darf die Endpoint-Validierung nicht mehr sprengen — auch aus dem Cache.
+        UpdateCheckResponse(enabled=True, **res)
+        cached = await us.check_for_update("https://example/latest.json")
+        assert cached["cached"] is True
+        UpdateCheckResponse(enabled=True, **cached)
+
+    async def test_list_manifest_reports_format_error(self, monkeypatch):
+        us._reset_cache()
+        monkeypatch.setattr(us, "read_local_version", lambda: "1.3.1")
+        monkeypatch.setattr(us.httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload=["1.4.0"]))
+        res = await us.check_for_update("https://example/latest.json", force=True)
+        assert res["error"] == "Update-Manifest hat ein ungültiges Format."
+        assert res["latest_version"] is None
+        # Fehler werden nicht gecacht
+        assert us._cache["data"] is None

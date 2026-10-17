@@ -1,7 +1,7 @@
 """FK + Indexes Konsistenz (H-ARCH-1,3,4).
 
 - chat_messages.filing_scope_id: FK auf filing_scopes(id) ON DELETE SET NULL + Index.
-- email_accounts.filing_scope_id: Index (FK existiert seit 010).
+- email_accounts.filing_scope_id: Index (FK seit 009, String-Typ seit 010).
 - processing_jobs.email_account_id: Index.
 - processed_emails.processing_job_id: Index.
 

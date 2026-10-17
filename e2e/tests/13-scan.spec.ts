@@ -3,21 +3,23 @@ import {
   setupScanMocks,
   mockCameraAPI,
   mockCameraPermissionDenied,
-  MOCK_UPLOAD_RESPONSE,
 } from '../helpers/mock.helpers';
 import * as path from 'path';
+
+// Abgelehnte Aufnahmen, MIME-Typ, fehlende Kamera und Stream-Aufraeumen stehen
+// in 15-documents-upload-dashboard.spec.ts.
 
 const TEST_FILES_DIR = path.resolve(__dirname, '../fixtures/test-files');
 
 test.describe('Scan View', () => {
-  test('Scan page loads with camera area visible', async ({ page }) => {
+  test('Scan page loads with camera and its controls', async ({ page }) => {
     await setupScanMocks(page);
     await mockCameraAPI(page);
     await page.goto('/scan');
 
-    // Camera area should be active (video element visible)
-    const video = page.locator('video');
-    await expect(video).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('video')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Kamera wechseln' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Foto aufnehmen' })).toBeVisible();
   });
 
   test('Camera permission denied shows error and file upload fallback', async ({ page }) => {
@@ -25,36 +27,9 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    // Error message should be shown
-    await expect(page.locator('text=Kamerazugriff nicht möglich')).toBeVisible({ timeout: 10000 });
-
-    // File upload button should be available as fallback
-    await expect(page.locator('text=Datei wählen')).toBeVisible();
-  });
-
-  test('Camera switch button is visible when camera active', async ({ page }) => {
-    await setupScanMocks(page);
-    await mockCameraAPI(page);
-    await page.goto('/scan');
-
-    // Wait for camera to be active
-    await expect(page.locator('video')).toBeVisible({ timeout: 10000 });
-
-    // Switch camera button (the refresh/rotate icon button)
-    const buttons = page.locator('video').locator('..').locator('button');
-    await expect(buttons.first()).toBeVisible();
-  });
-
-  test('Capture button is visible when camera active', async ({ page }) => {
-    await setupScanMocks(page);
-    await mockCameraAPI(page);
-    await page.goto('/scan');
-
-    await expect(page.locator('video')).toBeVisible({ timeout: 10000 });
-
-    // The large capture button (w-16 h-16 circle)
-    const captureBtn = page.locator('button').filter({ has: page.locator('div.rounded-full') });
-    await expect(captureBtn.first()).toBeVisible();
+    await expect(page.getByText('Kamerazugriff nicht möglich')).toBeVisible();
+    await expect(page.getByText('Datei wählen')).toBeVisible();
+    await expect(page.locator('video')).toBeHidden();
   });
 
   test('Taking a photo shows preview with capture count', async ({ page }) => {
@@ -62,17 +37,24 @@ test.describe('Scan View', () => {
     await mockCameraAPI(page);
     await page.goto('/scan');
 
-    await expect(page.locator('video')).toBeVisible({ timeout: 10000 });
+    await page.getByRole('button', { name: 'Foto aufnehmen' }).click();
+    await expect(page.getByText('1 Aufnahme', { exact: true })).toBeVisible();
+    await expect(page.getByRole('img', { name: 'Aufnahme 1' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Hochladen' })).toBeEnabled();
 
-    // Click the capture button
-    const captureBtn = page.locator('button').filter({ has: page.locator('div.rounded-full') });
-    await captureBtn.first().click();
+    await page.getByRole('button', { name: 'Foto aufnehmen' }).click();
+    await expect(page.getByText('2 Aufnahmen', { exact: true })).toBeVisible();
+  });
 
-    // Should show "1 Aufnahme" text
-    await expect(page.locator('text=1 Aufnahme')).toBeVisible({ timeout: 5000 });
+  test('A capture can be removed again', async ({ page }) => {
+    await setupScanMocks(page);
+    await mockCameraAPI(page);
+    await page.goto('/scan');
 
-    // Upload button should appear
-    await expect(page.locator('text=Hochladen')).toBeVisible();
+    await page.getByRole('button', { name: 'Foto aufnehmen' }).click();
+    await page.getByRole('button', { name: 'Aufnahme 1 entfernen' }).click();
+    await expect(page.getByText('1 Aufnahme', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Hochladen' })).toHaveCount(0);
   });
 
   test('File picker allows selecting files for upload', async ({ page }) => {
@@ -80,37 +62,48 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
-
-    // Select a file via the hidden file input
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
-
-    // Should show 1 capture
-    await expect(page.locator('text=1 Aufnahme')).toBeVisible({ timeout: 5000 });
-
-    // Upload button should be visible
-    await expect(page.locator('text=Hochladen')).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
+    await expect(page.getByText('1 Aufnahme', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Hochladen' })).toBeVisible();
   });
 
-  test('Upload shows progress indicator', async ({ page }) => {
+  test('Unsupported file type is refused before upload', async ({ page }) => {
     await setupScanMocks(page);
     await mockCameraPermissionDenied(page);
+    let uploads = 0;
+    await page.route('**/api/documents/upload', (route) => {
+      uploads += 1;
+      return route.fallback();
+    });
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
+    await page.locator('input[type="file"]').setInputFiles(path.join(TEST_FILES_DIR, 'invalid.exe'));
+    await expect(page.getByText('invalid.exe: Dateityp wird nicht unterstützt.')).toBeVisible();
+    await expect(page.getByText(/Aufnahme/)).toHaveCount(0);
+    expect(uploads).toBe(0);
+  });
 
-    // Select a file
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
-    await expect(page.locator('text=1 Aufnahme')).toBeVisible({ timeout: 5000 });
+  test('Upload shows a busy state while the request is running', async ({ page }) => {
+    await setupScanMocks(page);
+    await mockCameraPermissionDenied(page);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/documents/upload', async (route) => {
+      await gate;
+      return route.fulfill({
+        json: { uploaded: [{ job_id: 'job-1', original_filename: 'scan.png', status: 'PENDING', message: 'OK' }], rejected: [] },
+      });
+    });
+    await page.goto('/scan');
+    await page.locator('input[type="file"]').setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
 
-    // Click upload
-    await page.locator('button', { hasText: 'Hochladen' }).click();
+    await page.getByRole('button', { name: 'Hochladen' }).click();
+    const busy = page.getByRole('button', { name: /Hochladen\.\.\. \d+%/ });
+    await expect(busy).toBeVisible();
+    await expect(busy).toBeDisabled();
 
-    // Should show progress or navigate (upload completes quickly with mocks)
-    // Either "Hochladen..." text appears or navigation happens
-    await expect(page).toHaveURL(/\/dokumente/, { timeout: 10000 });
+    release();
+    await expect(page).toHaveURL(/\/dokumente/);
   });
 
   test('Successful upload navigates to documents page', async ({ page }) => {
@@ -118,15 +111,10 @@ test.describe('Scan View', () => {
     await mockCameraPermissionDenied(page);
     await page.goto('/scan');
 
-    await expect(page.locator('text=Datei wählen')).toBeVisible({ timeout: 10000 });
+    await page.locator('input[type="file"]').setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
+    await page.getByRole('button', { name: 'Hochladen' }).click();
 
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles(path.join(TEST_FILES_DIR, 'scan.png'));
-    await expect(page.locator('text=1 Aufnahme')).toBeVisible({ timeout: 5000 });
-
-    await page.locator('button', { hasText: 'Hochladen' }).click();
-
-    // Should navigate to /dokumente after successful upload
-    await expect(page).toHaveURL(/\/dokumente/, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/dokumente/);
+    await expect(page.getByText('1 Scan(s) hochgeladen.')).toBeVisible();
   });
 });

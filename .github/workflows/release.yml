@@ -104,6 +104,10 @@ jobs:
           REPO=${{ github.repository }}
           mkdir -p release
 
+          # Installer-/Skript-Dateien laut release-manifest.txt kopieren (einzige
+          # Liste, erzeugt auch manifest.nsh fuer setup.nsi)
+          python3 scripts/release_manifest.py stage release
+
           # docker-compose.yml: build-Direktiven durch GHCR-Image-Referenzen ersetzen
           # (frontend: mehrzeiliger build-Block inkl. additional_contexts -> eine image-Zeile)
           sed \
@@ -113,23 +117,14 @@ jobs:
             -e "}" \
             docker-compose.yml > release/docker-compose.yml
 
-          # Installer-Dateien kopieren
-          cp .env.example release/
-          cp install.bat release/
-          cp install.ps1 release/
-          cp install-gui.ps1 release/
-          cp start.bat release/
-          cp stop.bat release/
-          cp update.bat release/
-          cp uninstall.bat release/
-
           # VERSION-Datei mit aktueller Version schreiben
           echo "${VERSION}" > release/VERSION
 
-          # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit)
+          # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit;
+          # manifest.nsh ist nur Build-Input fuer setup.nsi)
           cd release
-          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz .env.example *
-          zip -r ../zettelwirtschaft-${VERSION}.zip .env.example *
+          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz --exclude=manifest.nsh .env.example *
+          zip -r ../zettelwirtschaft-${VERSION}.zip .env.example * -x manifest.nsh
 
       - name: Install NSIS
         run: sudo apt-get install -y nsis
@@ -168,7 +163,7 @@ jobs:
 
             ### Installation
 
-            **Setup.exe (empfohlen):**
+            **Setup.exe (Docker-Variante):**
             1. `Zettelwirtschaft-${{ steps.version.outputs.VERSION }}-Setup.exe` herunterladen
             2. Ausfuehren und den Anweisungen folgen
 

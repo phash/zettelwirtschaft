@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Response
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.core.rate_limit import is_trusted_proxy, trusted_client_ip
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -22,12 +23,39 @@ LOCKOUT_SECONDS = 30
 # dem ein Attempt-Counter ganz vergessen wird (1h).
 MAX_LOCKOUT_SECONDS = 3600
 ATTEMPT_FORGIVE_SECONDS = 3600
+# Obergrenze fuer _login_attempts (Speicher). Volle Tabelle -> der am laengsten
+# inaktive, NICHT gesperrte Eintrag wird verdraengt; gesperrte bleiben.
+MAX_TRACKED_CLIENTS = 1024
 
 SESSION_COOKIE = "zw_session"
 
 
 class PinRequest(BaseModel):
-    pin: str
+    pin: str = Field(min_length=1, max_length=64)
+
+
+def _pin_matches(candidate: str, expected: str) -> bool:
+    # Bytes statt str: compare_digest(str, str) wirft TypeError bei Nicht-ASCII
+    # (z.B. "ä" oder ein eingefuegtes geschuetztes Leerzeichen) -> HTTP 500
+    # statt 401, und der Versuch wuerde nicht gezaehlt.
+    return secrets.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _record_failed_attempt(client_ip: str, fail_count: int, now: datetime) -> None:
+    lockout = None
+    if fail_count >= MAX_LOGIN_ATTEMPTS:
+        overflow = fail_count - MAX_LOGIN_ATTEMPTS
+        lockout_seconds = min(LOCKOUT_SECONDS * (2 ** overflow), MAX_LOCKOUT_SECONDS)
+        lockout = now + timedelta(seconds=lockout_seconds)
+    if client_ip not in _login_attempts and len(_login_attempts) >= MAX_TRACKED_CLIENTS:
+        evictable = [
+            (last_seen, ip)
+            for ip, (_count, until, last_seen) in _login_attempts.items()
+            if until is None or until <= now
+        ]
+        if evictable:
+            del _login_attempts[min(evictable)[1]]
+    _login_attempts[client_ip] = (fail_count, lockout, now)
 
 
 def _cleanup_expired() -> None:
@@ -95,9 +123,8 @@ async def auth_login(
 
     _cleanup_expired()
 
-    # Rate Limiting — gleicher Trust-Filter wie slowapi (NEW-002).
-    from app.core.rate_limit import trusted_client_ip
-    client_ip = trusted_client_ip(request)
+    # Rate Limiting — gleicher Trust-Filter wie das globale Limit (NEW-002).
+    client_ip = trusted_client_ip(request, settings)
     now = datetime.now(timezone.utc)
     fail_count, lockout_until, _last_seen = _login_attempts.get(client_ip, (0, None, now))
     if lockout_until and now < lockout_until:
@@ -107,7 +134,7 @@ async def auth_login(
             content={"success": False, "detail": f"Zu viele Fehlversuche. Bitte {remaining}s warten."},
         )
 
-    if secrets.compare_digest(body.pin, settings.PIN_CODE):
+    if _pin_matches(body.pin, settings.PIN_CODE):
         # Erfolg: Attempts zuruecksetzen
         _login_attempts.pop(client_ip, None)
         token = uuid.uuid4().hex
@@ -117,13 +144,12 @@ async def auth_login(
         # bricht der HTTP-Default nicht. SameSite=strict, weil kein externer
         # Cross-Site-POST-Workflow erwartet wird (internes Tool).
         # R-07 (Re-Review): X-Forwarded-Proto nur akzeptieren wenn die
-        # TCP-Verbindung aus einem trusted Proxy-Netz kommt — sonst kann
-        # ein LAN-Angreifer den Header faken und Secure=true erzwingen, was
-        # bei HTTP-Setup das Cookie unbenutzbar macht (Login-DoS).
-        from app.core.rate_limit import _is_trusted_proxy
+        # TCP-Verbindung von einem trusted Proxy kommt (nur Docker/nginx) —
+        # sonst kann ein LAN-Angreifer den Header faken und Secure=true
+        # erzwingen, was bei HTTP-Setup das Cookie unbenutzbar macht (Login-DoS).
         client_host = request.client.host if request.client else None
-        is_trusted_proxy = client_host is not None and _is_trusted_proxy(client_host)
-        proto_header = request.headers.get("x-forwarded-proto") if is_trusted_proxy else None
+        from_proxy = is_trusted_proxy(client_host, settings)
+        proto_header = request.headers.get("x-forwarded-proto") if from_proxy else None
         is_https = request.url.scheme == "https" or proto_header == "https"
         response.set_cookie(
             key=SESSION_COOKIE,
@@ -139,13 +165,7 @@ async def auth_login(
     # (30s, 60s, 120s, ... gedeckelt auf MAX_LOCKOUT_SECONDS), damit wiederholte
     # Lockout-Runden den Brute-Force-Durchsatz progressiv senken statt sich alle
     # LOCKOUT_SECONDS zurueckzusetzen.
-    fail_count += 1
-    lockout = None
-    if fail_count >= MAX_LOGIN_ATTEMPTS:
-        overflow = fail_count - MAX_LOGIN_ATTEMPTS
-        lockout_seconds = min(LOCKOUT_SECONDS * (2 ** overflow), MAX_LOCKOUT_SECONDS)
-        lockout = now + timedelta(seconds=lockout_seconds)
-    _login_attempts[client_ip] = (fail_count, lockout, now)
+    _record_failed_attempt(client_ip, fail_count + 1, now)
     return JSONResponse(status_code=401, content={"success": False, "detail": "Falscher PIN"})
 
 

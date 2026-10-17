@@ -5,9 +5,10 @@ from datetime import date, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.document import Document, DocumentStatus, DocumentType, ReviewStatus
+from app.models.document import Document, DocumentStatus, DocumentType
 from app.models.warranty_info import WarrantyInfo
 from app.models.filing_scope import FilingScope
+from tests.factories import make_document
 
 
 async def _create_filing_scope(db: AsyncSession) -> FilingScope:
@@ -42,25 +43,14 @@ async def _create_doc_with_warranty(
     if warranty_end_date is None:
         warranty_end_date = date.today() + timedelta(days=365)
 
-    doc = Document(
-        original_filename="test.pdf",
-        stored_filename="abc_test.pdf",
-        file_path="/archive/test.pdf",
-        file_type="pdf",
-        file_size_bytes=1024,
+    doc = await make_document(
+        db,
         file_hash=file_hash,
         document_type=DocumentType.KAUFVERTRAG,
         title=title,
-        issuer="Test GmbH",
-        ocr_text="OCR Text",
-        ocr_confidence=0.9,
-        ai_confidence=0.92,
         status=status,
-        review_status=ReviewStatus.OK,
         filing_scope_id=scope_id,
     )
-    db.add(doc)
-    await db.flush()
 
     warranty = WarrantyInfo(
         document_id=doc.id,

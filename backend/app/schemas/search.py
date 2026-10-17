@@ -4,6 +4,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
 
+from app.schemas.document import _decimal_to_float
+
 
 class SearchResultItem(BaseModel):
     id: str
@@ -11,26 +13,33 @@ class SearchResultItem(BaseModel):
     document_type: str
     document_date: date | None = None
     amount: Decimal | None = None
-
-    @field_serializer("amount")
-    def _ser_amount(self, v):
-        return float(v) if v is not None else None
     currency: str = "EUR"
     issuer: str | None = None
-    thumbnail_path: str | None = None
     tags: list[str] = []
     tax_relevant: bool = False
+    # Ausschnitt mit Treffern; Treffer sind von HIGHLIGHT_START/HIGHLIGHT_END
+    # (STX/ETX, siehe search_service) umschlossen — kein HTML.
     highlight: str = ""
     relevance_score: float = 0.0
     ai_confidence: float = 0.0
     created_at: datetime
+
+    @field_serializer("amount")
+    def _ser_amount(self, v):
+        return _decimal_to_float(v)
+
+
+class ScopeFacet(BaseModel):
+    id: str
+    name: str
+    count: int
 
 
 class SearchFacets(BaseModel):
     document_types: dict[str, int] = {}
     years: dict[str, int] = {}
     top_issuers: dict[str, int] = {}
-    filing_scopes: dict[str, int] = {}
+    filing_scopes: list[ScopeFacet] = []
 
 
 class SearchResponse(BaseModel):

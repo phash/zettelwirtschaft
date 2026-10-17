@@ -1,144 +1,110 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 import {
   setupWarrantyMocks,
   MOCK_WARRANTIES,
   MOCK_WARRANTY_STATS,
+  MOCK_DOCUMENT_WITH_WARRANTY,
 } from '../helpers/mock.helpers';
+
+const statCard = (page: Page, label: string) =>
+  page.locator('div.grid > .card').filter({ has: page.getByText(label, { exact: true }) });
+const warrantyItem = (page: Page, productName: string) =>
+  page.getByRole('link', { name: `Garantie ${productName} öffnen` });
 
 test.describe('Warranty Tracker', () => {
   test.beforeEach(async ({ page }) => {
     await setupWarrantyMocks(page);
   });
 
-  test('Shows warranty stats cards', async ({ page }) => {
+  test('Shows warranty stats cards with values', async ({ page }) => {
     await page.goto('/garantien');
-
-    // Stats card labels should be present (use .card scope to avoid matching <option> elements)
-    await expect(page.locator('.card:has-text("Gesamt")').first()).toBeVisible();
-    await expect(page.locator('.card:has-text("Aktiv")').first()).toBeVisible();
+    await expect(statCard(page, 'Gesamt')).toContainText(String(MOCK_WARRANTY_STATS.total));
+    await expect(statCard(page, 'Aktiv')).toContainText(String(MOCK_WARRANTY_STATS.active));
+    await expect(statCard(page, 'Bald ablaufend')).toContainText(String(MOCK_WARRANTY_STATS.expiring_soon));
+    await expect(statCard(page, 'Abgelaufen')).toContainText(String(MOCK_WARRANTY_STATS.expired));
   });
 
-  test('Shows warranty list items with product names', async ({ page }) => {
+  test('Shows warranty items with retailer and dates', async ({ page }) => {
     await page.goto('/garantien');
-
-    for (const warranty of MOCK_WARRANTIES) {
-      await expect(page.locator(`text=${warranty.product_name}`).first()).toBeVisible();
+    for (const w of MOCK_WARRANTIES) {
+      const item = warrantyItem(page, w.product_name);
+      await expect(item).toBeVisible();
+      await expect(item).toContainText(w.retailer);
     }
+    await expect(warrantyItem(page, 'Dell XPS 15')).toContainText('Kauf: 10.1.2026');
+    await expect(warrantyItem(page, 'Dell XPS 15')).toContainText('Ende: 10.1.2028');
   });
 
-  test('Warranty items show status badge', async ({ page }) => {
+  test('Status badges reflect remaining time', async ({ page }) => {
+    await page.goto('/garantien');
+    await expect(warrantyItem(page, 'Dell XPS 15').locator('.badge')).toHaveText('Aktiv');
+    await expect(warrantyItem(page, 'Waschmaschine Bosch').locator('.badge')).toHaveText('60 Tage');
+    await expect(warrantyItem(page, 'Staubsauger Dyson').locator('.badge')).toHaveText('Abgelaufen');
+  });
+
+  test('Progress bars show elapsed share of the warranty period', async ({ page }) => {
+    // Genau die Haelfte der Dell-Garantie (10.01.2026 -> 10.01.2028)
+    await page.clock.setFixedTime(new Date('2027-01-10T00:00:00'));
     await page.goto('/garantien');
 
-    // Expired warranty should show "Abgelaufen" badge (use .badge selector to avoid matching <option>)
-    await expect(page.locator('.badge:has-text("Abgelaufen")').first()).toBeVisible();
-    // Active warranty should show "Aktiv" or remaining days in badge
-    const activeBadges = page.locator('.badge').filter({ hasText: /Aktiv|\d+ Tage/ });
-    const count = await activeBadges.count();
-    expect(count).toBeGreaterThan(0);
+    const bar = (name: string) => warrantyItem(page, name).locator('[style*="width"]');
+    const width = async (name: string) => parseFloat((await bar(name).getAttribute('style'))!.match(/width:\s*([\d.]+)%/)![1]);
+    await expect(bar('Dell XPS 15')).toBeVisible();
+    expect(Math.round(await width('Dell XPS 15'))).toBe(50);
+    expect(await width('Staubsauger Dyson')).toBe(100);
   });
 
-  test('Warranty items show retailer info', async ({ page }) => {
-    await page.goto('/garantien');
-
-    for (const warranty of MOCK_WARRANTIES) {
-      if (warranty.retailer) {
-        await expect(page.locator(`text=${warranty.retailer}`).first()).toBeVisible();
-      }
-    }
-  });
-
-  test('Warranty item is clickable and navigates to document', async ({ page }) => {
-    // Mock document detail
-    await page.route('**/api/documents/*', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({
-          json: {
-            id: 2,
-            title: 'Kaufvertrag Laptop',
-            document_type: 'KAUFVERTRAG',
-            date: '2026-01-10',
-            status: 'ACTIVE',
-            tags: [],
-            filing_scope: { id: 1, name: 'Privat', slug: 'privat', color: '#3B82F6' },
-            filing_scope_id: 1,
-            review_questions: [],
-            warranty_info: null,
-            ocr_confidence: 0.9,
-          },
-        });
-      }
-      return route.continue();
-    });
+  test('Warranty item navigates to its document', async ({ page }) => {
+    await page.route('**/api/documents/*', (route) => route.fulfill({ json: MOCK_DOCUMENT_WITH_WARRANTY }));
     await page.route('**/api/documents/*/file', (route) =>
       route.fulfill({ status: 200, contentType: 'application/pdf', body: Buffer.from('%PDF') })
     );
-    await page.route('**/api/documents/*/thumbnail', (route) =>
-      route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('fake') })
-    );
-    await page.route('**/api/tags', (route) =>
-      route.fulfill({ json: [] })
-    );
-
+    await page.route('**/api/tags', (route) => route.fulfill({ json: [] }));
     await page.goto('/garantien');
 
-    const firstItem = page.locator(`text=${MOCK_WARRANTIES[0].product_name}`).first();
-    await firstItem.click();
-
-    await expect(page).toHaveURL(/\/dokumente\/\d+/);
+    await warrantyItem(page, MOCK_WARRANTIES[0].product_name).click();
+    await expect(page).toHaveURL(`/dokumente/${MOCK_WARRANTIES[0].document_id}`);
   });
 
-  test('Status filter dropdown works', async ({ page }) => {
-    await page.goto('/garantien');
+  for (const [status, label] of [['active', 'Aktiv'], ['expiring', 'Bald ablaufend'], ['expired', 'Abgelaufen']] as const) {
+    test(`Status filter "${label}" requests status=${status}`, async ({ page }) => {
+      await page.goto('/garantien');
+      await expect(warrantyItem(page, MOCK_WARRANTIES[0].product_name)).toBeVisible();
 
-    const filterSelect = page.locator('select').first();
-    await expect(filterSelect).toBeVisible();
-
-    // Select "Aktiv"
-    await filterSelect.selectOption('active');
-    await page.waitForTimeout(500);
-  });
-
-  test('Filter active warranties only', async ({ page }) => {
-    let filteredUrl = '';
-    await page.route('**/api/warranties?*', (route) => {
-      filteredUrl = route.request().url();
-      return route.fulfill({
-        json: MOCK_WARRANTIES.filter((w) => !w.is_expired),
-      });
+      const [req] = await Promise.all([
+        page.waitForRequest((r) => new URL(r.url()).pathname === '/api/warranties'),
+        page.getByLabel('Status-Filter').selectOption(status),
+      ]);
+      expect(new URL(req.url()).searchParams.get('status')).toBe(status);
     });
+  }
 
+  test('Filter "Alle" sends no status parameter', async ({ page }) => {
     await page.goto('/garantien');
-
-    const filterSelect = page.locator('select').first();
-    await filterSelect.selectOption('active');
-    await page.waitForTimeout(500);
-    expect(filteredUrl).toContain('active');
+    await page.getByLabel('Status-Filter').selectOption('expired');
+    const [req] = await Promise.all([
+      page.waitForRequest((r) => new URL(r.url()).pathname === '/api/warranties'),
+      page.getByLabel('Status-Filter').selectOption('all'),
+    ]);
+    expect(new URL(req.url()).searchParams.has('status')).toBe(false);
   });
 
   test('Empty state when no warranties', async ({ page }) => {
-    await page.route('**/api/warranties?*', (route) =>
-      route.fulfill({ json: [] })
-    );
-    await page.route('**/api/warranties', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({ json: [] });
-      }
-      return route.continue();
-    });
+    await page.route('**/api/warranties?*', (route) => route.fulfill({ json: [] }));
+    await page.route('**/api/warranties', (route) => route.fulfill({ json: [] }));
     await page.route('**/api/warranties/stats', (route) =>
       route.fulfill({ json: { total: 0, active: 0, expiring_soon: 0, expired: 0 } })
     );
 
     await page.goto('/garantien');
-    await expect(page.locator('text=Keine Garantien').first()).toBeVisible();
+    await expect(page.getByText('Keine Garantien vorhanden.')).toBeVisible();
   });
 
-  test('Progress bars show warranty remaining time', async ({ page }) => {
+  test('Load error shows a message', async ({ page }) => {
+    await page.route('**/api/warranties/stats', (route) =>
+      route.fulfill({ status: 500, json: { detail: 'Interner Serverfehler' } })
+    );
     await page.goto('/garantien');
-
-    // Progress bars should exist (one per warranty)
-    const progressBars = page.locator('[class*="rounded-full"][class*="bg-"]');
-    const count = await progressBars.count();
-    expect(count).toBeGreaterThan(0);
+    await expect(page.getByText('Garantiedaten konnten nicht geladen werden.')).toBeVisible();
   });
 });

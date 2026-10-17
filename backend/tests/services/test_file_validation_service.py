@@ -24,7 +24,7 @@ class TestValidateFile:
 
     def test_file_too_large(self, sample_pdf: Path, test_settings: Settings):
         test_settings.MAX_UPLOAD_SIZE_MB = 0  # 0 MB = nichts erlaubt
-        with pytest.raises(FileValidationError, match="zu gross"):
+        with pytest.raises(FileValidationError, match="zu groß"):
             validate_file(sample_pdf, "big.pdf", 999_999_999, test_settings)
 
     def test_magic_bytes_mismatch(self, sample_invalid_file: Path, tmp_path: Path, test_settings: Settings):
