@@ -41,6 +41,63 @@ Function GenerateSecret
     Exch $R0
 FunctionEnd
 
+; --- Helper: legacy-install.ps1 ausfuehren ---
+; Stack in: Argumente (z.B. '-Action Detect -ResultFile "..."'). Stack out: Exit-Code
+; ("0" = Erfolg). Ergebnisse stehen in der -ResultFile-INI (UTF-16LE, ReadINIStr),
+; nicht in der Konsolenausgabe: die kaeme ueber nsExec in der OEM-/ANSI-Codepage
+; an und verstuemmelte Pfade mit Umlauten. Erwartet $PLUGINSDIR\legacy-install.ps1.
+Function LegacyHelper
+    Exch $R0  ; Argumente
+    Push $R1
+    nsExec::ExecToStack '${POWERSHELL} -File "$PLUGINSDIR\legacy-install.ps1" $R0'
+    Pop $R0  ; exit code
+    Pop $R1  ; output (verworfen)
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
+; --- Helper: ueberschneiden sich zwei Ordner? ---
+; Stack in: Pfad A, dann Pfad B pushen. Stack out: "1", wenn A und B gleich sind
+; oder einer im anderen liegt (ohne Gross-/Kleinschreibung), sonst "0".
+Function PathsOverlap
+    Exch $R1  ; B
+    Exch
+    Exch $R0  ; A
+    Push $R2
+    Push $R3
+    StrCpy $R3 "0"
+    ${If} $R0 != ""
+    ${AndIf} $R1 != ""
+        StrCpy $R2 $R0 1 -1
+        ${If} $R2 == "\"
+            StrCpy $R0 $R0 -1
+        ${EndIf}
+        StrCpy $R2 $R1 1 -1
+        ${If} $R2 == "\"
+            StrCpy $R1 $R1 -1
+        ${EndIf}
+        StrCpy $R0 "$R0\"
+        StrCpy $R1 "$R1\"
+        ; StrCmp (LogicLib ==) vergleicht ohne Gross-/Kleinschreibung.
+        StrLen $R2 $R1
+        StrCpy $R2 $R0 $R2
+        ${If} $R2 == $R1
+            StrCpy $R3 "1"
+        ${EndIf}
+        StrLen $R2 $R0
+        StrCpy $R2 $R1 $R2
+        ${If} $R2 == $R0
+            StrCpy $R3 "1"
+        ${EndIf}
+    ${EndIf}
+    StrCpy $R0 $R3
+    Pop $R3
+    Pop $R2
+    Exch
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
 ; Schneidet am ersten CR/LF/Leerzeichen ab. Sichert alle benutzten Register.
 Function TrimNewlines
     Exch $R0

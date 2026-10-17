@@ -10,13 +10,24 @@
 ; Datei ist UTF-8 MIT BOM gespeichert (NSIS liest sie dann als UTF-8 ->
 ; Umlaute in den UI-Texten). Nicht ohne BOM speichern.
 ;
-; Zwei Modi:
+; Drei Modi:
 ;   - Erstinstallation: Datenordner waehlen, PIN + Fernet-Key erzeugen,
 ;     config.toml schreiben (New-NativeConfig.ps1), Dienst registrieren.
 ;   - Upgrade (bestehende Installation in der Registry gefunden): Pfade aus der
 ;     Registry, Sicherungs-Backup, Dienst stoppen, Programmdateien ersetzen.
 ;     config.toml (PIN, EMAIL_ENCRYPTION_KEY, eigene Einstellungen) bleibt
 ;     unangetastet.
+;   - Uebernahme (ADOPT, ab 1.6.1): Dienst ZettelwirtschaftBackend existiert,
+;     aber kein Registry-Eintrag (manuell per service-install.bat eingerichtet,
+;     z.B. nach der Docker->Native-Migration). legacy-install.ps1 liest die
+;     NSSM-Einstellungen des Dienstes (Programm-, Config-, Daten-, Log-Pfad).
+;     Ablauf: Dienst stoppen -> Backup (DB + config.toml als ZIP, ohne die alte
+;     Exe) -> neue Programmdateien in einen NEUEN Programmordner -> Dienst neu
+;     registrieren (service-install.bat ersetzt den alten) -> erst dann in der
+;     config.toml nur FRONTEND_DIST_DIR umstellen -> Registry -> Health-Check ->
+;     alte Programmdateien optional loeschen (nur bekannte Dateien, kein
+;     RMDir /r). Bricht das Setup vor der Neuregistrierung ab, stellt
+;     RestoreLegacyService den alten Dienst wieder her (config.toml unveraendert).
 ;
 ; Registry: 64-Bit-Ansicht (SetRegView 64). Aeltere Setups schrieben als
 ; 32-Bit-Prozess nach WOW6432Node, wo backup.bat/update-wizard.ps1 (64-Bit)
@@ -83,6 +94,25 @@ Var FINISH_PIN_TEXT
 Var LOCAL_ONLY_CHECK
 Var LOCAL_ONLY       ; ${BST_CHECKED} = nur 127.0.0.1 (INFRA-07)
 Var SERVER_HOST
+Var LOG_DIR          ; Log-Ordner des Dienstes (Standard: $DATA_DIR\logs)
+Var FINISH_NOTE      ; Zusatztext der Abschlussseite (Uebernahme)
+; Uebernahme einer manuell eingerichteten Installation (siehe Kopfkommentar)
+Var ADOPT            ; "1" = Uebernahme
+Var OLD_DIR          ; bisheriger Programmordner
+Var OLD_NSSM         ; nssm.exe des bisherigen Dienstes
+Var OLD_APP          ; bisherige Backend-Exe
+Var OLD_APPDIR       ; bisheriges AppDirectory
+Var OLD_STDOUT
+Var OLD_STDERR
+Var OLD_OLLAMA_DEP   ; "1" = Dienst hing von Ollama ab
+Var OLD_FRONTEND_KEY ; "1" = config.toml hat FRONTEND_DIST_DIR
+Var OLD_WAS_RUNNING  ; "1" = alter Dienst lief vor dem Setup (Rollback startet ihn wieder)
+Var OLD_DATA_INSIDE  ; "1" = Daten/Config/Logs liegen im alten Programmordner
+Var OLD_DIR_DELETABLE
+Var DB_PATH
+Var BACKUP_ZIP
+Var ADOPT_STOPPED    ; "1" = alter Dienst wurde angehalten (-> Rollback bei Abbruch)
+Var SERVICE_EXIT     ; Exit-Code von service-install.bat
 
 ; --- Pages ---
 !insertmacro MUI_PAGE_WELCOME
@@ -98,7 +128,7 @@ Page custom DataDirPage DataDirPageLeave
 
 ; FINISH-Page: Browser öffnen
 !define MUI_FINISHPAGE_TITLE "Installation abgeschlossen"
-!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft läuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberfläche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\n$FINISH_PIN_TEXT$\r$\n$\r$\nOhne Ollama ist keine KI-Analyse möglich."
+!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft läuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberfläche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\n$FINISH_PIN_TEXT$FINISH_NOTE$\r$\n$\r$\nOhne Ollama ist keine KI-Analyse möglich."
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Browser jetzt öffnen"
 !define MUI_FINISHPAGE_RUN_FUNCTION "OpenBrowser"
@@ -122,15 +152,23 @@ Function .onInit
     StrCpy $UPGRADE "0"
     StrCpy $LEGACY_REGVIEW "0"
     StrCpy $LOCAL_ONLY "0"
-
-    Call DetectExistingInstall
+    StrCpy $ADOPT "0"
+    StrCpy $ADOPT_STOPPED "0"
+    StrCpy $OLD_WAS_RUNNING "1"
 
     ; GenerateSecret braucht new-secret.ps1 im PLUGINSDIR — immer entpacken:
     ; auch ein Upgrade ohne config.toml erzeugt in der Install-Section einen PIN.
+    ; legacy-install.ps1 (+ secure-acl.ps1 fuer die Rechte des Backup-ZIPs)
+    ; braucht schon DetectExistingInstall.
     InitPluginsDir
     File "/oname=$PLUGINSDIR\new-secret.ps1" "${DIST}\new-secret.ps1"
+    File "/oname=$PLUGINSDIR\legacy-install.ps1" "${DIST}\legacy-install.ps1"
+    File "/oname=$PLUGINSDIR\secure-acl.ps1" "${DIST}\secure-acl.ps1"
+
+    Call DetectExistingInstall
 
     ${If} $UPGRADE == "1"
+    ${OrIf} $ADOPT == "1"
         StrCpy $FINISH_PIN_TEXT "PIN: unverändert (steht in $CONFIG_PATH)."
     ${Else}
         ; PIN automatisch generieren — 6-stellig numerisch, kryptografischer Zufall
@@ -164,13 +202,12 @@ Function DetectExistingInstall
     ${OrIfNot} ${FileExists} "$R0\backend\zettelwirtschaft-backend.exe"
         ; Kein Setup-Eintrag. Ein manuell registrierter Dienst (z.B. nach einer
         ; Docker-Migration per service-install.bat) wuerde von einer
-        ; Erstinstallation ueberschrieben -> abbrechen statt raten.
+        ; Erstinstallation ueberschrieben -> uebernehmen (oder abbrechen).
         nsExec::ExecToStack 'sc query ${SERVICE_NAME}'
         Pop $R4
         Pop $R5
         ${If} $R4 == "0"
-            MessageBox MB_OK|MB_ICONSTOP "Der Dienst ${SERVICE_NAME} ist bereits eingerichtet, aber nicht über dieses Setup installiert worden.$\r$\n$\r$\nBitte diese Installation mit dem Update-Assistenten (update-wizard.bat) aktualisieren." /SD IDOK
-            Abort
+            Call DetectLegacyInstall
         ${EndIf}
         Return
     ${EndIf}
@@ -186,6 +223,75 @@ Function DetectExistingInstall
     ${If} $CONFIG_PATH == ""
         StrCpy $CONFIG_PATH "$DATA_DIR\config.toml"
     ${EndIf}
+    Call ReadConfigPort
+FunctionEnd
+
+; Manuell eingerichteten Dienst erkennen (legacy-install.ps1 -Action Detect) und
+; die Uebernahme anbieten. Nicht uebernehmbar (kein NSSM-Dienst, keine config.toml
+; ...) -> Abbruch mit Anleitung, denn eine Erstinstallation wuerde den Dienst
+; ueberschreiben.
+Function DetectLegacyInstall
+    StrCpy $R6 "$PLUGINSDIR\legacy.ini"
+    Delete "$R6"
+    Push '-Action Detect -ServiceName ${SERVICE_NAME} -ResultFile "$R6"'
+    Call LegacyHelper
+    Pop $R7
+    ReadINIStr $R8 "$R6" "result" "Status"
+    ${If} $R7 != "0"
+    ${OrIf} $R8 != "adoptable"
+        ReadINIStr $R9 "$R6" "result" "Reason"
+        StrCpy $R5 "$\r$\n$\r$\nSo geht es weiter: den Dienst als Administrator entfernen (sc stop ${SERVICE_NAME}, danach sc delete ${SERVICE_NAME}) und dieses Setup erneut starten. Als Datenordner den Ordner mit der bisherigen config.toml wählen — Datenbank, Dokumente, Einstellungen und PIN bleiben dann erhalten."
+        ${If} $R9 == "not-nssm"
+            StrCpy $R9 "Der Dienst wird nicht über NSSM ausgeführt."
+        ${ElseIf} $R9 == "no-application"
+            StrCpy $R9 "Beim Dienst ist kein Programm eingetragen."
+        ${ElseIf} $R9 == "no-config-env"
+            StrCpy $R9 "Beim Dienst ist keine Konfigurationsdatei (ZETTELWIRTSCHAFT_CONFIG) eingetragen."
+        ${ElseIf} $R9 == "config-missing"
+            ReadINIStr $R8 "$R6" "result" "ConfigPath"
+            StrCpy $R9 "Die Konfigurationsdatei des Dienstes fehlt: $R8"
+        ${ElseIf} $R9 == "db-url"
+            StrCpy $R9 "DATABASE_URL in der config.toml ist keine SQLite-Datei."
+        ${ElseIf} $R9 == "relative-paths"
+            ReadINIStr $R8 "$R6" "result" "ConfigPath"
+            StrCpy $R9 "Die config.toml ($R8) enthält relative oder fehlende Datenpfade (DATABASE_URL, UPLOAD_DIR, ARCHIVE_DIR, THUMBNAIL_DIR, WATCH_DIR). Nach der Übernahme zeigten sie in den neuen Programmordner."
+            StrCpy $R5 "$\r$\n$\r$\nSo geht es weiter: in der config.toml absolute Pfade eintragen (z. B. C:/Zettelwirtschaft/data/archive) und dieses Setup erneut starten."
+        ${Else}
+            StrCpy $R9 "Die Einstellungen des Dienstes konnten nicht gelesen werden."
+        ${EndIf}
+        MessageBox MB_OK|MB_ICONSTOP "Der Dienst ${SERVICE_NAME} ist bereits eingerichtet, aber nicht über dieses Setup installiert worden. Das Setup kann ihn nicht automatisch übernehmen:$\r$\n$R9$R5" /SD IDOK
+        Abort
+    ${EndIf}
+
+    ReadINIStr $OLD_DIR "$R6" "result" "OldInstallDir"
+    ReadINIStr $OLD_NSSM "$R6" "result" "Nssm"
+    ReadINIStr $OLD_APP "$R6" "result" "Application"
+    ReadINIStr $OLD_APPDIR "$R6" "result" "AppDirectory"
+    ReadINIStr $OLD_STDOUT "$R6" "result" "AppStdout"
+    ReadINIStr $OLD_STDERR "$R6" "result" "AppStderr"
+    ReadINIStr $OLD_OLLAMA_DEP "$R6" "result" "OllamaDependency"
+    ReadINIStr $OLD_FRONTEND_KEY "$R6" "result" "FrontendKey"
+    ReadINIStr $OLD_DATA_INSIDE "$R6" "result" "DataInsideOldDir"
+    ReadINIStr $OLD_DIR_DELETABLE "$R6" "result" "OldDirDeletable"
+    ReadINIStr $OLD_VERSION "$R6" "result" "OldVersion"
+    ReadINIStr $CONFIG_PATH "$R6" "result" "ConfigPath"
+    ReadINIStr $DATA_DIR "$R6" "result" "DataDir"
+    ReadINIStr $DB_PATH "$R6" "result" "DbPath"
+    ReadINIStr $LOG_DIR "$R6" "result" "LogDir"
+
+    ; Neuer Programmordner: nie der alte (liegt oft im Benutzerprofil, INFRA-03).
+    Push "$INSTDIR"
+    Push "$OLD_DIR"
+    Call PathsOverlap
+    Pop $R7
+    ${If} $R7 == "1"
+        StrCpy $INSTDIR "$PROGRAMFILES64\Zettelwirtschaft-${VERSION}"
+    ${EndIf}
+
+    MessageBox MB_YESNO|MB_ICONQUESTION "Eine manuell eingerichtete Zettelwirtschaft-Installation (Version $OLD_VERSION) wurde gefunden:$\r$\n$OLD_DIR$\r$\nDatenordner: $DATA_DIR$\r$\n$\r$\nJetzt auf Version ${VERSION} aktualisieren?$\r$\n$\r$\nDatenbank, Dokumente, Einstellungen und PIN bleiben erhalten; vorher wird eine Sicherung erstellt. Die Programmdateien werden nach $INSTDIR verlegt (im nächsten Schritt änderbar)." /SD IDNO IDYES adopt
+    Abort
+    adopt:
+    StrCpy $ADOPT "1"
     Call ReadConfigPort
 FunctionEnd
 
@@ -218,6 +324,51 @@ FunctionEnd
 Function InstDirPageLeave
     Push $R1
     Push $R2
+    ; Uebernahme: nicht in den alten Programmordner (liegt meist im Benutzerprofil,
+    ; die alten Dateien wuerden vermischt) und nicht in Daten-/Log-Ordner
+    ; (secure-install-dir.ps1 setzt die Rechte des Programmordners rekursiv zurueck).
+    ${If} $ADOPT == "1"
+        Push "$INSTDIR"
+        Push "$OLD_DIR"
+        Call PathsOverlap
+        Pop $R1
+        ${If} $R1 == "1"
+            MessageBox MB_OK|MB_ICONEXCLAMATION "Der Ordner $INSTDIR ist der Ordner der bisherigen Installation (oder liegt darin bzw. enthält ihn):$\r$\n$OLD_DIR$\r$\n$\r$\nBitte einen neuen Programmordner wählen, z. B. $PROGRAMFILES64\Zettelwirtschaft." /SD IDOK
+            Pop $R2
+            Pop $R1
+            Abort
+        ${EndIf}
+        Push "$INSTDIR"
+        Push "$DATA_DIR"
+        Call PathsOverlap
+        Pop $R1
+        Push "$INSTDIR"
+        Push "$LOG_DIR"
+        Call PathsOverlap
+        Pop $R2
+        ${If} $R2 == "1"
+            StrCpy $R1 "1"
+        ${EndIf}
+        ; config.toml und Datenbank koennen ausserhalb des Datenordners liegen.
+        Push "$INSTDIR"
+        Push "$CONFIG_PATH"
+        Call PathsOverlap
+        Pop $R2
+        ${If} $R2 == "1"
+            StrCpy $R1 "1"
+        ${EndIf}
+        Push "$INSTDIR"
+        Push "$DB_PATH"
+        Call PathsOverlap
+        Pop $R2
+        ${If} $R1 == "1"
+        ${OrIf} $R2 == "1"
+            MessageBox MB_OK|MB_ICONEXCLAMATION "Der Ordner $INSTDIR überschneidet sich mit dem Daten- oder Log-Ordner (bzw. config.toml oder Datenbank) der bisherigen Installation:$\r$\n$DATA_DIR$\r$\n$CONFIG_PATH$\r$\n$\r$\nBitte einen eigenen Programmordner wählen, z. B. $PROGRAMFILES64\Zettelwirtschaft." /SD IDOK
+            Pop $R2
+            Pop $R1
+            Abort
+        ${EndIf}
+    ${EndIf}
     StrLen $R1 "$PROGRAMFILES64\"
     StrCpy $R2 "$INSTDIR\" $R1
     ${If} $R2 != "$PROGRAMFILES64\"
@@ -236,6 +387,7 @@ FunctionEnd
 ; --- Custom Page: Datenordner ---
 Function DataDirPage
     ${If} $UPGRADE == "1"
+    ${OrIf} $ADOPT == "1"
         Abort
     ${EndIf}
     !insertmacro MUI_HEADER_TEXT "Datenordner" "Hier landen Datenbank, Archiv, Uploads. Frei wählbar — NAS, externes Laufwerk, Cloud-Sync."
@@ -334,10 +486,245 @@ Function PrepareUpgrade
     ${EndIf}
 FunctionEnd
 
+; --- Uebernahme: Dienst stoppen + Sicherungs-Backup (ohne die alte Exe) ---
+; Bis service-install.bat bleibt der alte Dienst registriert. Jeder Abbruch
+; stellt ihn wieder her: explizit vor Abort, sonst (z.B. Datei nicht entpackbar)
+; .onInstFailed -> RestoreLegacyService.
+Function PrepareAdoption
+    StrCpy $ADOPT_STOPPED "1"
+    DetailPrint "Stoppe Dienst ${SERVICE_NAME} (bisherige Version $OLD_VERSION)..."
+    Delete "$PLUGINSDIR\stop.ini"
+    Push '-Action StopService -ServiceName ${SERVICE_NAME} -TimeoutSeconds 90 -ResultFile "$PLUGINSDIR\stop.ini"'
+    Call LegacyHelper
+    Pop $R0
+    ; Ein vom Nutzer angehaltener Dienst wird beim Rollback nicht gestartet.
+    ReadINIStr $R1 "$PLUGINSDIR\stop.ini" "result" "WasRunning"
+    ${If} $R1 == "0"
+        StrCpy $OLD_WAS_RUNNING "0"
+    ${EndIf}
+    ${If} $R0 != "0"
+        MessageBox MB_OK|MB_ICONSTOP "Der Dienst ${SERVICE_NAME} ließ sich nicht beenden.$\r$\nEs wurde nichts verändert; die bisherige Installation läuft weiter." /SD IDOK
+        Call RestoreLegacyService
+        Abort "Update abgebrochen: Dienst läuft noch."
+    ${EndIf}
+
+    DetailPrint "Erstelle Sicherungs-Backup (Datenbank + config.toml) in $DOCUMENTS\Zettelwirtschaft-Backups..."
+    Delete "$PLUGINSDIR\backup.ini"
+    Push '-Action Backup -ConfigPath "$CONFIG_PATH" -DbPath "$DB_PATH" -OutDir "$DOCUMENTS\Zettelwirtschaft-Backups" -Version "${VERSION}" -ResultFile "$PLUGINSDIR\backup.ini"'
+    Call LegacyHelper
+    Pop $R0
+    ReadINIStr $BACKUP_ZIP "$PLUGINSDIR\backup.ini" "result" "Path"
+    ${If} $R0 != "0"
+    ${OrIf} $BACKUP_ZIP == ""
+        StrCpy $BACKUP_ZIP ""
+        ReadINIStr $R1 "$PLUGINSDIR\backup.ini" "result" "Reason"
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION "Das Sicherungs-Backup ist fehlgeschlagen ($R1).$\r$\nDatenbank: $DB_PATH$\r$\n$\r$\nOhne Sicherung aktualisieren? (Nicht empfohlen.)$\r$\n$\r$\nBei „Nein“ wird das Setup beendet und die bisherige Installation wieder gestartet." /SD IDNO IDYES backup_skipped
+        Call RestoreLegacyService
+        Abort "Update abgebrochen: kein Sicherungs-Backup."
+        backup_skipped:
+        DetailPrint "WARNUNG: Aktualisierung ohne Sicherungs-Backup."
+    ${Else}
+        DetailPrint "Sicherungs-Backup: $BACKUP_ZIP"
+    ${EndIf}
+FunctionEnd
+
+; Welcher Dienst ist registriert? Stack out: "none" | "old" | "new" | "other".
+Function GetServiceState
+    Push $R0
+    Push $R1
+    nsExec::ExecToStack 'sc query ${SERVICE_NAME}'
+    Pop $R0
+    Pop $R1
+    ${If} $R0 != "0"
+        StrCpy $R0 "none"
+    ${Else}
+        Delete "$PLUGINSDIR\state.ini"
+        Push '-Action Detect -ServiceName ${SERVICE_NAME} -ResultFile "$PLUGINSDIR\state.ini"'
+        Call LegacyHelper
+        Pop $R0
+        ReadINIStr $R1 "$PLUGINSDIR\state.ini" "result" "Application"
+        ${If} $R1 == "$INSTDIR\backend\zettelwirtschaft-backend.exe"
+            StrCpy $R0 "new"
+        ${ElseIf} $R1 == $OLD_APP
+            StrCpy $R0 "old"
+        ${Else}
+            StrCpy $R0 "other"
+        ${EndIf}
+    ${EndIf}
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
+; Rollback der Uebernahme (aus .onInstFailed): bisherigen Dienst mit den alten
+; Programmdateien wieder in Betrieb nehmen. Daten und config.toml wurden bis
+; hierher nicht veraendert (Migrationen laufen erst beim Start des NEUEN
+; Dienstes, FRONTEND_DIST_DIR wird erst danach in FinishAdoption umgestellt).
+Function RestoreLegacyService
+    ; Nur einmal (explizit vor Abort oder aus .onInstFailed).
+    StrCpy $ADOPT_STOPPED "0"
+    DetailPrint "Stelle die bisherige Installation wieder her..."
+    Call GetServiceState
+    Pop $R0
+    ${If} $R0 == "new"
+        Return
+    ${EndIf}
+    StrCpy $R2 "$OLD_NSSM"
+    ${IfNot} ${FileExists} "$R2"
+        StrCpy $R2 "$INSTDIR\nssm.exe"
+    ${EndIf}
+    StrCpy $R3 "0"
+    ${If} $R0 == "none"
+        ; service-install.bat hat den alten Dienst schon entfernt: mit den alten
+        ; NSSM-Einstellungen neu registrieren.
+        nsExec::ExecToStack '"$R2" install ${SERVICE_NAME} "$OLD_APP"'
+        Pop $R3
+        Pop $R4
+        ${If} $R3 == "0"
+            nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} AppDirectory "$OLD_APPDIR"'
+            Pop $R4
+            Pop $R4
+            nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} AppEnvironmentExtra "ZETTELWIRTSCHAFT_CONFIG=$CONFIG_PATH"'
+            Pop $R4
+            Pop $R4
+            ${If} $OLD_STDOUT != ""
+                nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} AppStdout "$OLD_STDOUT"'
+                Pop $R4
+                Pop $R4
+            ${EndIf}
+            ${If} $OLD_STDERR != ""
+                nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} AppStderr "$OLD_STDERR"'
+                Pop $R4
+                Pop $R4
+            ${EndIf}
+            nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} Start SERVICE_AUTO_START'
+            Pop $R4
+            Pop $R4
+            nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} DisplayName Zettelwirtschaft'
+            Pop $R4
+            Pop $R4
+            ${If} $OLD_OLLAMA_DEP == "1"
+                nsExec::ExecToStack '"$R2" set ${SERVICE_NAME} DependOnService Ollama'
+                Pop $R4
+                Pop $R4
+            ${EndIf}
+        ${EndIf}
+    ${ElseIf} $R0 == "other"
+        StrCpy $R3 "1"
+    ${EndIf}
+    ${If} $R3 == "0"
+    ${AndIf} $OLD_WAS_RUNNING == "0"
+        MessageBox MB_OK|MB_ICONINFORMATION "Die Aktualisierung wurde abgebrochen. Die bisherige Installation (Version $OLD_VERSION) ist wieder eingerichtet:$\r$\n$OLD_DIR$\r$\n$\r$\nDer Dienst war vor dem Setup angehalten und wurde nicht gestartet.$\r$\nDie bereits kopierten neuen Programmdateien in $INSTDIR können gelöscht werden." /SD IDOK
+    ${ElseIf} $R3 == "0"
+        nsExec::ExecToStack 'net start ${SERVICE_NAME}'
+        Pop $R4
+        Pop $R5
+        ; net start: 0 = gestartet, 2 = lief bereits
+        ${If} $R4 == "0"
+        ${OrIf} $R4 == "2"
+            MessageBox MB_OK|MB_ICONINFORMATION "Die Aktualisierung wurde abgebrochen. Die bisherige Installation (Version $OLD_VERSION) ist wieder eingerichtet und läuft:$\r$\n$OLD_DIR$\r$\n$\r$\nDie bereits kopierten neuen Programmdateien in $INSTDIR können gelöscht werden." /SD IDOK
+        ${Else}
+            MessageBox MB_OK|MB_ICONEXCLAMATION "Die Aktualisierung wurde abgebrochen. Die bisherige Installation (Version $OLD_VERSION) ist wieder eingerichtet, der Dienst startet aber nicht (Code $R4):$\r$\n$OLD_DIR$\r$\n$\r$\nBitte den Rechner neu starten oder als Administrator „net start ${SERVICE_NAME}“ ausführen. Sicherung: $BACKUP_ZIP$\r$\nDie bereits kopierten neuen Programmdateien in $INSTDIR können gelöscht werden." /SD IDOK
+        ${EndIf}
+    ${Else}
+        MessageBox MB_OK|MB_ICONSTOP "Die Aktualisierung wurde abgebrochen, und der bisherige Dienst konnte nicht automatisch wiederhergestellt werden.$\r$\n$\r$\nBitte in einer Eingabeaufforderung als Administrator ausführen:$\r$\n$\"$R2$\" install ${SERVICE_NAME} $\"$OLD_APP$\"$\r$\n$\"$R2$\" set ${SERVICE_NAME} AppDirectory $\"$OLD_APPDIR$\"$\r$\n$\"$R2$\" set ${SERVICE_NAME} AppEnvironmentExtra $\"ZETTELWIRTSCHAFT_CONFIG=$CONFIG_PATH$\"$\r$\n$\"$R2$\" set ${SERVICE_NAME} AppStdout $\"$OLD_STDOUT$\"$\r$\nnet start ${SERVICE_NAME}$\r$\n$\r$\n(Meldet nssm „marked for deletion“, zuerst neu starten.) Sicherung: $BACKUP_ZIP" /SD IDOK
+    ${EndIf}
+FunctionEnd
+
+; Nach service-install.bat: Ergebnis pruefen, Health-Check, alten Programmordner
+; optional loeschen, Text fuer die Abschlussseite.
+Function FinishAdoption
+    ${If} $BACKUP_ZIP != ""
+        StrCpy $R5 "Sicherung vor dem Update: $BACKUP_ZIP"
+    ${Else}
+        StrCpy $R5 "Es wurde KEINE Sicherung erstellt"
+    ${EndIf}
+
+    ${If} $SERVICE_EXIT != "0"
+        Call GetServiceState
+        Pop $R1
+        ${If} $R1 != "new"
+            ; Kein neuer Dienst: Abbruch -> .onInstFailed stellt den alten wieder her.
+            MessageBox MB_OK|MB_ICONSTOP "Der Dienst ${SERVICE_NAME} konnte nicht neu eingerichtet werden (Code $SERVICE_EXIT).$\r$\nDie bisherige Installation wird wiederhergestellt." /SD IDOK
+            Call RestoreLegacyService
+            Abort "Update abgebrochen: Dienst nicht eingerichtet."
+        ${EndIf}
+    ${EndIf}
+
+    ; Ab hier ist der neue Dienst registriert, der alte nicht mehr: erst jetzt
+    ; FRONTEND_DIST_DIR umstellen. Vorher haette ein Rollback oder ein
+    ; Stromausfall die alten Programmdateien mit einer bereits geaenderten
+    ; config.toml starten lassen (alte Versionen liefern die Oberflaeche aus
+    ; FRONTEND_DIST_DIR aus). Das Bundle nimmt ohnehin immer <install>\frontend
+    ; (INFRA-01) und warnt beim ersten Start einmal; nur diese eine Zeile wird
+    ; ersetzt (atomar), der Rest der config.toml bleibt Byte fuer Byte erhalten.
+    ${If} $OLD_FRONTEND_KEY == "1"
+        DetailPrint "config.toml: FRONTEND_DIST_DIR auf $INSTDIR\frontend umstellen..."
+        Delete "$PLUGINSDIR\frontend.ini"
+        Push '-Action SetFrontendDir -ConfigPath "$CONFIG_PATH" -FrontendDir "$INSTDIR\frontend" -ResultFile "$PLUGINSDIR\frontend.ini"'
+        Call LegacyHelper
+        Pop $R0
+        ${If} $R0 != "0"
+            DetailPrint "Hinweis: FRONTEND_DIST_DIR nicht angepasst (Code $R0) - die Weboberfläche kommt trotzdem aus $INSTDIR\frontend."
+        ${EndIf}
+    ${EndIf}
+
+    ${If} $SERVICE_EXIT != "0"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Der Dienst ${SERVICE_NAME} ist eingerichtet, startet aber nicht (Code $SERVICE_EXIT).$\r$\nDetails: $LOG_DIR\backend.log$\r$\n$\r$\n$R5.$\r$\nDie bisherigen Programmdateien bleiben in $OLD_DIR." /SD IDOK
+        StrCpy $FINISH_NOTE "$\r$\n$\r$\nACHTUNG: Der Dienst startet nicht (siehe $LOG_DIR\backend.log). $R5."
+        Return
+    ${EndIf}
+
+    DetailPrint "Warte auf die Weboberfläche (bis zu 3 Minuten; beim ersten Start wird die Datenbank aktualisiert)..."
+    Push '-Action WaitHealth -ServiceName ${SERVICE_NAME} -ConfigPath "$CONFIG_PATH" -TimeoutSeconds 180'
+    Call LegacyHelper
+    Pop $R1
+    ${If} $R1 != "0"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Zettelwirtschaft ${VERSION} ist eingerichtet, die Weboberfläche antwortet aber noch nicht.$\r$\nDetails: $LOG_DIR\backend.log$\r$\n$\r$\nDer alte Programmordner bleibt vorsichtshalber erhalten:$\r$\n$OLD_DIR" /SD IDOK
+        StrCpy $FINISH_NOTE "$\r$\n$\r$\nDie bisherige Installation (Version $OLD_VERSION) wurde übernommen. $R5. Der alte Programmordner bleibt erhalten: $OLD_DIR"
+        Return
+    ${EndIf}
+
+    ${If} $OLD_DIR_DELETABLE == "1"
+        MessageBox MB_YESNO|MB_ICONQUESTION "Zettelwirtschaft ${VERSION} läuft.$\r$\n$\r$\nDie alten Programmdateien (Version $OLD_VERSION) jetzt löschen?$\r$\n$OLD_DIR$\r$\n$\r$\nGelöscht werden nur bekannte Programmdateien (backend, frontend, bin, nssm.exe, Skripte). Datenbank, Dokumente, config.toml und Logs liegen woanders; andere Dateien in diesem Ordner bleiben erhalten." /SD IDNO IDNO keep_old
+        ; Kein RMDir /r: der Ordner kann eigene Dateien des Nutzers enthalten
+        ; (Notizen, alte .env, Kopien). legacy-install.ps1 loescht nur bekannte
+        ; Programmdateien, folgt keinen Verknuepfungen und entfernt den Ordner
+        ; nur, wenn er danach leer ist.
+        Delete "$PLUGINSDIR\remove.ini"
+        Push '-Action RemoveOldDir -OldDir "$OLD_DIR" -ConfigPath "$CONFIG_PATH" -DbPath "$DB_PATH" -ResultFile "$PLUGINSDIR\remove.ini"'
+        Call LegacyHelper
+        Pop $R2
+        ReadINIStr $R3 "$PLUGINSDIR\remove.ini" "result" "Status"
+        ${If} $R3 == "removed"
+            StrCpy $R6 "Der alte Programmordner wurde gelöscht."
+        ${ElseIf} $R3 == "partial"
+            ReadINIStr $R4 "$PLUGINSDIR\remove.ini" "result" "Remaining"
+            StrCpy $R6 "Die alten Programmdateien wurden gelöscht. Im Ordner $OLD_DIR liegen noch weitere Dateien, die nicht angetastet wurden: $R4"
+        ${Else}
+            StrCpy $R6 "Der alte Programmordner konnte nicht gelöscht werden: $OLD_DIR"
+        ${EndIf}
+        Goto old_done
+        keep_old:
+        StrCpy $R6 "Der alte Programmordner bleibt erhalten und kann gelöscht werden: $OLD_DIR"
+        old_done:
+    ${ElseIf} $OLD_DATA_INSIDE == "1"
+        StrCpy $R6 "Der alte Programmordner $OLD_DIR enthält noch Daten (Datenbank, Konfiguration oder Logs) und bleibt deshalb bestehen."
+    ${Else}
+        StrCpy $R6 "Der alte Programmordner bleibt erhalten: $OLD_DIR"
+    ${EndIf}
+    DetailPrint "$R6"
+    StrCpy $FINISH_NOTE "$\r$\n$\r$\nDie bisherige Installation (Version $OLD_VERSION) wurde übernommen. $R5. $R6"
+FunctionEnd
+
 ; --- Install Section ---
 Section "Zettelwirtschaft" SecMain
     SectionIn RO
     SetOutPath "$INSTDIR"
+    ; Erstinstallation/Upgrade: Logs im Datenordner. Uebernahme: Log-Ordner des
+    ; bisherigen Dienstes (AppStdout, aus DetectLegacyInstall).
+    ${If} $LOG_DIR == ""
+        StrCpy $LOG_DIR "$DATA_DIR\logs"
+    ${EndIf}
 
     ; INFRA-03: Programmordner VOR dem Entpacken (und vor dem Backup-Aufruf der
     ; alten Exe beim Upgrade) auf SYSTEM/Administratoren Vollzugriff, Benutzer
@@ -356,6 +743,8 @@ Section "Zettelwirtschaft" SecMain
 
     ${If} $UPGRADE == "1"
         Call PrepareUpgrade
+    ${ElseIf} $ADOPT == "1"
+        Call PrepareAdoption
     ${EndIf}
 
     ; Bundle entpacken — Inhalt von %DIST% kommt 1:1 in $INSTDIR
@@ -373,6 +762,7 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\secure-acl.ps1"
     File "${DIST}\secure-install-dir.ps1"
     File "${DIST}\new-secret.ps1"
+    File "${DIST}\legacy-install.ps1"
     File "${DIST}\update-wizard.bat"
     File "${DIST}\update-wizard.ps1"
     File "${DIST}\backup.bat"
@@ -416,24 +806,39 @@ Section "Zettelwirtschaft" SecMain
     ; Laufwerkswurzel "Authentifizierte Benutzer: Aendern". Idempotent, laeuft
     ; auch bei Upgrades; Netzwerkpfade/Fehler nur als Hinweis im Protokoll.
     DetailPrint "Zugriffsrechte des Datenordners einschraenken..."
-    nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\secure-acl.ps1" "$DATA_DIR\data" "$DATA_DIR\logs" "$CONFIG_PATH"'
+    nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\secure-acl.ps1" "$DATA_DIR\data" "$LOG_DIR" "$CONFIG_PATH"'
     Pop $R0
 
     ; Firewall-Rule (nur Erstinstallation — sonst entstehen doppelte Regeln;
     ; nicht bei "nur dieser PC", INFRA-07)
     ${If} $UPGRADE != "1"
     ${AndIf} $LOCAL_ONLY != ${BST_CHECKED}
-        DetailPrint "Firewall-Regel..."
-        nsExec::ExecToLog '${POWERSHELL} -Command "New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue"'
-        Pop $R0
+        ${If} $ADOPT == "1"
+            ; Uebernahme: Bind-Adresse aus der bestehenden config.toml; eine von
+            ; Hand angelegte Regel gleichen Namens nicht verdoppeln.
+            ClearErrors
+            ${ConfigRead} "$CONFIG_PATH" "SERVER_HOST = " $R1
+            ${If} $R1 != '"127.0.0.1"'
+                DetailPrint "Firewall-Regel (falls noch nicht vorhanden)..."
+                nsExec::ExecToLog '${POWERSHELL} -Command "if (-not (Get-NetFirewallRule -DisplayName Zettelwirtschaft -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue }"'
+                Pop $R0
+            ${EndIf}
+        ${Else}
+            DetailPrint "Firewall-Regel..."
+            nsExec::ExecToLog '${POWERSHELL} -Command "New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue"'
+            Pop $R0
+        ${EndIf}
     ${EndIf}
 
-    ; Service installieren (idempotent, ersetzt einen vorhandenen Dienst)
+    ; Service installieren (idempotent, ersetzt einen vorhandenen Dienst - bei
+    ; der Uebernahme den bisherigen, manuell eingerichteten)
     DetailPrint "Service registrieren..."
-    nsExec::ExecToLog '"$INSTDIR\service-install.bat" "$INSTDIR" "$CONFIG_PATH" "$DATA_DIR\logs"'
-    Pop $R0
-    ${If} $R0 != "0"
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Der Dienst ${SERVICE_NAME} konnte nicht gestartet werden (Code $R0).$\r$\nDetails: $DATA_DIR\logs\backend.log" /SD IDOK
+    nsExec::ExecToLog '"$INSTDIR\service-install.bat" "$INSTDIR" "$CONFIG_PATH" "$LOG_DIR"'
+    Pop $SERVICE_EXIT
+    ${If} $ADOPT == "1"
+        Call FinishAdoption
+    ${ElseIf} $SERVICE_EXIT != "0"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Der Dienst ${SERVICE_NAME} konnte nicht gestartet werden (Code $SERVICE_EXIT).$\r$\nDetails: $LOG_DIR\backend.log" /SD IDOK
     ${EndIf}
 
     ; Uninstaller
@@ -464,7 +869,7 @@ Section "Zettelwirtschaft" SecMain
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Zettelwirtschaft oeffnen.lnk" \
         "http://localhost:$SERVER_PORT" "" "$SYSDIR\shell32.dll" 13
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Logs ansehen.lnk" \
-        "$DATA_DIR\logs"
+        "$LOG_DIR"
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Deinstallieren.lnk" \
         "$INSTDIR\Uninstall.exe"
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Update.lnk" \
@@ -490,7 +895,16 @@ Function OpenBrowser
 FunctionEnd
 
 Function OpenLogs
-    ExecShell "open" "$DATA_DIR\logs"
+    ExecShell "open" "$LOG_DIR"
+FunctionEnd
+
+; Abbruch der Installation (Abort in der Section, Datei nicht entpackbar):
+; bei einer Uebernahme den bisherigen Dienst wiederherstellen.
+Function .onInstFailed
+    ${If} $ADOPT == "1"
+    ${AndIf} $ADOPT_STOPPED == "1"
+        Call RestoreLegacyService
+    ${EndIf}
 FunctionEnd
 
 ; --- Helper: Ollama vorhanden? Stack out: "1" oder "0" ---
@@ -564,6 +978,7 @@ Section "Uninstall"
     Delete "$INSTDIR\secure-acl.ps1"
     Delete "$INSTDIR\secure-install-dir.ps1"
     Delete "$INSTDIR\new-secret.ps1"
+    Delete "$INSTDIR\legacy-install.ps1"
     Delete "$INSTDIR\update-wizard.bat"
     Delete "$INSTDIR\update-wizard.ps1"
     Delete "$INSTDIR\backup.bat"

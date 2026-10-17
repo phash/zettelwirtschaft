@@ -58,6 +58,13 @@ Migration aus einer bestehenden Docker-Installation: manuell mit
 Datenordners — Ablauf siehe Abschnitt „Native-Service-Ops" in [`CLAUDE.md`](CLAUDE.md).
 Ein leerer ChromaDB-Ordner wird beim ersten Start neu indexiert.
 
+**Von Hand eingerichtete Native-Installation aktualisieren** (Dienst per
+`service-install.bat` registriert, z. B. nach dieser Migration): einfach die neue
+Setup.exe starten. Sie erkennt den Dienst, bietet die Übernahme an, sichert Datenbank
+und `config.toml` nach `Dokumente\Zettelwirtschaft-Backups`, verlegt die
+Programmdateien nach `C:\Program Files\Zettelwirtschaft` und behält Datenordner,
+Einstellungen und PIN.
+
 Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md).
 
 ### Pfad B — Docker (klassisch)
@@ -182,6 +189,11 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Deployment:** Native Windows-Dienst (Setup.exe) oder Docker Compose
 
 ## Changelog
+
+### v1.6.1
+- **Native-Setup übernimmt von Hand eingerichtete Installationen:** Bisher brach die Setup.exe ab, wenn der Dienst `ZettelwirtschaftBackend` ohne Setup eingerichtet war (z. B. nach der Docker→Native-Migration per `service-install.bat`), und verwies auf das Update-Paket, das solche Installationen ebenfalls nicht kannte. Jetzt erkennt das Setup den Dienst (Programm-, Konfigurations-, Daten- und Log-Pfad aus den NSSM-Einstellungen, auch bei Version 1.2.x/1.3.x) und bietet die Aktualisierung an: Dienst stoppen → Sicherung von Datenbank (+ WAL) und `config.toml` nach `Dokumente\Zettelwirtschaft-Backups\pre-<version>_<zeit>.zip` (ohne die alte Exe, ZIP wird geprüft) → neue Programmdateien nach `C:\Program Files\Zettelwirtschaft` → in der `config.toml` nur `FRONTEND_DIST_DIR` umstellen → Dienst neu registrieren (gleicher Log-Ordner, Ollama-Abhängigkeit) → Datenbank-Migrationen beim Start → Registry-Eintrag wie bei einer normalen Installation. Läuft die Weboberfläche, bietet das Setup an, den alten Programmordner zu löschen (nur wenn darin keine Daten liegen). Bricht das Setup vorher ab, wird der bisherige Dienst wiederhergestellt. Nicht übernehmbare Dienste (kein NSSM, fehlende/relative Pfade) werden mit konkreter Anleitung abgelehnt.
+- `restore-backup.bat` spielt eine mitgesicherte WAL-Datei mit zurück.
+- Release-CI: Tests mit echtem Chroma werden übersprungen, wenn nur `chromadb-client` installiert ist (der 1.6.0-Release-Lauf brach daran ab; GitHub-Release und GHCR-Images kommen deshalb mit 1.6.1).
 
 ### v1.6.0
 - **Neue KI-Standardmodelle (Benchmark über 70 Dokumente, 13 LLMs, 6 Embedding-Modelle):** Analyse mit `gemma4:e2b-it-qat` (Kernfelder 84,7 % statt 54 % mit `qwen2.5:7b` beim bisherigen Schema; auf CPU ca. 40 s statt 60–110 s pro Dokument), bei NVIDIA-GPU ab 10 GB VRAM `gemma4:12b-it-qat` (90 %). Suche mit `qwen3-embedding:4b` (Trefferquote R@1 100 %), unter 12 GB RAM `qwen3-embedding:0.6b`. Die Installer wählen die Stufe anhand von RAM und Grafikspeicher. **Bestehende Installationen behalten ihre Modelle.** Wechsel des Suchmodells baut den Index automatisch neu auf, sobald das Modell geladen ist. Das Analyse-Schema verlangt jetzt alle Felder — das allein hebt die Genauigkeit aller Modelle deutlich. Ollama ≥ 0.30.3 (getestet 0.40.5), die Systemprüfung warnt bei älteren Versionen.

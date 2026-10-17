@@ -133,6 +133,11 @@ try {
     $dbParent = Split-Path -Parent $dbPath
     if ($dbParent) { New-Item -ItemType Directory -Force -Path $dbParent | Out-Null }
     Copy-Item -LiteralPath $srcDb -Destination $dbPath -Force
+    # Sicherungen des Setups (Uebernahme einer manuellen Installation, ohne
+    # sqlite-Backup-API) enthalten ggf. die WAL-Datei - sie gehoert zur DB.
+    # Die -shm baut SQLite selbst neu auf.
+    $srcWal = "$srcDb-wal"
+    if (Test-Path -LiteralPath $srcWal) { Copy-Item -LiteralPath $srcWal -Destination "$dbPath-wal" -Force }
     Write-Host 'Datenbank wiederhergestellt.'
 
     $srcDocs = Join-Path $tmp 'documents'

@@ -392,6 +392,40 @@ Wenn die Migration im Wizard fehlschlaegt:
 - Native-Installation kann komplett deinstalliert werden (Programme & Features)
 - Setup-Wizard schreibt **vor** Migration ein Backup nach `<datenordner>\data\backups\pre-migration_<timestamp>\`
 
+### 7.4 Uebernahme manuell eingerichteter Native-Installationen (ab 1.6.1)
+
+Die Migration oben wurde in der Praxis von Hand durchgefuehrt: Dienst per
+`scripts/service-install.bat` registriert, Programmdateien z.B. in
+`%LOCALAPPDATA%\Zettelwirtschaft-Native`, **kein** `HKLM\SOFTWARE\Zettelwirtschaft`.
+Solche Installationen kennt weder der Registry-Upgrade-Pfad des Setups noch
+`update-wizard.ps1`. Seit 1.6.1 uebernimmt `setup-native.nsi` sie ("Adoption"):
+
+1. Erkennung: Dienst existiert, kein Registry-Eintrag -> `legacy-install.ps1 -Action Detect`
+   liest die NSSM-Einstellungen aus `HKLM\SYSTEM\CurrentControlSet\Services\ZettelwirtschaftBackend\Parameters`
+   (Application, AppDirectory, AppEnvironmentExtra -> `ZETTELWIRTSCHAFT_CONFIG`, AppStdout)
+   und leitet aus der `config.toml` Datenbank (`DATABASE_URL`), Datenordner (Elternordner
+   von `data\`) und Log-Ordner ab. Ergebnis als UTF-16-INI fuer `ReadINIStr`.
+   Abgelehnt (mit Anleitung): kein NSSM-Dienst, fehlende/nicht vorhandene `config.toml`,
+   relative Datenpfade (wuerden nach dem Umzug in den neuen Programmordner zeigen).
+2. Dienst stoppen, Backup **ohne die alte Exe** (aeltere Versionen kennen `--backup`/`--out-dir`
+   nicht): DB (+ `-wal`/`-shm`) und `config.toml` als ZIP nach
+   `%USERPROFILE%\Documents\Zettelwirtschaft-Backups\pre-<version>_<zeit>.zip`, Struktur wie
+   die Backend-Backups (`database/zettelwirtschaft.db`) -> `restore-backup.bat` kompatibel.
+3. Neuer Programmordner (Default `Program Files\Zettelwirtschaft`, nie der alte), normale
+   Installation mit vorhandener `config.toml` (wird nicht neu geschrieben).
+4. `service-install.bat` ersetzt den alten Dienst (gleicher Log-Ordner). Erst danach wird in
+   der `config.toml` nur `FRONTEND_DIST_DIR` umgestellt (atomar per Temp-Datei + ReplaceFile,
+   ACL bleibt) - die alten Programmdateien laufen also nie mit einer geaenderten Config.
+   Alembic-Migrationen beim Start, Registry wie bei einer normalen Installation, Health-Check,
+   alte Programmdateien optional loeschen (nur wenn keine Daten/Config/Logs im Ordner liegen;
+   geloescht werden nur bekannte Programmdateien, kein `RMDir /r`, keine Verknuepfungen).
+5. Rollback: jeder Abbruch vor der erfolgreichen Neuregistrierung stellt den alten Dienst mit
+   den alten NSSM-Parametern wieder her (bzw. zeigt die exakten `nssm install/set`-Befehle);
+   ein vorher angehaltener Dienst bleibt angehalten. Stromausfall genau zwischen
+   `nssm remove` und `nssm install` (service-install.bat): kein Dienst, Daten und alter
+   Programmordner unveraendert -> Setup erneut ausfuehren (Datenordner = Ordner der
+   bisherigen `config.toml`) oder alten Dienst mit den Befehlen aus Schritt 5 registrieren.
+
 ---
 
 ## 8. Netzwerk-Zugriff aus dem LAN

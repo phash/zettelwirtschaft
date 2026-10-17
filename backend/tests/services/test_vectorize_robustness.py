@@ -29,7 +29,7 @@ from tests.factories import make_document
 
 
 @pytest.fixture
-def chroma(test_settings):
+def chroma(test_settings, requires_full_chromadb):
     """Echte In-Memory-Collection statt Mock — prueft die tatsaechliche Chroma-Semantik."""
     vectorize_service.reset_chroma_cache()
     client = chromadb.EphemeralClient()
@@ -275,7 +275,7 @@ class TestEmbeddingModelSwitch:
     den Index beim Start automatisch neu auf (echter embedded PersistentClient)."""
 
     @pytest.fixture(autouse=True)
-    async def _stop_tasks(self, model_ready):
+    async def _stop_tasks(self, model_ready, requires_full_chromadb):
         vectorize_service.reset_chroma_cache()
         yield
         await shutdown_tasks()

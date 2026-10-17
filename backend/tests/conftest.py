@@ -28,6 +28,22 @@ import app.models.background_task  # noqa: F401
 
 
 @pytest.fixture
+def requires_full_chromadb():
+    """Tests mit echtem Chroma (Ephemeral/PersistentClient) brauchen das volle
+    ``chromadb``-Paket (Native-Build, lokales venv). Docker-Image und Release-CI
+    installieren nur ``chromadb-client`` (HTTP-only) -> dort ueberspringen statt
+    mit "Chroma is running in http-only client mode" abzubrechen."""
+    import chromadb
+
+    try:
+        chromadb.EphemeralClient()
+    except RuntimeError as exc:
+        if "http-only" not in str(exc):
+            raise
+        pytest.skip("braucht das volle chromadb-Paket (nur chromadb-client installiert)")
+
+
+@pytest.fixture
 def test_settings(tmp_path: Path) -> Settings:
     upload_dir = tmp_path / "uploads"
     watch_dir = tmp_path / "watch"
