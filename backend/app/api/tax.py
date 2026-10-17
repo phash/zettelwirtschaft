@@ -81,11 +81,12 @@ async def tax_export(
 @router.get("/tax/years")
 async def tax_years(session: AsyncSession = Depends(get_db)):
     """Gibt Jahre zurueck, fuer die steuerrelevante Dokumente existieren."""
-    from sqlalchemy import select, distinct
+    from sqlalchemy import select
     from app.models.document import Document, DocumentStatus
 
     stmt = (
-        select(distinct(Document.tax_year))
+        select(Document.tax_year)
+        .distinct()
         .where(Document.tax_relevant.is_(True))
         .where(Document.status != DocumentStatus.DELETED)
         .where(Document.tax_year.isnot(None))

@@ -59,7 +59,7 @@ frontend_build() {
 }
 
 docker_backend() { docker build -t zettelwirtschaft-backend ./backend; }
-docker_frontend() { docker build -t zettelwirtschaft-frontend ./frontend; }
+docker_frontend() { docker build --build-context repo=. -t zettelwirtschaft-frontend ./frontend; }
 
 e2e_tests() {
     if ! docker compose ps --format json 2>/dev/null | grep -q frontend; then

@@ -34,6 +34,13 @@ datas += collect_data_files("certifi")
 
 # --- Hidden Imports: PyInstaller findet diese nicht automatisch ---
 hiddenimports = [
+    # Die App selbst: entrypoint.py startet uvicorn per Import-String
+    # ("app.main:app") — den sieht die PyInstaller-Analyse nicht. Ohne diesen
+    # Eintrag fehlen app.main + alle Router im Bundle und die Exe bricht mit
+    # 'Could not import module "app.main"' ab (frueher nur zufaellig ueber den
+    # --version-Import aus app.main mitgezogen).
+    "app.main",
+
     # SQLAlchemy + aiosqlite
     "aiosqlite",
     "sqlalchemy.dialects.sqlite.aiosqlite",
@@ -44,7 +51,9 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.http.h11_impl",
     "uvicorn.protocols.websockets.auto",
-    "uvicorn.protocols.websockets.websockets_impl",
+    # uvicorn >= 0.50: "auto" waehlt die Sans-I/O-Implementierung (Legacy-
+    # websockets_impl ist deprecated).
+    "uvicorn.protocols.websockets.websockets_sansio_impl",
     "uvicorn.lifespan.on",
     "uvicorn.loops.auto",
     "uvicorn.loops.asyncio",

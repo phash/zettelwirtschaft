@@ -3,13 +3,11 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image as _PILImage
-
 from app.config import Settings
 
-# S-LOW3: Decompression-Bomb-Schutz (siehe thumbnail_service). Hartes Pixel-Limit
-# fuer alle Pillow-Operationen inkl. des 2x-Upscale in _preprocess_for_ocr.
-_PILImage.MAX_IMAGE_PIXELS = 64_000_000
+# S-LOW3: Decompression-Bomb-Schutz zentral in app.core.image_safety (hartes
+# Pixel-Limit beim Oeffnen, setzt auch Pillows MAX_IMAGE_PIXELS).
+from app.core.image_safety import open_image
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +167,8 @@ def _extract_pdf_ocr_sync(file_path: Path, settings: Settings) -> OcrResult | No
 
 def _extract_image_ocr_sync(file_path: Path, settings: Settings) -> OcrResult | None:
     """OCR fuer Bilddateien via Tesseract."""
-    from PIL import Image
-
     try:
-        with Image.open(file_path) as image:
+        with open_image(file_path) as image:
             text, confidence = _ocr_image_sync(image, settings.OCR_LANGUAGES)
     except Exception as e:
         logger.error("Bild konnte nicht geoeffnet werden: %s", e)

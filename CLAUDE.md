@@ -29,13 +29,13 @@ docker compose logs -f backend
 **Lokaler Entwicklungs-Modus** (ohne Docker):
 
 ```bash
-# Backend (Python 3.12, virtualenv empfohlen)
+# Backend (Python 3.13, virtualenv empfohlen)
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # Runtime + pytest (Docker-Image: nur requirements.txt)
 python -m alembic upgrade head      # DB-Migrationen
 uvicorn app.main:app --reload       # Port 8000
 
-# Frontend (Node 22+)
+# Frontend (Node 22.12+ / empfohlen 24 LTS)
 cd frontend
 npm install
 npm run dev                          # Vite Dev-Server, Port 3000
@@ -49,7 +49,7 @@ cd e2e && npx playwright test --project=chromium  # 145 Tests
 
 ```powershell
 # Voraussetzungen am Build-Host:
-#   - Python 3.12, Node 22, NSIS 3.x (makensis im PATH)
+#   - Python 3.13, Node 22, NSIS 3.x (makensis im PATH)
 #   - tools/tesseract/, tools/poppler/, tools/nssm/win64/nssm.exe vorbereitet
 
 pip install -r backend/requirements.txt -r backend/requirements-build.txt
@@ -142,9 +142,11 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
 
 ## Technologie-Stack
 
-- **Backend:** Python 3.12 / FastAPI 0.137+ / SQLAlchemy 2.0 async / Pydantic v2
+- **Backend:** Python 3.13 (Docker `python:3.13-slim` = Native-Build-venv) / FastAPI 0.143 /
+  Starlette 1.8 / SQLAlchemy 2.1 async / Pydantic v2 (2.14) / pydantic-settings 2.16
 - **Datenbank:** SQLite (via SQLAlchemy + Alembic, Migrationen via `migrate.py`)
-- **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs), Pillow 12.x
+- **OCR:** Tesseract OCR + pdf2image + pdfplumber (digitale PDFs), Pillow 13.x
+  (Decompression-Bomb-Limit zentral in `app/core/image_safety.py:open_image`)
   - Pre-Processing: Auto-Upscale 2x bei kleinen Bildern, MedianFilter Denoising,
     aggressives Autocontrast (cutoff=2)
 - **KI-Analyse:** Ollama mit qwen2.5:7b-instruct (Default) / llama3.2 (Fallback)
@@ -152,7 +154,11 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
   - Few-Shot aus CorrectionMappings
   - Optional: LLM-Reranker + Verifier-Pass (config-flags)
 - **Frontend:** Vue.js 3.5+ (Composition API, `<script setup>`) + Vite 8 + Tailwind v4
-  + Pinia 3 + vue-router 5
+  + Pinia 4 (+ `@vue/devtools-api` 8 als Pflicht-Peer) + vue-router 5
+- **App-Version im UI:** einzige Quelle ist die Repo-Datei `VERSION` (`vite.config.js` liest
+  `../VERSION`; `frontend/package.json` hat bewusst kein `version`-Feld). Docker-Build bekommt
+  `VERSION` ueber den benannten Build-Context `repo` (compose `additional_contexts`,
+  release.yml `build-contexts`, ci-local `--build-context repo=.`) → braucht Compose ≥ 2.17/BuildKit.
 - **Deployment:**
   - **Docker** (Stand v1.2.x, Standard heute): Backend, Frontend/Nginx, Ollama, ChromaDB 1.x als Container
     - Container-Hardening: cap_drop ALL, no-new-privileges
@@ -165,7 +171,7 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
     - Tesseract + poppler gebundled in `<install>/bin/`
     - Ollama als nativer Windows-Service (vom Ollama-Installer)
     - Konfiguration in `config.toml` statt `.env` (Pfad via `ZETTELWIRTSCHAFT_CONFIG`)
-- **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 1.x)
+- **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 2.x)
 - **Vektor-Suche:** ChromaDB 1.5.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
 - **Rate-Limiting:** slowapi (200/min default, X-Real-IP-Trust nur aus Docker-Net)
 - **CI:** Lokal via `scripts/ci-local.{ps1,sh}`, GitHub-Actions deaktiviert
@@ -327,7 +333,8 @@ zettelwirtschaft/
 - **Lizenz:** AGPL-3.0 (verhindert proprietaere SaaS-Forks).
 - **PIN Rate-Limiting:** In-Memory Per-IP Tracking (5 Versuche, 30s Lockout). `secrets.compare_digest` fuer constant-time Vergleich. `X-Real-IP` Header von Nginx.
 - **CORS:** Explizite Origins + LAN-Regex (`192.168.*`, `10.*`, `172.16-31.*`) statt `["*"]`.
-- **Nginx Security-Headers:** CSP, X-Frame-Options SAMEORIGIN, X-Content-Type-Options nosniff, server_tokens off.
+- **Nginx Security-Headers:** CSP, X-Frame-Options SAMEORIGIN, X-Content-Type-Options nosniff, server_tokens off. Locations mit eigenem `add_header` (Static-Assets, `/sw.js`) brauchen `add_header_inherit merge;` (nginx >= 1.29.3), sonst entfallen dort alle server-weiten Security-Header (nginx-Vererbungsregel).
+- **App-Version im Backend:** einzige Quelle `app/core/version.py:read_app_version()` (CWD-`VERSION` > `data/.version` > Native `<install>/VERSION` relativ zur Exe — NSSM-CWD ist `<install>/backend`).
 - **Backup-Sicherheit:** `.env` wird nicht mehr in Backup-ZIPs aufgenommen (enthaelt Secrets). Path-Traversal-Schutz bei Backup-Download via `resolve()` + `is_relative_to()`.
 - **E-Mail-Encryption-Key:** `EMAIL_ENCRYPTION_KEY` muss in `.env` gesetzt sein. Leerer Key -> HTTP 503 bei Account-Erstellung (keine stille Key-Generierung).
 - **IMAP async:** Alle blockierenden IMAP-Operationen in `asyncio.to_thread()` gewrappt.
@@ -469,7 +476,8 @@ User-Frage
 **Kritische Build-Gotchas:**
 - **chromadb vs chromadb-client:** PyInstaller braucht `chromadb` (full mit `PersistentClient`), NICHT `chromadb-client` (HTTP-only). Beide nutzen den `chromadb`-Namespace — Konflikt. `build-native.ps1` deinstalliert chromadb-client und installiert `chromadb` aus `requirements-build.txt`. Symptom bei Fehler: `RuntimeError: Chroma is running in http-only client mode`.
 - **PRAGMA foreign_keys=ON:** siehe Alembic-Sektion oben. Ohne den Event-Listener sind FK-Constraints zur Laufzeit wirkungslos.
-- **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. `entrypoint.py:_run_migrations` macht `Base.metadata.create_all` bei leerer DB + Stamp auf head (Migrationen sind dann no-op).
+- **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. Docker (`migrate.py:main`) und Native (`entrypoint.py:_run_migrations`) nutzen dieselben Helfer aus `migrate.py`: `is_fresh_db` → `create_fresh_schema` (create_all) + Stamp auf head; danach `ensure_default_filing_scope` (seedet "Privat", das sonst nur Migration 005 anlegt).
+- **App-Import im Bundle:** uvicorn startet per Import-String `"app.main:app"` — `app.main` steht deshalb explizit in den `hiddenimports` der Spec, sonst fehlen App + Router im Bundle.
 - **SPA-Routing:** `StaticFiles(html=True)` deckt nur Ordner-Index ab. `/dokumente` wuerde sonst 404 geben — der Catch-All-Route ist notwendig.
 - **ChromaDB Client/Server-Version synchron halten:** Bei einem `chromadb-client`-Bump (requirements.txt) MUSS das docker-compose-Server-Image `chromadb/chroma:<x>` mitgezogen werden (aktuell 1.5.9 ↔ client 1.5, seit v1.3.1). Weder Backend-Tests (volles/embedded chromadb im venv) noch E2E (API gemockt) fangen einen Skew — er trifft nur den Docker-Pfad zur Laufzeit.
 
@@ -515,10 +523,18 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   UI-Banner via `pin_warning`-Flag wenn deaktiviert, Cookie `Secure`+`SameSite=strict`
 - LLM-Pipeline: bge-m3, JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
   optional Reranker + Verifier
-- Lib-Stand (v1.3.0, aggressive Migration): Vite 8, TypeScript 6, Tailwind v4,
-  Pinia 3, vue-router 5.1, Node 22/24, ChromaDB 1.5, FastAPI 0.137, uvicorn 0.49,
-  cryptography 49, SQLAlchemy 2.0.51, pytest 9 / pytest-asyncio 1.x, Pillow 12.2,
-  axios 1.18, slowapi 0.1.10
+- Lib-Stand (Frontend/E2E aktualisiert in v1.6.0): Vite 8.3, vite-plugin-pwa 2.0,
+  Vue 3.5.44, Pinia 4.1, vue-router 5.4, Tailwind 4.3.3, axios 1.20, Playwright 1.64,
+  TypeScript 7 (e2e, nur `npm run typecheck`), Node 24 (Docker `node:24-alpine`,
+  nginx `1.30-alpine`); Backend (v1.6.0): Python 3.13, FastAPI 0.143, Starlette 1.8,
+  uvicorn 0.54, SQLAlchemy 2.1.5, alembic 1.20, pydantic-settings 2.16, Pillow 13.0,
+  reportlab 5.0, cryptography 50, ChromaDB 1.5.9 (Client+Server), pyinstaller 6.22,
+  pytest 9.1 / pytest-asyncio 1.4 (nur `requirements-dev.txt`), slowapi 0.1.10,
+  Ollama-Image gepinnt `0.40.5`.
+  SQLAlchemy-2.1-Gotchas: `noload` deprecated (-> `raiseload`/`lazy="raise"`);
+  Autoflush jetzt auch vor `text()`/Core-Statements -> nach Flush expired
+  `onupdate`-Spalten (updated_at) vor Response-Validierung `refresh()`en, sonst
+  MissingGreenlet.
 
 **Native-Windows (Phasen 1+2 abgeschlossen + Migrations-Pfad verifiziert, ab v1.3):**
 
@@ -562,12 +578,14 @@ Naechste Phasen (3-4 laut Konzept): Migrations-Wizard im NSIS-Installer integrie
 - `012_add_processing_started_at` - Heartbeat-Spalte fuer Stuck-Job-Recovery (B5 Re-Review)
 - `013_fk_indexes_consistency` - chat_messages.filing_scope_id FK (ON DELETE SET NULL) + 4 Indizes auf email_accounts.filing_scope_id, processing_jobs.email_account_id, processed_emails.processing_job_id (H-ARCH-1/3/4)
 
-`migrate.py` setzt `init_db()` nicht mehr aufruft — Schema kommt komplett aus
-der Alembic-Chain. `detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
+`migrate.py` ruft `init_db()` nicht mehr auf. Frische (leere) DBs: Schema via
+`create_fresh_schema` (create_all) + Stamp auf head — die Alembic-Chain allein kann
+eine leere DB nicht aufbauen (001 = ALTER ohne CREATE). Bestands-DBs: Alembic-Chain.
+`detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
 auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013).
 
-**Native-Pfad** (`app/entrypoint.py`): Bei leerer DB → `Base.metadata.create_all`
-+ Stamp auf head. Migration 001 ist `ALTER TABLE processing_jobs` ohne
+**Native-Pfad** (`app/entrypoint.py`) wie Docker: Bei leerer DB → `Base.metadata.create_all`
++ Stamp auf head (+ Default-Scope-Seed). Migration 001 ist `ALTER TABLE processing_jobs` ohne
 vorheriges `CREATE` — sie war historisch angewiesen auf `init_db()`. Ohne den
 Fresh-DB-Pfad crasht der erste Native-Start.
 

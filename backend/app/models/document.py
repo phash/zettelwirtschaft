@@ -158,8 +158,11 @@ class Tag(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # Wird nie geladen (Tag-Zuweisung laeuft ueber DocumentTag). lazy="raise"
+    # statt "noload" (in SQLAlchemy 2.1 deprecated): Zugriff wirft, statt still
+    # eine leere Liste zu liefern.
     documents: Mapped[list["Document"]] = relationship(
-        secondary="document_tags", back_populates="tags", lazy="noload"
+        secondary="document_tags", back_populates="tags", lazy="raise"
     )
 
 

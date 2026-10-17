@@ -113,3 +113,38 @@ class TestExtractTextMocked:
             assert result is not None
             assert result.full_text == "Gescannter Text"
             assert result.average_confidence == 0.85
+
+
+class TestPreprocessForOcr:
+    """Echter Pillow-Pfad (ohne Mocks) — faengt API-Brueche bei Pillow-Bumps."""
+
+    def test_small_image_upscaled_and_grayscale(self):
+        from PIL import Image
+
+        from app.services.ocr_service import _preprocess_for_ocr
+
+        img = Image.new("RGB", (600, 400), "white")
+        out = _preprocess_for_ocr(img)
+        assert out.mode == "L"
+        assert out.size == (1200, 800)
+
+    def test_large_image_not_upscaled(self):
+        from PIL import Image
+
+        from app.services.ocr_service import _preprocess_for_ocr
+
+        img = Image.new("RGB", (1600, 2000), "white")
+        out = _preprocess_for_ocr(img)
+        assert out.size == (1600, 2000)
+
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_decompression_bomb_returns_none(self, tmp_path: Path, test_settings: Settings):
+        from PIL import Image
+
+        from app.services.ocr_service import _extract_image_ocr_sync
+
+        src = tmp_path / "bomb.png"
+        Image.new("1", (10_000, 7_000)).save(src)  # 70 Mpx > 64 Mpx-Limit
+        with patch("pytesseract.image_to_data") as ocr:
+            assert _extract_image_ocr_sync(src, test_settings) is None
+            ocr.assert_not_called()

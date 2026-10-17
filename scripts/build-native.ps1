@@ -8,7 +8,7 @@
 #   5. NSIS-Installer bauen (optional)
 #
 # Voraussetzungen am Build-Host:
-#   - Python 3.12 + pip install -r backend/requirements.txt -r backend/requirements-build.txt
+#   - Python 3.13 (wie Docker-Image python:3.13-slim) + pip install -r backend/requirements.txt -r backend/requirements-build.txt
 #   - Node 22 + npm
 #   - Tesseract-OCR-w64-setup-5.x portable in tools/tesseract/  (oder via Downloader)
 #   - poppler-windows in tools/poppler/

@@ -65,44 +65,23 @@ def _run_migrations() -> int:
     db_path = db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    # Gemeinsame Bootstrap-Helfer mit dem Docker-Pfad (migrate.py).
+    from migrate import create_fresh_schema, detect_stamp, ensure_default_filing_scope, is_fresh_db
+
     # 1. Pruefen ob die DB komplett leer ist (keine User-Tabellen)
-    is_fresh_db = False
     conn = sqlite3.connect(db_path)
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
-        )
-        existing_tables = [r[0] for r in cur.fetchall()]
-        is_fresh_db = len(existing_tables) == 0
+        fresh_db = is_fresh_db(conn.cursor())
     finally:
         conn.close()
 
-    if is_fresh_db:
+    if fresh_db:
         # Frische DB: Schema komplett ueber SQLAlchemy create_all anlegen,
         # dann auf head stampen. Migrationen sind dann no-op.
-        import asyncio
-        from app.database import Base, engine
-
-        async def _create_schema():
-            # Alle Models importieren damit Base.metadata komplett ist
-            import app.models  # noqa: F401
-            from app.models import (  # noqa: F401
-                audit_log, chat_message, correction_mapping, document,
-                email_account, filing_scope, notification, processed_email,
-                processing_job, review_question, saved_search, warranty_info,
-            )
-            async with engine.begin() as conn_:
-                await conn_.run_sync(Base.metadata.create_all)
-            await engine.dispose()
-
         logging.info("[migrate] Frische DB — Schema via create_all anlegen")
-        asyncio.run(_create_schema())
+        create_fresh_schema()
 
     # 2. Legacy-Stamping (DBs ohne alembic_version)
-    from migrate import detect_stamp
-
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
@@ -114,7 +93,7 @@ def _run_migrations() -> int:
         cur.execute("SELECT version_num FROM alembic_version")
         versions = [r[0] for r in cur.fetchall()]
         if not versions:
-            if is_fresh_db:
+            if fresh_db:
                 # Eben angelegtes Schema entspricht head — direkt stampen.
                 # Holen wir den head dynamisch.
                 from alembic.script import ScriptDirectory
@@ -146,6 +125,16 @@ def _run_migrations() -> int:
     cfg.set_main_option("sqlalchemy.url", db_url.replace("+aiosqlite", ""))
     command.upgrade(cfg, "head")
     logging.info("[migrate] Alembic-Migrationen abgeschlossen")
+
+    # 4. Default-Ablagebereich sicherstellen (frische DBs durchlaufen Migration
+    # 005 nicht, die ihn seedet — auch Bestands-Installs mit leerer Tabelle).
+    conn = sqlite3.connect(db_path)
+    try:
+        if ensure_default_filing_scope(conn.cursor()):
+            conn.commit()
+            logging.info("[migrate] Default-Ablagebereich 'Privat' angelegt")
+    finally:
+        conn.close()
     return 0
 
 
@@ -189,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.version:
-        from app.main import _read_version
-        print(_read_version())
+        from app.core.version import read_app_version
+        print(read_app_version())
         return 0
 
     if args.backup:

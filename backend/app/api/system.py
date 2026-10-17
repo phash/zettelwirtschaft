@@ -12,6 +12,7 @@ from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.core.version import read_app_version
 from app.database import get_db
 from app.models.document import Document, DocumentStatus
 from app.services.backup_service import create_backup, get_system_info, list_backups
@@ -257,12 +258,8 @@ async def system_health(
 
     # Installierte Version und Pfad lesen
     from pathlib import Path
-    version_file = Path("./data/.version")
     install_path_file = Path("./data/.install-path")
-    try:
-        app_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
-    except Exception:
-        app_version = "unknown"
+    app_version = read_app_version()
     try:
         install_path = install_path_file.read_text(encoding="utf-8").strip() if install_path_file.exists() else ""
     except Exception:

@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setupDashboardMocks, MOCK_HEALTH } from '../helpers/mock.helpers';
+import { setupDashboardMocks } from '../helpers/mock.helpers';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Sidebar zeigt die zur Build-Zeit eingebettete Version (__APP_VERSION__ aus der
+// Repo-Datei VERSION) — NICHT die app_version aus /api/system/health. Daher gegen
+// dieselbe Single Source of Truth pruefen statt gegen einen Mock-Wert.
+const APP_VERSION = fs.readFileSync(path.resolve(__dirname, '../../VERSION'), 'utf-8').trim();
 
 test.describe('Smoke Tests', () => {
   test('App loads and shows dashboard', async ({ page, isMobile }) => {
@@ -47,6 +54,6 @@ test.describe('Smoke Tests', () => {
     test.skip(!!isMobile, 'Version only shown in sidebar on desktop');
     await setupDashboardMocks(page);
     await page.goto('/');
-    await expect(page.locator(`text=v${MOCK_HEALTH.app_version}`).first()).toBeVisible();
+    await expect(page.locator(`text=v${APP_VERSION}`).first()).toBeVisible();
   });
 });

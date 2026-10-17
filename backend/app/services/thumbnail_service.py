@@ -2,16 +2,12 @@ import asyncio
 import logging
 from pathlib import Path
 
-from PIL import Image as _PILImage
-
 from app.config import Settings
 
-# S-LOW3: Decompression-Bomb-Schutz. Pillow warnt per Default nur ab ~178 Mpx,
-# wirft aber nicht. Hartes Limit setzen -> Image.open() wirft oberhalb eine
-# DecompressionBombError, die in den Thumbnail/OCR-Pfaden als Fehler (None)
-# abgefangen wird. Schuetzt die 8-GB-Zielhardware vor Mini-Files, die zu
-# hunderten Megapixeln dekomprimieren.
-_PILImage.MAX_IMAGE_PIXELS = 64_000_000
+# S-LOW3: Decompression-Bomb-Schutz zentral in app.core.image_safety —
+# open_image() wirft oberhalb des Pixel-Limits, generate_thumbnail() faengt das
+# als Fehler (None) ab.
+from app.core.image_safety import open_image
 
 logger = logging.getLogger("zettelwirtschaft.thumbnail")
 
@@ -22,9 +18,7 @@ def _generate_image_thumbnail(
     max_size: int,
 ) -> Path:
     """Generiert ein Thumbnail aus einem Bild."""
-    from PIL import Image
-
-    with Image.open(source_path) as img:
+    with open_image(source_path) as img:
         img.thumbnail((max_size, max_size))
         img.save(output_path, "PNG")
     return output_path
@@ -37,7 +31,6 @@ def _generate_pdf_thumbnail(
 ) -> Path:
     """Generiert ein Thumbnail aus der ersten Seite einer PDF."""
     from pdf2image import convert_from_path
-    from PIL import Image
 
     images = convert_from_path(str(source_path), first_page=1, last_page=1)
     if not images:

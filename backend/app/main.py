@@ -27,17 +27,8 @@ from app.api.system import router as system_router
 from app.api.tax import router as tax_router
 from app.api.warranties import router as warranties_router
 from app.config import get_settings
+from app.core.version import read_app_version
 from app.database import async_session_factory
-
-
-def _read_version() -> str:
-    """Liest Version aus VERSION-Datei oder data/.version."""
-    for path in [Path("VERSION"), Path("data/.version")]:
-        try:
-            return path.read_text().strip()
-        except FileNotFoundError:
-            continue
-    return "dev"
 
 
 @asynccontextmanager
@@ -240,7 +231,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zettelwirtschaft",
     description="Lokales Dokumentenmanagementsystem fuer Privathaushalte",
-    version=_read_version(),
+    version=read_app_version(),
     lifespan=lifespan,
 )
 
@@ -334,7 +325,7 @@ app.include_router(email_router, prefix="/api")
 # WICHTIG: Asset-Mount + SPA-Fallback NACH allen `/api`-Routern, sonst
 # werden API-Calls von StaticFiles abgefangen.
 def _mount_frontend() -> None:
-    from fastapi import Request
+    from fastapi import HTTPException, Request
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
@@ -354,7 +345,12 @@ def _mount_frontend() -> None:
     # (Vue-Router uebernimmt das Routing dann clientseitig).
     @app.get("/{full_path:path}", include_in_schema=False)
     async def _spa_fallback(full_path: str, request: Request):
-        # /api/* wird von den Routern oben abgefangen — landet nicht hier.
+        # Bekannte /api/*-Routen fangen die Router oben ab. Unbekannte API-Pfade
+        # landen aber hier und duerfen NICHT index.html (200, text/html) liefern —
+        # sonst bekommt der API-Client HTML statt eines 404-JSON (wie im Docker-
+        # Betrieb ohne Catch-All).
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
         candidate = (dist_path / full_path).resolve()
         # Path-Traversal-Schutz: nur innerhalb dist
         try:

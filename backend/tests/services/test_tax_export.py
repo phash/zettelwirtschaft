@@ -97,3 +97,65 @@ class TestTaxValidation:
 
         result = await validate_export(db_session, 2025)
         assert any("Betrag" in w for w in result["warnings"])
+
+
+class TestBuildZip:
+    """Echter reportlab-/ZIP-Pfad (ohne Mocks) — faengt API-Brueche bei Lib-Bumps."""
+
+    def _doc_data(self, file_path, category: TaxCategory, amount):
+        return {
+            "tax_category": category,
+            "document_date": date(2025, 3, 1),
+            "title": "Handwerker Bad",
+            "issuer": "Sanitaer Mueller",
+            "amount": amount,
+            "currency": "EUR",
+            "file_type": "pdf",
+            "file_path": str(file_path),
+            "document_type": "HANDWERKER_RECHNUNG",
+        }
+
+    def test_zip_contains_pdf_and_csv(self, tmp_path):
+        import io
+        import zipfile
+
+        from app.services.tax_export_service import _build_zip_sync
+
+        beleg = tmp_path / "beleg.pdf"
+        beleg.write_bytes(b"%PDF-1.4 dummy")
+        cat_a, cat_b = list(TaxCategory)[:2]
+        docs = [
+            self._doc_data(beleg, cat_a, 119.99),
+            self._doc_data(beleg, cat_b, None),
+        ]
+
+        data = _build_zip_sync(docs, 2025, include_pdf=True, include_csv=True)
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+            assert "Steuerpaket_2025/Uebersicht.pdf" in names
+            assert "Steuerpaket_2025/Gesamtuebersicht.csv" in names
+            pdf = zf.read("Steuerpaket_2025/Uebersicht.pdf")
+            assert pdf.startswith(b"%PDF")
+            assert len(pdf) > 1000
+            csv_text = zf.read("Steuerpaket_2025/Gesamtuebersicht.csv").decode("utf-8-sig")
+            assert "119.99" in csv_text
+            # Zwei Belege, je eine Kategorie-Datei
+            assert sum(1 for n in names if n.endswith(".pdf") and "Uebersicht" not in n) == 2
+
+    def test_zip_without_pdf(self, tmp_path):
+        import io
+        import zipfile
+
+        from app.services.tax_export_service import _build_zip_sync
+
+        beleg = tmp_path / "beleg.pdf"
+        beleg.write_bytes(b"%PDF-1.4 dummy")
+        docs = [self._doc_data(beleg, list(TaxCategory)[0], 10)]
+
+        data = _build_zip_sync(docs, 2025, include_pdf=False, include_csv=False)
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+        assert "Steuerpaket_2025/Uebersicht.pdf" not in names
+        assert not any(n.endswith(".csv") for n in names)

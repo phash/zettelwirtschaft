@@ -33,7 +33,10 @@ services:
       start_period: 15s
 
   ollama:
-    image: ollama/ollama:latest
+    # Konkrete Version statt :latest -> reproduzierbare Installs/Updates
+    # (Ollama-API /api/chat + /api/embed kann sich zwischen Versionen aendern).
+    # Bewusst aktualisieren: Tag hier anheben, dann `docker compose pull`.
+    image: ollama/ollama:0.40.5
     volumes:
       - ollama-models:/root/.ollama
     restart: unless-stopped
@@ -84,7 +87,12 @@ services:
       start_period: 10s
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      # Repo-Root als benannter Context "repo": das Dockerfile kopiert daraus
+      # nur VERSION (Single Source of Truth fuer die angezeigte App-Version).
+      additional_contexts:
+        repo: .
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
     depends_on:

@@ -70,7 +70,7 @@ if (-not $SkipDocker) {
         if ($LASTEXITCODE -ne 0) { throw "docker build backend exit $LASTEXITCODE" }
     }
     Run-Step "Docker build frontend" {
-        docker build -t zettelwirtschaft-frontend ./frontend
+        docker build --build-context repo=. -t zettelwirtschaft-frontend ./frontend
         if ($LASTEXITCODE -ne 0) { throw "docker build frontend exit $LASTEXITCODE" }
     }
 }

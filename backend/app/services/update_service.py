@@ -9,9 +9,9 @@ ausdruecklich aktiviert werden.
 
 import logging
 import time
-from pathlib import Path
-
 import httpx
+
+from app.core.version import read_app_version
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +24,8 @@ _cache: dict = {"url": None, "at": 0.0, "data": None}
 
 
 def read_local_version() -> str:
-    """Installierte Version aus VERSION bzw. data/.version (analog main._read_version)."""
-    for path in (Path("VERSION"), Path("data/.version")):
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        except (FileNotFoundError, OSError):
-            continue
-    return "unknown"
+    """Installierte Version (gemeinsame Quelle: ``app.core.version``)."""
+    return read_app_version()
 
 
 def parse_version(value: str | None) -> tuple[int, ...] | None:

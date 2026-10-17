@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import noload
+from sqlalchemy.orm import raiseload
 
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -169,9 +169,11 @@ async def list_documents(
 
     # M-26: nur tags + filing_scope laden (selectin per Default), warranty +
     # review_questions ueberspringen — DocumentListItem nutzt sie nicht.
+    # raiseload statt noload (in SQLAlchemy 2.1 deprecated): ein versehentlicher
+    # Zugriff faellt laut auf, statt still None/[] zu liefern.
     query = query.options(
-        noload(Document.warranty_info),
-        noload(Document.review_questions),
+        raiseload(Document.warranty_info),
+        raiseload(Document.review_questions),
     )
 
     result = await db.execute(query)
@@ -237,6 +239,14 @@ async def update_document(
             text("INSERT INTO documents_fts(doc_id, title, ocr_text, issuer, summary, tags) VALUES (:doc_id, :title, :ocr_text, :issuer, :summary, :tags)"),
             {"doc_id": document_id, "title": document.title or "", "ocr_text": document.ocr_text or "", "issuer": document.issuer or "", "summary": document.summary or "", "tags": tags_str},
         )
+
+    if changes:
+        # Flush + Refresh: das UPDATE expired server-seitig berechnete Spalten
+        # (updated_at via onupdate=func.now()). Ohne Refresh wuerde die
+        # Response-Validierung sie lazy nachladen -> MissingGreenlet im
+        # async-Kontext (seit SQLAlchemy 2.1 autoflusht auch text()).
+        await db.flush()
+        await db.refresh(document)
 
     return DocumentResponse.model_validate(document)
 

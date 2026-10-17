@@ -14,6 +14,9 @@ def _decimal_to_float(value):
     return float(value) if value is not None else None
 
 
+_MISSING = object()
+
+
 class TagResponse(BaseModel):
     model_config = {"from_attributes": True}
     id: int
@@ -84,11 +87,15 @@ def _resolve_scope_name(cls, data):
                 except Exception:
                     # MissingGreenlet / detached instance — gracefully degrade
                     out[f] = None
-            elif hasattr(data, f):
+            else:
+                # Kein hasattr(): das triggert selbst schon den Lazy-Load und
+                # faengt nur AttributeError, nicht MissingGreenlet.
                 try:
-                    out[f] = getattr(data, f)
+                    value = getattr(data, f, _MISSING)
                 except Exception:
-                    out[f] = None
+                    value = None
+                if value is not _MISSING:
+                    out[f] = value
         return out
     return data
 

@@ -1,16 +1,23 @@
 # Build stage
-# Node 22 LTS (Node 20 EOL April 2026; Vite 8 erfordert Node ^20.19 || >=22.12)
-FROM node:22-alpine AS build
+# Node 24 Active LTS (Vite 8 erfordert Node ^20.19 || >=22.12,
+# vite-plugin-pwa 2 erfordert Node >=20.19)
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # FE-L4: npm ci statt npm install — reproduzierbarer Build streng nach Lockfile
 # (npm install kann das Lockfile mutieren und andere Versionen aufloesen).
 RUN npm ci
 COPY . .
+# Versions-Single-Source-of-Truth: Repo-Root-VERSION ueber den benannten
+# Build-Context "repo" (docker-compose: additional_contexts, release.yml:
+# build-contexts). vite.config.js liest ../VERSION relativ zu /app.
+COPY --from=repo VERSION /VERSION
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine
+# Konkreter Stable-Tag statt floating "alpine" (reproduzierbar, bewusste Bumps).
+# Mindestens 1.29.3: nginx.conf + ssl/nginx-ssl.conf nutzen "add_header_inherit merge".
+FROM nginx:1.30-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 

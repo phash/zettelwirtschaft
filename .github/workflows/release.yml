@@ -21,12 +21,15 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # requirements-dev.txt = Runtime (-r requirements.txt) + pytest/pytest-asyncio
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short -x
@@ -73,6 +76,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ./frontend
+          # Benannter Context fuer COPY --from=repo VERSION im Dockerfile
+          build-contexts: repo=.
           push: true
           tags: |
             ghcr.io/${{ github.repository }}/frontend:${{ steps.version.outputs.VERSION }}
@@ -100,9 +105,12 @@ jobs:
           mkdir -p release
 
           # docker-compose.yml: build-Direktiven durch GHCR-Image-Referenzen ersetzen
+          # (frontend: mehrzeiliger build-Block inkl. additional_contexts -> eine image-Zeile)
           sed \
             -e "s|build: ./backend|image: ghcr.io/${REPO}/backend:${VERSION}|" \
-            -e "s|build: ./frontend|image: ghcr.io/${REPO}/frontend:${VERSION}|" \
+            -e "/^  frontend:/,/^    ports:/{" \
+            -e "/^    build:$/,/^        repo: \.$/c\    image: ghcr.io/${REPO}/frontend:${VERSION}" \
+            -e "}" \
             docker-compose.yml > release/docker-compose.yml
 
           # Installer-Dateien kopieren
