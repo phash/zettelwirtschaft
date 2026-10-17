@@ -2,6 +2,8 @@
 import { ref, onUnmounted } from 'vue'
 import { uploadDocuments, getJobStatus } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
+import { reportUploadResult } from '../utils/uploadResult'
+import { FILE_ACCEPT, FILE_TYPES_LABEL, MAX_UPLOAD_SIZE_MB } from '../constants/fileTypes'
 
 const notify = useNotificationStore()
 const isDragging = ref(false)
@@ -9,6 +11,10 @@ const uploading = ref(false)
 const uploadProgress = ref(0)
 const uploadedJobs = ref([])
 const fileInput = ref(null)
+
+// Endzustaende eines Jobs — danach wird nicht mehr gepollt. NOT_FOUND ist ein
+// reiner Frontend-Status (Job per 404 verschwunden, z.B. verworfen).
+const TERMINAL_STATUSES = ['COMPLETED', 'FAILED', 'NEEDS_REVIEW', 'NOT_FOUND']
 
 async function handleFiles(files) {
   if (!files.length) return
@@ -23,24 +29,18 @@ async function handleFiles(files) {
       }
     })
 
-    if (result.uploaded?.length) {
-      for (const item of result.uploaded) {
-        uploadedJobs.value.unshift({
-          id: item.document_id,
-          filename: item.original_filename,
-          status: item.status,
-          statusLabel: 'Hochgeladen',
-        })
-      }
-      notify.success(`${result.uploaded.length} Datei(en) hochgeladen.`)
-      startPolling()
+    const { uploaded } = reportUploadResult(result, notify)
+    // UploadResponse liefert die ID des ProcessingJobs (job_id) — NICHT die des
+    // spaeteren Dokuments. Die Dokument-ID kommt erst ueber den Job-Status.
+    for (const item of uploaded) {
+      uploadedJobs.value.unshift({
+        jobId: item.job_id,
+        documentId: null,
+        filename: item.original_filename,
+        status: item.status,
+      })
     }
-
-    if (result.rejected?.length) {
-      for (const r of result.rejected) {
-        notify.error(`${r.filename}: ${r.error}`)
-      }
-    }
+    if (uploaded.length) startPolling()
   } catch {
     notify.error('Upload fehlgeschlagen.')
   } finally {
@@ -60,32 +60,44 @@ function handleSelect(e) {
 }
 
 let pollInterval = null
+let pollRunning = false
 
-function startPolling() {
-  if (pollInterval) return
-  pollInterval = setInterval(async () => {
+async function pollJobs() {
+  if (pollRunning) return  // langsame Antworten: keine ueberlappenden Runden
+  pollRunning = true
+  try {
     let allDone = true
     for (const job of uploadedJobs.value) {
-      if (['COMPLETED', 'FAILED', 'NEEDS_REVIEW'].includes(job.status)) continue
+      if (TERMINAL_STATUSES.includes(job.status)) continue
       try {
-        const status = await getJobStatus(job.id)
+        const status = await getJobStatus(job.jobId)
         job.status = status.status
-        job.statusLabel = statusLabels[status.status] || status.status
+        job.documentId = status.document_id || null
       } catch (err) {
         if (err?.response?.status === 404) {
-          job.status = 'FAILED'
-          job.statusLabel = 'Nicht gefunden'
+          job.status = 'NOT_FOUND'
         }
       }
-      if (!['COMPLETED', 'FAILED', 'NEEDS_REVIEW'].includes(job.status)) {
+      if (!TERMINAL_STATUSES.includes(job.status)) {
         allDone = false
       }
     }
-    if (allDone) {
-      clearInterval(pollInterval)
-      pollInterval = null
-    }
-  }, 3000)
+    if (allDone) stopPolling()
+  } finally {
+    pollRunning = false
+  }
+}
+
+function startPolling() {
+  if (pollInterval) return
+  pollInterval = setInterval(pollJobs, 3000)
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
 }
 
 const statusLabels = {
@@ -94,6 +106,7 @@ const statusLabels = {
   COMPLETED: 'Fertig',
   FAILED: 'Fehlgeschlagen',
   NEEDS_REVIEW: 'Prüfung nötig',
+  NOT_FOUND: 'Nicht gefunden',
 }
 
 const statusColors = {
@@ -102,14 +115,10 @@ const statusColors = {
   COMPLETED: 'bg-green-100 text-green-700',
   FAILED: 'bg-red-100 text-red-700',
   NEEDS_REVIEW: 'bg-orange-100 text-orange-700',
+  NOT_FOUND: 'bg-red-100 text-red-700',
 }
 
-onUnmounted(() => {
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
-})
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -128,7 +137,7 @@ onUnmounted(() => {
       @drop.prevent="handleDrop"
       @click="fileInput?.click()"
     >
-      <svg class="mx-auto h-16 w-16 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
+      <svg class="mx-auto h-16 w-16 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
       </svg>
       <p class="mt-4 text-lg font-medium text-gray-600">
@@ -138,14 +147,15 @@ onUnmounted(() => {
         oder klicken zum Auswählen
       </p>
       <p class="mt-4 text-xs text-gray-400">
-        PDF, JPG, JPEG, PNG, TIFF, BMP &middot; Max. 50 MB
+        {{ FILE_TYPES_LABEL }} &middot; Max. {{ MAX_UPLOAD_SIZE_MB }} MB
       </p>
       <input
         ref="fileInput"
         type="file"
         multiple
-        accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp"
+        :accept="FILE_ACCEPT"
         class="hidden"
+        aria-label="Dateien zum Hochladen auswählen"
         @change="handleSelect"
       />
     </div>
@@ -165,27 +175,35 @@ onUnmounted(() => {
     <div v-if="uploadedJobs.length > 0" class="card">
       <h2 class="text-lg font-semibold text-gray-900 mb-4">Hochgeladene Dateien</h2>
       <div class="divide-y divide-gray-100">
-        <div v-for="job in uploadedJobs" :key="job.id" class="flex items-center justify-between py-3">
-          <div class="flex items-center gap-3">
-            <div v-if="['PENDING', 'PROCESSING'].includes(job.status)" class="h-5 w-5 animate-spin rounded-full border-2 border-primary-200 border-t-primary-600"></div>
-            <svg v-else-if="job.status === 'COMPLETED'" class="h-5 w-5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+        <div
+          v-for="job in uploadedJobs"
+          :key="job.jobId"
+          class="flex flex-wrap items-center justify-between gap-2 py-3"
+          data-testid="upload-job"
+        >
+          <div class="flex min-w-0 items-center gap-3">
+            <div v-if="['PENDING', 'PROCESSING'].includes(job.status)" class="h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-primary-200 border-t-primary-600"></div>
+            <svg v-else-if="job.status === 'COMPLETED'" class="h-5 w-5 flex-shrink-0 text-green-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
             </svg>
-            <svg v-else-if="job.status === 'FAILED'" class="h-5 w-5 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+            <svg v-else-if="job.status === 'NEEDS_REVIEW'" class="h-5 w-5 flex-shrink-0 text-orange-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+            </svg>
+            <svg v-else class="h-5 w-5 flex-shrink-0 text-red-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
             </svg>
-            <span class="text-sm font-medium text-gray-700">{{ job.filename }}</span>
+            <span class="truncate text-sm font-medium text-gray-700">{{ job.filename }}</span>
           </div>
           <div class="flex items-center gap-3">
             <span :class="['badge', statusColors[job.status]]">
               {{ statusLabels[job.status] || job.status }}
             </span>
             <router-link
-              v-if="job.status === 'COMPLETED'"
-              :to="`/dokumente/${job.id}`"
+              v-if="job.documentId && ['COMPLETED', 'NEEDS_REVIEW'].includes(job.status)"
+              :to="`/dokumente/${job.documentId}`"
               class="text-sm text-primary-600 hover:text-primary-700"
             >
-              Anzeigen
+              {{ job.status === 'NEEDS_REVIEW' ? 'Prüfen' : 'Anzeigen' }}
             </router-link>
           </div>
         </div>

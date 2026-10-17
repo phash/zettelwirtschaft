@@ -14,9 +14,10 @@ Eigenschaften (analog praxiszeit v1.8.7):
   Server-Zertifikat.
 - SubjectAltName: DNS:localhost, IP:127.0.0.1, erkannte LAN-IP(s), Hostname.
 
-Nutzt das `cryptography`-Paket (bereits in den Backend-Requirements — der
-gebundelte Python-Interpreter im Native-Bundle kann das Script direkt
-ausfuehren, kein openssl noetig).
+Nutzt das `cryptography`-Paket (bereits in den Backend-Requirements, kein
+openssl noetig). Ausfuehren mit einem Python, in dem `cryptography`
+installiert ist (z.B. dem Backend-venv). Das Native-Bundle enthaelt keinen
+nutzbaren Python-Interpreter fuer dieses Skript.
 
 Aufruf:
     python generate-self-signed-cert.py [<ip>] [<out_dir>]

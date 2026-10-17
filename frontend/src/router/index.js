@@ -93,19 +93,45 @@ const router = createRouter({
   routes,
 })
 
+// Erst nach einer erfolgreichen Statusabfrage als geprueft markieren — schlaegt
+// /api/auth/status fehl (Backend startet noch), wird bei der naechsten
+// Navigation erneut gefragt.
 let authChecked = false
+
+// H-FE-1: redirect-Param muss einem internen Pfad entsprechen. Werte wie
+// `https://evil.com`, `//evil.com/x`, oder `javascript:` werden ignoriert und
+// fallen auf `/` zurueck. Ziele, die selbst wieder auf die PIN-Seite fuehren,
+// ebenfalls — sonst landet der Nutzer nach korrektem PIN erneut im Formular.
+export function safeRedirect(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return '/'
+  if (!raw.startsWith('/')) return '/'
+  if (raw.startsWith('//')) return '/'
+  if (raw.startsWith('/\\')) return '/'
+  try {
+    if (router.resolve(raw).name === 'pin-login') return '/'
+  } catch {
+    return '/'
+  }
+  return raw
+}
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
   if (!authChecked) {
-    await auth.checkStatus()
-    authChecked = true
+    authChecked = await auth.checkStatus()
+  }
+
+  const loginRequired = auth.pinEnabled && !auth.isAuthenticated
+
+  // PIN-Seite ohne Grund (PIN aus oder schon angemeldet) -> direkt zum Ziel.
+  if (to.name === 'pin-login' && authChecked && !loginRequired) {
+    return safeRedirect(to.query.redirect)
   }
 
   if (to.meta.public) return true
 
-  if (auth.pinEnabled && !auth.isAuthenticated) {
+  if (loginRequired) {
     return { name: 'pin-login', query: { redirect: to.fullPath } }
   }
 

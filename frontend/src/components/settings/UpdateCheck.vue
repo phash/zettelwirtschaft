@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { getUpdateCheck, setUpdateCheckEnabled } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
+import { formatDate } from '../../utils/formatters'
 
 const notify = useNotificationStore()
 const loading = ref(true)
@@ -91,7 +92,7 @@ onMounted(load)
         <p class="text-sm font-semibold text-emerald-800">
           Update verfügbar: Version {{ status.latest_version }}
           <span v-if="status.published_at" class="font-normal text-emerald-700">
-            ({{ status.published_at }})
+            ({{ formatDate(status.published_at) }})
           </span>
         </p>
         <p v-if="status.notes" class="text-xs text-emerald-700">{{ status.notes }}</p>

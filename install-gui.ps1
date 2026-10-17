@@ -1,7 +1,11 @@
-# Zettelwirtschaft - Grafischer Windows-Installer
+﻿# Zettelwirtschaft - Grafischer Windows-Installer
 $ErrorActionPreference = "Stop"
 $script:ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script:ProjectDir
+# Modell-Stufen (gemeinsam mit install.ps1 und dem Native-Setup)
+. (Join-Path $script:ProjectDir "scripts\model-tiers.ps1")
+# Zugriffsrechte fuer .env (SEC-DATA-03)
+. (Join-Path $script:ProjectDir "scripts\secure-acl.ps1")
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -22,6 +26,8 @@ $script:ConfigMigrations = [ordered]@{
     "1.0.9" = @{
         "CHROMADB_HOST" = @{ value = "chromadb"; comment = "# ChromaDB (RAG / KI-Assistent)" }
     }
+    # v1.6 (neue Modell-Defaults): bisherige Modelle festschreiben uebernimmt
+    # Add-ZwLegacyModelDefaults (scripts\model-tiers.ps1, auch von update.bat genutzt).
     # Neue Versionen hier ergaenzen:
     # "1.1.0" = @{ "NEW_VAR" = @{ value = "default"; comment = "# Beschreibung" } }
 }
@@ -31,10 +37,13 @@ $script:Step           = 0
 $script:IsUpdate       = $false
 $script:BackupDir      = ""
 $script:ExistingInstall = $false
-$script:Config         = @{ Port=8080; WatchEnabled=$false; Model="qwen2.5:7b-instruct"; PinEnabled=$false; PinCode="" }
-$script:Checks         = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; RAM=0; FreeGB=0 }
+$script:Config         = @{ Port=8080; WatchEnabled=$false; Model=$ZwLlmDefaultModel; EmbeddingModel=$ZwEmbeddingDefaultModel; PinEnabled=$false; PinCode="" }
+$script:Checks         = @{ DockerOK=$false; DockerRun=$false; GPU=$false; GPUName=""; VramGB=$null; RAM=0; FreeGB=0 }
 $script:Job            = $null
 $script:Phase          = 0
+# Nicht-fatale Fehler (Backup, Health-Timeout, Modell-Download): die Installation
+# ist nutzbar, wird aber als "mit Warnungen" abgeschlossen.
+$script:Warnings       = @()
 $script:HasSources     = Test-Path (Join-Path $script:ProjectDir "backend")
 
 # --- Colors ---
@@ -202,7 +211,7 @@ function Show-Welcome {
     $desc = New-Object System.Windows.Forms.Label
     $desc.Location = [System.Drawing.Point]::new(30, $descY)
     $desc.Size = [System.Drawing.Size]::new(560, 280)
-    $desc.Text = "Zettelwirtschaft ist ein lokales Dokumentenmanagementsystem`nfuer Privathaushalte.`n`nRechnungen, Belege und Dokumente werden per Scanner oder`nSmartphone erfasst, automatisch durch KI analysiert,`nkategorisiert und durchsuchbar archiviert.`n`nFolgende Komponenten werden installiert:`n`n    Backend-Server (Dokumentenverarbeitung + API)`n    Frontend (Weboberflaeche)`n    Ollama (lokale KI fuer Dokumentenanalyse)`n    LLM-Sprachmodell (ca. 2-4 GB Download)`n`nVoraussetzungen:`n    Docker Desktop installiert und gestartet`n    Mindestens 8 GB RAM empfohlen`n    Mindestens 10 GB freier Speicherplatz"
+    $desc.Text = "Zettelwirtschaft ist ein lokales Dokumentenmanagementsystem`nfuer Privathaushalte.`n`nRechnungen, Belege und Dokumente werden per Scanner oder`nSmartphone erfasst, automatisch durch KI analysiert,`nkategorisiert und durchsuchbar archiviert.`n`nFolgende Komponenten werden installiert:`n`n    Backend-Server (Dokumentenverarbeitung + API)`n    Frontend (Weboberflaeche)`n    Ollama (lokale KI fuer Dokumentenanalyse)`n    KI-Modelle für Analyse und Suche (ca. 5-10 GB Download)`n`nVoraussetzungen:`n    Docker Desktop installiert und gestartet`n    Mindestens 8 GB RAM empfohlen`n    Mindestens 10 GB freier Speicherplatz"
     $pnlContent.Controls.Add($desc)
 }
 
@@ -387,8 +396,10 @@ function Show-Prerequisites {
     try {
         $gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" }
         if ($gpu) {
-            $script:Checks.GPU = $true; $script:Checks.GPUName = $gpu.Name
-            Add-InfoItem "NVIDIA GPU: $($gpu.Name)" ([ref]$y)
+            $script:Checks.GPU = $true; $script:Checks.GPUName = @($gpu)[0].Name
+            $script:Checks.VramGB = Get-ZwNvidiaVramGB
+            $vramText = if ($null -ne $script:Checks.VramGB) { ", $($script:Checks.VramGB) GB Grafikspeicher" } else { "" }
+            Add-InfoItem "NVIDIA GPU: $($script:Checks.GPUName)$vramText" ([ref]$y)
         } else { Add-InfoItem "Keine NVIDIA GPU (LLM laeuft auf CPU)" ([ref]$y) }
     } catch { Add-InfoItem "GPU-Erkennung fehlgeschlagen" ([ref]$y) }
 
@@ -424,7 +435,7 @@ function Show-Configuration {
     $script:txtPort.Location = [System.Drawing.Point]::new(180, $y); $script:txtPort.Size = [System.Drawing.Size]::new(80, 26)
     $script:txtPort.Text = $script:Config.Port.ToString()
     $pnlContent.Controls.Add($script:txtPort)
-    $y += 45
+    $y += 40
 
     # Watch folder (immer ./data/watch im Docker-Kontext)
     $script:chkWatch = New-Object System.Windows.Forms.CheckBox
@@ -432,7 +443,7 @@ function Show-Configuration {
     $script:chkWatch.Text = "Eingangsordner aktivieren (neue Dateien werden automatisch importiert)"
     $script:chkWatch.Checked = $script:Config.WatchEnabled
     $pnlContent.Controls.Add($script:chkWatch)
-    $y += 28
+    $y += 26
 
     $watchInfoPath = Join-Path $script:ProjectDir "data\watch"
     $lblWatchInfo = New-Object System.Windows.Forms.Label
@@ -443,29 +454,56 @@ function Show-Configuration {
     $pnlContent.Controls.Add($lblWatchInfo)
 
     $script:chkWatch.add_CheckedChanged({ $lblWatchInfo.Enabled = $script:chkWatch.Checked }.GetNewClosure())
-    $y += 40
+    $y += 32
 
-    # LLM Model
+    # KI-Modelle: Vorschlag nach Hardware-Stufe (scripts\model-tiers.ps1)
+    # Hinweise brauchen bis zu 3 Zeilen (Modellnamen werden nicht umbrochen, Segoe UI 8: 39 px).
+    $tier = Get-ZwModelTier -RamGB $script:Checks.RAM -VramGB $script:Checks.VramGB
+    $hintFont = New-Object System.Drawing.Font("Segoe UI", 8)
+
     $lbl2 = New-Object System.Windows.Forms.Label
-    $lbl2.Location = [System.Drawing.Point]::new(30, $y+3); $lbl2.Size = [System.Drawing.Size]::new(140, 22); $lbl2.Text = "LLM-Modell:"
+    $lbl2.Location = [System.Drawing.Point]::new(30, $y+3); $lbl2.Size = [System.Drawing.Size]::new(140, 22); $lbl2.Text = "Analysemodell:"
     $pnlContent.Controls.Add($lbl2)
     $script:cmbModel = New-Object System.Windows.Forms.ComboBox
     $script:cmbModel.Location = [System.Drawing.Point]::new(180, $y); $script:cmbModel.Size = [System.Drawing.Size]::new(160, 26)
     $script:cmbModel.DropDownStyle = "DropDownList"
-    $script:cmbModel.Items.AddRange(@("qwen2.5:7b-instruct", "llama3.2", "llama3.1", "mistral"))
-    $script:cmbModel.SelectedItem = if ($script:Checks.RAM -gt 12) { "qwen2.5:7b-instruct" } else { "llama3.2" }
+    $script:cmbModel.Items.AddRange([object[]]$ZwLlmChoices)
+    $script:cmbModel.SelectedItem = $tier.LlmModel
     $pnlContent.Controls.Add($script:cmbModel)
     $lblMI = New-Object System.Windows.Forms.Label
-    $lblMI.Location = [System.Drawing.Point]::new(350, $y+3); $lblMI.Size = [System.Drawing.Size]::new(240, 22); $lblMI.ForeColor = $cSub
-    $lblMI.Text = if ($script:Checks.RAM -gt 12) { "Empfohlen: qwen2.5:7b-instruct (gute JSON-Treue + DE-Belege)" } else { "Empfohlen: llama3.2 (knapper RAM)" }
+    $lblMI.Location = [System.Drawing.Point]::new(350, $y-4); $lblMI.Size = [System.Drawing.Size]::new(250, 42); $lblMI.ForeColor = $cSub; $lblMI.Font = $hintFont
+    $lblMI.Text = if ($tier.Gpu) {
+        "Empfohlen: $($tier.LlmModel) — NVIDIA-GPU mit $($tier.VramGB) GB erkannt. $ZwLegacyLlmModel = bisheriger Standard."
+    } else {
+        "Empfohlen: $($tier.LlmModel) (läuft auch auf der CPU). $ZwLlmGpuModel nur mit NVIDIA-GPU ab $ZwGpuMinVramGB GB."
+    }
     $pnlContent.Controls.Add($lblMI)
-    $y += 50
+    $y += 42
+
+    $lbl3 = New-Object System.Windows.Forms.Label
+    $lbl3.Location = [System.Drawing.Point]::new(30, $y+3); $lbl3.Size = [System.Drawing.Size]::new(140, 22); $lbl3.Text = "Suchmodell:"
+    $pnlContent.Controls.Add($lbl3)
+    $script:cmbEmbedding = New-Object System.Windows.Forms.ComboBox
+    $script:cmbEmbedding.Location = [System.Drawing.Point]::new(180, $y); $script:cmbEmbedding.Size = [System.Drawing.Size]::new(160, 26)
+    $script:cmbEmbedding.DropDownStyle = "DropDownList"
+    $script:cmbEmbedding.Items.AddRange([object[]]$ZwEmbeddingChoices)
+    $script:cmbEmbedding.SelectedItem = $tier.EmbeddingModel
+    $pnlContent.Controls.Add($script:cmbEmbedding)
+    $lblEI = New-Object System.Windows.Forms.Label
+    $lblEI.Location = [System.Drawing.Point]::new(350, $y-4); $lblEI.Size = [System.Drawing.Size]::new(250, 42); $lblEI.ForeColor = $cSub; $lblEI.Font = $hintFont
+    $lblEI.Text = if ($tier.Lean) {
+        "Empfohlen: $ZwEmbeddingLeanModel — unter $ZwLeanRamBelowGB GB RAM passt $ZwEmbeddingDefaultModel nicht neben das Analysemodell."
+    } else {
+        "Empfohlen: $ZwEmbeddingDefaultModel (beste Suchtreffer). Unter $ZwLeanRamBelowGB GB RAM: $ZwEmbeddingLeanModel."
+    }
+    $pnlContent.Controls.Add($lblEI)
+    $y += 44
 
     # Separator
     $sep = New-Object System.Windows.Forms.Label
     $sep.Location = [System.Drawing.Point]::new(30, $y); $sep.Size = [System.Drawing.Size]::new(560, 1); $sep.BorderStyle = "Fixed3D"
     $pnlContent.Controls.Add($sep)
-    $y += 15
+    $y += 12
 
     # PIN (B1: per Default aktiviert, auto-generierter 6-stelliger PIN vorbefuellt)
     $script:chkPin = New-Object System.Windows.Forms.CheckBox
@@ -473,7 +511,7 @@ function Show-Configuration {
     $script:chkPin.Text = "PIN-Schutz aktivieren (empfohlen)"
     $script:chkPin.Checked = $true
     $pnlContent.Controls.Add($script:chkPin)
-    $y += 32
+    $y += 30
 
     # Auto-generierten Default-PIN setzen (numerisch, 6 Stellen, krypto-RNG)
     $rngPinDef = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -490,7 +528,7 @@ function Show-Configuration {
     $script:txtPin1.UseSystemPasswordChar = $false
     $script:txtPin1.Text = $defaultPin
     $pnlContent.Controls.Add($script:txtPin1)
-    $y += 32
+    $y += 30
 
     $lp2 = New-Object System.Windows.Forms.Label
     $lp2.Location = [System.Drawing.Point]::new(50, $y+3); $lp2.Size = [System.Drawing.Size]::new(100, 22); $lp2.Text = "Bestaetigen:"
@@ -500,7 +538,7 @@ function Show-Configuration {
     $script:txtPin2.UseSystemPasswordChar = $false
     $script:txtPin2.Text = $defaultPin
     $pnlContent.Controls.Add($script:txtPin2)
-    $y += 32
+    $y += 30
 
     $lblPinHint = New-Object System.Windows.Forms.Label
     $lblPinHint.Location = [System.Drawing.Point]::new(50, $y); $lblPinHint.Size = [System.Drawing.Size]::new(540, 32)
@@ -523,10 +561,10 @@ $script:stepLabels = @()
 function Show-Installation {
     if ($script:IsUpdate) {
         $lblStep.Text = "Update - Schritt 2 von 3 - Aktualisierung"
-        $steps = @("Sicherheitskopie erstellen", "Docker-Images laden", "Container starten", "Backend starten", "Konfiguration migrieren")
+        $steps = @("Sicherheitskopie erstellen und Konfiguration migrieren", "Docker-Images laden", "Container starten", "Backend starten", "Eingangsordner abgleichen")
     } else {
         $lblStep.Text = "Schritt 3 von 4 - Installation"
-        $steps = @("Konfiguration erstellen", "Docker-Images laden", "Container starten", "Backend starten", "LLM-Modell laden")
+        $steps = @("Konfiguration erstellen", "Docker-Images laden", "Container starten", "Backend starten", "KI-Modelle laden")
     }
 
     $pnlContent.Controls.Clear()
@@ -570,6 +608,7 @@ function Set-StepStatus {
         "active" { $script:stepLabels[$Idx].Text = "  >  $text";  $script:stepLabels[$Idx].ForeColor = $cAccent }
         "done"   { $script:stepLabels[$Idx].Text = "  +  $text";  $script:stepLabels[$Idx].ForeColor = $cOK }
         "error"  { $script:stepLabels[$Idx].Text = "  X  $text";  $script:stepLabels[$Idx].ForeColor = $cErr }
+        "warn"   { $script:stepLabels[$Idx].Text = "  !  $text";  $script:stepLabels[$Idx].ForeColor = $cWarn }
         "skip"   { $script:stepLabels[$Idx].Text = "  -  $text";  $script:stepLabels[$Idx].ForeColor = $cSub }
     }
 }
@@ -628,7 +667,7 @@ function Phase-Config {
     $env += "LOG_LEVEL=INFO`n"
     $env += "`n# ChromaDB (RAG / KI-Assistent)`n"
     $env += "CHROMADB_HOST=chromadb`n"
-    $env += "EMBEDDING_MODEL=bge-m3`n"
+    $env += "EMBEDDING_MODEL=$($script:Config.EmbeddingModel)`n"
     # Fernet-Schluessel fuer E-Mail-Passwoerter automatisch generieren
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
     $emailKeyBytes = New-Object byte[] 32
@@ -636,6 +675,10 @@ function Phase-Config {
     $emailKey = [Convert]::ToBase64String($emailKeyBytes).Replace('+','-').Replace('/','_')
     $env += "`n# E-Mail-Verschluesselung (automatisch generiert, nicht aendern!)`n"
     $env += "EMAIL_ENCRYPTION_KEY=$emailKey`n"
+    # SEC-DATA-03: erst anlegen + auf SYSTEM/Administratoren/dieses Konto
+    # einschraenken, dann die Geheimnisse hineinschreiben.
+    if (-not (Test-Path -LiteralPath $envPath)) { [System.IO.File]::WriteAllText($envPath, '') }
+    $null = Protect-ZwPath -LiteralPath $envPath
     [System.IO.File]::WriteAllText($envPath, $env)
     Log "  .env erstellt (mit EMAIL_ENCRYPTION_KEY)"
 
@@ -684,47 +727,57 @@ function Phase-Backup {
         Log "  Konfiguration gesichert"
     }
 
-    # Auf API-Backup versuchen (falls Backend noch laeuft).
-    # F-02-Pendant (Re-Review): Backend ist seit N-001 nur ueber Frontend-Port
-    # erreichbar. Port aus Config nehmen statt hardcoded 8000.
-    $apiPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
-    try {
-        $null = Invoke-WebRequest -Uri "http://localhost:$apiPort/api/system/backup" -Method POST -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-        Log "  API-Backup erstellt"
-    } catch {
-        Log "  API-Backup uebersprungen (Backend nicht erreichbar)"
+    # .env VOR dem Container-Neustart migrieren (nach ihrer Sicherung): der
+    # Backend-Container liest sie nur beim Erstellen (env_file). Spaeter
+    # eingetragene Werte griffen erst beim naechsten Neustart — bis dahin liefe
+    # das neue Backend z.B. mit den neuen Modell-Defaults (Download mehrerer GB,
+    # Neuaufbau des Vektor-Index in ein anderes Suchmodell).
+    Log "Pruefe Konfiguration auf neue Variablen..."
+    Apply-ConfigMigrations -FromVersion $script:InstalledVersion -EnvPath $envPath
+    foreach ($key in @(Add-ZwLegacyModelDefaults -EnvPath $envPath -InstalledVersion $script:InstalledVersion)) {
+        Log "  $key mit bisherigem Standard festgeschrieben (neue Standards ab v1.6 gelten nur für Neuinstallationen)"
     }
 
     Log "  Backup-Verzeichnis: $($script:BackupDir)"
-    $script:progressBar.Value = 15
-    Set-StepStatus 0 "done"
-    Next-Phase
+    $script:progressBar.Value = 10
+
+    # Vollstaendiges Backup (DB + Dokumente) direkt im laufenden Backend-Container.
+    # Nicht ueber die HTTP-API: die verlangt bei aktivem PIN-Schutz (Default)
+    # eine Anmeldung und antwortete mit 401. Fehlschlag ist nicht fatal (lokale
+    # Kopie oben existiert) -> Warnung ueber den Timer-Handler.
+    Log "Erstelle vollständiges Backup im Container (Datenbank + Dokumente)..."
+    $dir = $script:ProjectDir
+    $script:Job = Start-Job -ScriptBlock {
+        param($d); Set-Location $d
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $out = & cmd /c "docker compose exec -T backend python -m app.entrypoint --backup --full 2>&1"
+        $rc = $LASTEXITCODE
+        if ($rc -ne 0) {
+            throw "Vollständiges Backup fehlgeschlagen (Exit $rc, Backend läuft evtl. nicht) - die lokale Sicherheitskopie bleibt erhalten."
+        }
+        $last = @($out) | Where-Object { "$_".Trim() } | Select-Object -Last 1
+        Write-Output "Backup erstellt: $last"
+    } -ArgumentList $dir
+    $timer.Start()
 }
 
 function Phase-MigrateConfig {
     Set-StepStatus 4 "active"
-    Log "Pruefe Konfiguration auf neue Variablen..."
+    # Neue Variablen migriert Phase-Backup (vor dem Container-Start).
+    Log "Gleiche Eingangsordner ab..."
 
     $envPath = Join-Path $script:ProjectDir ".env"
-    Apply-ConfigMigrations -FromVersion $script:InstalledVersion -EnvPath $envPath
 
-    # WATCH_DIR synchronisieren (Benutzer-Wahl vs. bestehendem .env)
-    if (Test-Path $envPath) {
-        $envContent = Get-Content $envPath -Raw
-        if ($script:Config.WatchEnabled) {
-            if ($envContent -notmatch '(?m)^WATCH_DIR=') {
-                $envContent += "`nWATCH_DIR=./data/watch"
-                [System.IO.File]::WriteAllText($envPath, $envContent)
-                Log "  WATCH_DIR hinzugefuegt"
-                $watchDir = Join-Path $script:ProjectDir "data\watch"
-                if (-not (Test-Path $watchDir)) { New-Item -ItemType Directory -Path $watchDir -Force | Out-Null }
-            }
-        } else {
-            if ($envContent -match '(?m)^WATCH_DIR=') {
-                $envContent = [regex]::Replace($envContent, '(?m)^WATCH_DIR=', '# WATCH_DIR=')
-                [System.IO.File]::WriteAllText($envPath, $envContent)
-                Log "  WATCH_DIR deaktiviert"
-            }
+    # Das Update hat keine Konfigurationsseite: die bestehende .env ist die
+    # einzige Quelle fuer den Eingangsordner. Frueher wurde hier gegen
+    # $script:Config.WatchEnabled abgeglichen — das ist im Update-Pfad immer
+    # der Default $false und hat einen aktiven Eingangsordner auskommentiert.
+    # Ist WATCH_DIR aktiv, nur den Ordner sicherstellen.
+    if ((Test-Path $envPath) -and ((Get-Content $envPath -Raw) -match '(?m)^\s*WATCH_DIR\s*=')) {
+        $watchDir = Join-Path $script:ProjectDir "data\watch"
+        if (-not (Test-Path $watchDir)) {
+            New-Item -ItemType Directory -Path $watchDir -Force | Out-Null
+            Log "  Eingangsordner angelegt: $watchDir"
         }
     }
 
@@ -740,13 +793,25 @@ function Apply-ConfigMigrations {
     $envContent = Get-Content $EnvPath -Raw
     $changed = $false
 
+    # Vorabversionen wie "1.6.0-dev" oder "1.6.0-rc1": [version] kennt keinen
+    # Suffix und warf hier — nur den numerischen Teil vergleichen. Nicht
+    # parsebar -> wie unbekannte Version behandeln (alle Migrationen; sie sind
+    # idempotent, weil nur fehlende aktive Keys ergaenzt werden).
+    $from = $null
+    if ($FromVersion) {
+        $parsed = $null
+        if ([version]::TryParse(($FromVersion.Trim() -split '-', 2)[0], [ref]$parsed)) { $from = $parsed }
+    }
+
     foreach ($ver in $script:ConfigMigrations.Keys) {
         # Nur Versionen anwenden die neuer sind als die installierte
-        if ($FromVersion -and [version]$ver -le [version]$FromVersion) { continue }
+        if ($from -and [version]$ver -le $from) { continue }
 
         $vars = $script:ConfigMigrations[$ver]
         foreach ($varName in $vars.Keys) {
-            if ($envContent -notmatch "(?m)^#?\s*$varName=") {
+            # Nur aktive Zeilen zaehlen: eine auskommentierte setzt den Wert
+            # nicht, das Backend nahme sonst seinen (neuen) Default.
+            if ($envContent -notmatch "(?m)^\s*$([regex]::Escape($varName))\s*=") {
                 $comment = $vars[$varName].comment
                 $value   = $vars[$varName].value
                 $envContent += "`n$comment`n$varName=$value"
@@ -819,68 +884,79 @@ function Phase-Health {
     Set-StepStatus 3 "active"
     Log "Warte auf Backend..."
     $script:progressBar.Value = if ($script:IsUpdate) { 75 } else { 70 }
-    # F-02-Pendant: Health-Check ueber Frontend-Port (nginx-Proxy), nicht
-    # direkt auf 8000.
-    $healthPort = if ($script:Config -and $script:Config.Port) { $script:Config.Port } else { 8080 }
-    $script:Job = Start-Job -ArgumentList $healthPort -ScriptBlock {
-        param($port)
-        $elapsed = 0
-        while ($elapsed -lt 120) {
-            try {
-                $null = Invoke-WebRequest -Uri "http://localhost:$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-                Write-Output "Backend ist bereit."; return
-            } catch {}
-            Start-Sleep -Seconds 3; $elapsed += 3
-            Write-Output "  Warte... ($elapsed s)"
+    # Gemeinsamer Helfer wie start.bat/update.bat: prueft ueber nginx
+    # (FRONTEND_PORT aus .env bzw. HTTPS, wenn das SSL-Overlay aktiv ist), nicht
+    # direkt auf 8000. Eigener Prozess, damit die Ausgabe im Log landet.
+    $script:Job = Start-Job -ArgumentList $script:ProjectDir -ScriptBlock {
+        param($d); Set-Location $d
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d "wait-health.ps1") -ProjectDir $d -TimeoutSeconds 120 2>&1 |
+            ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Zettelwirtschaft antwortet nach 120 s nicht. Prüfen mit: docker compose logs backend"
         }
-        Write-Output "Timeout - Backend antwortet noch nicht"
     }
     $timer.Start()
 }
 
 function Phase-Model {
     Set-StepStatus 4 "active"
-    $m = $script:Config.Model
-    Log "Pruefe LLM-Modell '$m'..."
+    # Beide Modelle per exaktem Tag; das (kleinere) Suchmodell zuerst. Das
+    # Backend wuerde fehlende Modelle beim Start auch selbst laden — hier sieht
+    # der Benutzer den Fortschritt.
+    $models = @(@($script:Config.EmbeddingModel, $script:Config.Model) | Where-Object { $_ } | Select-Object -Unique)
+    Log "Pruefe KI-Modelle: $($models -join ', ')..."
     $script:progressBar.Value = 85
     $dir = $script:ProjectDir
     $script:Job = Start-Job -ScriptBlock {
-        param($d, $mod); Set-Location $d
+        param($d, [string[]]$mods); Set-Location $d
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-        # Pruefen ob Modell bereits vorhanden
-        $existingModels = & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama list 2>&1"
-        $modelBase = $mod -replace ':.*$', ''  # "llama3.2:latest" -> "llama3.2"
-        if ($existingModels -match [regex]::Escape($modelBase)) {
-            Write-Output "Modell '$mod' ist bereits vorhanden, kein Download noetig."
-            return
-        }
+        # Pruefen ob GENAU dieses Modell (inkl. Tag) vorhanden ist. Ollama sucht
+        # Modelle per exaktem Tag: "gemma4:12b" ersetzt "gemma4:12b-it-qat"
+        # nicht (sonst 404 bei jeder Analyse). Ohne Tag meint Ollama ":latest".
+        $installed = @(& cmd /c "docker compose exec -T ollama ollama list 2>nul" |
+            Select-Object -Skip 1 |
+            ForEach-Object { ("$_".Trim() -split '\s+')[0] } |
+            Where-Object { $_ })
+        $failed = @()
+        foreach ($mod in $mods) {
+            $wanted = if ($mod -match ':') { $mod } else { "${mod}:latest" }
+            if ($installed -contains $wanted) {
+                Write-Output "Modell '$wanted' ist bereits vorhanden, kein Download nötig."
+                continue
+            }
 
-        Write-Output "Lade LLM-Modell '$mod' (kann 2-5 Minuten dauern)..."
-        $lastPct = @{}
-        & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama pull $mod 2>&1" | ForEach-Object {
-            $parts = "$_" -split "`r"
-            foreach ($part in $parts) {
-                $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
-                $clean = $clean.Trim()
-                if ($clean -match 'pulling\s+([a-f0-9]+).*?(\d+)%') {
-                    $hash = $Matches[1].Substring(0, [Math]::Min(12, $Matches[1].Length))
-                    $pct  = [int]$Matches[2]
-                    $prev = if ($lastPct.ContainsKey($hash)) { $lastPct[$hash] } else { -10 }
-                    if ($pct -ge ($prev + 10) -or $pct -ge 100) {
-                        $filled = [Math]::Floor($pct / 5)
-                        $bar  = "[" + ("#" * $filled) + ("." * (20 - $filled)) + "]"
-                        $size = ""
-                        if ($clean -match '([\d.]+\s*[KMGT]?B\s*/\s*[\d.]+\s*[KMGT]?B)') { $size = "  " + $Matches[1] }
-                        Write-Output "$hash  $bar  ${pct}%$size"
-                        $lastPct[$hash] = $pct
+            Write-Output "Lade KI-Modell '$mod' (je nach Modell 0,6-7 GB, kann einige Minuten dauern)..."
+            $lastPct = @{}
+            & cmd /c "chcp 65001 >nul & docker compose exec ollama ollama pull $mod 2>&1" | ForEach-Object {
+                $parts = "$_" -split "`r"
+                foreach ($part in $parts) {
+                    $clean = $part -replace '\x1b\[[0-9;?]*[a-zA-Z]', '' -replace '[^\x20-\x7E]', ''
+                    $clean = $clean.Trim()
+                    if ($clean -match 'pulling\s+([a-f0-9]+).*?(\d+)%') {
+                        $hash = $Matches[1].Substring(0, [Math]::Min(12, $Matches[1].Length))
+                        $pct  = [int]$Matches[2]
+                        $prev = if ($lastPct.ContainsKey($hash)) { $lastPct[$hash] } else { -10 }
+                        if ($pct -ge ($prev + 10) -or $pct -ge 100) {
+                            $filled = [Math]::Floor($pct / 5)
+                            $bar  = "[" + ("#" * $filled) + ("." * (20 - $filled)) + "]"
+                            $size = ""
+                            if ($clean -match '([\d.]+\s*[KMGT]?B\s*/\s*[\d.]+\s*[KMGT]?B)') { $size = "  " + $Matches[1] }
+                            Write-Output "$hash  $bar  ${pct}%$size"
+                            $lastPct[$hash] = $pct
+                        }
+                    } elseif ($clean.Length -gt 2 -and $clean -notmatch '^\s*\d+%\s*$') {
+                        Write-Output $clean
                     }
-                } elseif ($clean.Length -gt 2 -and $clean -notmatch '^\s*\d+%\s*$') {
-                    Write-Output $clean
                 }
             }
+            if ($LASTEXITCODE -ne 0) { $failed += $mod }
         }
-    } -ArgumentList $dir, $m
+        if ($failed.Count -gt 0) {
+            $cmds = ($failed | ForEach-Object { "docker compose exec ollama ollama pull $_" }) -join " / "
+            throw "Download fehlgeschlagen: $($failed -join ', '). Später erneut: $cmds"
+        }
+    } -ArgumentList $dir, $models
     $timer.Start()
 }
 
@@ -932,8 +1008,11 @@ $timer.add_Tick({
         4 { $script:progressBar.Value = if ($script:IsUpdate) { 92 } else { 95 } }
     }
 
-    if ($failed -and $script:Phase -le 2) {
-        $idx = $script:Phase
+    # Fatal sind nur Image-Download (1) und Container-Start (2): ohne sie laeuft
+    # nichts. Backup (0, Update), Health-Wartezeit (3) und Modell-Download (4)
+    # lassen eine nutzbare Installation zurueck -> Warnung, weiter.
+    $idx = $script:Phase
+    if ($failed -and ($idx -eq 1 -or $idx -eq 2)) {
         Set-StepStatus $idx "error"
         Log ""; Log "FEHLER: $errMsg"; Log "Pruefe: docker compose logs"
         if ($script:BackupDir) { Log "Backup liegt in: $($script:BackupDir)" }
@@ -941,8 +1020,13 @@ $timer.add_Tick({
         return
     }
 
-    $idx = switch ($script:Phase) { 1 {1} 2 {2} 3 {3} 4 {4} default {-1} }
-    if ($idx -ge 0) { Set-StepStatus $idx "done" }
+    if ($failed) {
+        Set-StepStatus $idx "warn"
+        Log "WARNUNG: $errMsg"
+        $script:Warnings += $errMsg
+    } elseif ($idx -ge 0 -and $idx -le 4) {
+        Set-StepStatus $idx "done"
+    }
     Next-Phase
 })
 
@@ -954,13 +1038,23 @@ function Show-Complete {
     $pnlContent.Controls.Clear()
     $btnCancel.Visible = $false; $btnNext.Visible = $true; $btnNext.Text = "Schliessen"
 
+    $hasWarnings = $script:Warnings.Count -gt 0
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = if ($script:IsUpdate) { "Update auf v$($script:NewVersion) erfolgreich!" } else { "Installation erfolgreich!" }
+    $lbl.Text = if ($hasWarnings) {
+        if ($script:IsUpdate) { "Update auf v$($script:NewVersion) abgeschlossen – mit Warnungen" } else { "Installation abgeschlossen – mit Warnungen" }
+    } elseif ($script:IsUpdate) { "Update auf v$($script:NewVersion) erfolgreich!" } else { "Installation erfolgreich!" }
     $lbl.Location = [System.Drawing.Point]::new(30, 20); $lbl.Size = [System.Drawing.Size]::new(560, 35)
-    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 15); $lbl.ForeColor = $cOK
+    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 15)
+    $lbl.ForeColor = if ($hasWarnings) { $cWarn } else { $cOK }
     $pnlContent.Controls.Add($lbl)
 
+    # Gleiche URL-Erkennung wie der Health-Check (HTTPS bei aktivem SSL-Overlay)
     $url = "http://localhost:$($script:Config.Port)"
+    $waitHealth = Join-Path $script:ProjectDir "wait-health.ps1"
+    if (Test-Path -LiteralPath $waitHealth) {
+        $detected = & $waitHealth -ProjectDir $script:ProjectDir -UrlOnly
+        if ($detected) { $url = "$detected" }
+    }
     $link = New-Object System.Windows.Forms.LinkLabel
     $link.Text = "Zettelwirtschaft oeffnen: $url"
     $link.Location = [System.Drawing.Point]::new(30, 65); $link.Size = [System.Drawing.Size]::new(560, 25)
@@ -978,9 +1072,16 @@ function Show-Complete {
 
     $info = New-Object System.Windows.Forms.Label
     $infoY = if ($script:IsUpdate -and $script:BackupDir) { 155 } else { 110 }
-    $info.Location = [System.Drawing.Point]::new(30, $infoY); $info.Size = [System.Drawing.Size]::new(560, 120)
+    $info.Location = [System.Drawing.Point]::new(30, $infoY); $info.Size = [System.Drawing.Size]::new(560, (282 - $infoY))
     $info.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $info.Text = "Nuetzliche Befehle:`r`n`r`n  start.bat        System starten + Browser oeffnen`r`n  stop.bat         System stoppen`r`n  update.bat       System aktualisieren`r`n  uninstall.bat    System deinstallieren"
+    if ($hasWarnings) {
+        # Nachzuholende Schritte statt der Befehlsliste (Meldungen enthalten den
+        # jeweiligen Befehl zum erneuten Versuch).
+        $info.ForeColor = $cWarn
+        $info.Text = "Bitte nachholen:`r`n`r`n" + (($script:Warnings | ForEach-Object { "- $_" }) -join "`r`n`r`n")
+    } else {
+        $info.Text = "Nuetzliche Befehle:`r`n`r`n  start.bat        System starten + Browser oeffnen`r`n  stop.bat         System stoppen`r`n  update.bat       System aktualisieren`r`n  uninstall.bat    System deinstallieren"
+    }
     $pnlContent.Controls.Add($info)
 
     $script:chkBrowser = New-Object System.Windows.Forms.CheckBox
@@ -1044,6 +1145,7 @@ $btnNext.add_Click({
             $script:Config.Port = $p
             $script:Config.WatchEnabled = $script:chkWatch.Checked
             $script:Config.Model = $script:cmbModel.SelectedItem
+            $script:Config.EmbeddingModel = $script:cmbEmbedding.SelectedItem
             $script:Config.PinEnabled = $script:chkPin.Checked
             if ($script:chkPin.Checked) { $script:Config.PinCode = $script:txtPin1.Text }
             $script:Step = 3; Show-Installation

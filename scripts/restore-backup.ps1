@@ -5,15 +5,24 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$BackupZip,
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    # Datenordner, in dem DB und Archiv liegen muessen (INFRA-01). Standard:
+    # DataDir aus HKLM\SOFTWARE\Zettelwirtschaft bzw. der Ordner der config.toml.
+    [string]$DataDir = ""
 )
 
 $ErrorActionPreference = 'Stop'
 $ServiceName = 'ZettelwirtschaftBackend'
 
 function Get-RegValue([string]$name) {
-    try { return (Get-ItemProperty 'HKLM:\SOFTWARE\Zettelwirtschaft' -Name $name -ErrorAction Stop).$name }
-    catch { return $null }
+    # Fallback WOW6432Node: aeltere Setups schrieben als 32-Bit-Prozess dorthin.
+    foreach ($key in @('HKLM:\SOFTWARE\Zettelwirtschaft', 'HKLM:\SOFTWARE\WOW6432Node\Zettelwirtschaft')) {
+        try {
+            $val = (Get-ItemProperty $key -Name $name -ErrorAction Stop).$name
+            if ($val) { return $val }
+        } catch { }
+    }
+    return $null
 }
 
 if (-not (Test-Path $BackupZip)) { Write-Host "FEHLER: Backup nicht gefunden: $BackupZip"; exit 1 }
@@ -24,7 +33,9 @@ if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
 }
 
 # --- config.toml parsen ---
-$cfg = Get-Content -LiteralPath $ConfigPath -Raw
+# config.toml ist UTF-8 ohne BOM - ohne -Encoding liest 5.1 sie als ANSI und
+# macht aus Umlauten im Pfad (C:\Users\J<ue>rgen) Mojibake (Restore in einen falschen Pfad).
+$cfg = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
 function Get-TomlString([string]$key) {
     $m = [regex]::Match($cfg, "(?m)^\s*$key\s*=\s*`"([^`"]*)`"")
     if ($m.Success) { return $m.Groups[1].Value }
@@ -35,6 +46,43 @@ $archiveDir = Get-TomlString 'ARCHIVE_DIR'
 if (-not $dbUrl) { Write-Host 'FEHLER: DATABASE_URL fehlt in config.toml.'; exit 1 }
 $dbPath = $dbUrl -replace '^sqlite\+aiosqlite:///', '' -replace '^sqlite:///', ''
 $dbPath = $dbPath -replace '/', '\'
+
+# INFRA-01: Der Restore laeuft mit Administratorrechten und verschiebt/ueberschreibt
+# die Ziele aus der config.toml. Liegt die (z.B. bei aelteren Installationen in
+# C:\Zettelwirtschaft) fuer andere Konten beschreibbar, liesse sich ARCHIVE_DIR auf
+# den Programmordner richten -> das Backup-ZIP ersetzt die Dienst-Exe (SYSTEM).
+# Deshalb: DB und Archiv nur innerhalb des Datenordners, nie im Programmordner.
+function Test-IsWithin([string]$child, [string]$root) {
+    $c = [System.IO.Path]::GetFullPath($child).TrimEnd('\') + '\'
+    $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    return $c.StartsWith($r, [System.StringComparison]::OrdinalIgnoreCase)
+}
+$allowedRoots = @()
+if ($DataDir) {
+    $allowedRoots += $DataDir
+} else {
+    $regDataDir = Get-RegValue 'DataDir'
+    if ($regDataDir) { $allowedRoots += $regDataDir }
+    $allowedRoots += (Split-Path -Parent ([System.IO.Path]::GetFullPath($ConfigPath)))
+}
+$installDir = Get-RegValue 'InstallDir'
+$targets = @(@{ Label = 'DATABASE_URL'; Path = $dbPath })
+if ($archiveDir) { $targets += @{ Label = 'ARCHIVE_DIR'; Path = ($archiveDir -replace '/', '\') } }
+foreach ($t in $targets) {
+    $p = $t.Path
+    $bad = $null
+    if (-not $p -or -not [System.IO.Path]::IsPathRooted($p) -or $p.StartsWith('\\')) {
+        $bad = 'kein absoluter lokaler Pfad'
+    } elseif (-not @($allowedRoots | Where-Object { (Test-IsWithin $p $_) -and ([System.IO.Path]::GetFullPath($p).TrimEnd('\') -ne [System.IO.Path]::GetFullPath($_).TrimEnd('\')) })) {
+        $bad = "liegt nicht innerhalb des Datenordners ($($allowedRoots -join ', '))"
+    } elseif ($installDir -and (Test-IsWithin $p $installDir)) {
+        $bad = "liegt im Programmordner ($installDir)"
+    }
+    if ($bad) {
+        Write-Host "FEHLER: Restore-Ziel $($t.Label) = $p $bad - abgebrochen (config.toml pruefen, ggf. -DataDir angeben)."
+        exit 1
+    }
+}
 
 Write-Host ''
 Write-Host '=== Zettelwirtschaft Restore ==='

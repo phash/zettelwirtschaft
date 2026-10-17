@@ -9,7 +9,4 @@ Antworte ausschliesslich mit einem JSON-Objekt:
   "confidence": 0.0 bis 1.0
 }
 
-OCR-Text des Dokuments:
----
-{ocr_text}
----
+{document_ocr_block}

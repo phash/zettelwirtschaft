@@ -3,6 +3,10 @@ setlocal enabledelayedexpansion
 title Zettelwirtschaft - Update
 cd /d "%~dp0"
 
+:: Hinweis: enabledelayedexpansion entfernt "!" aus echo-Texten - keine
+:: Ausrufezeichen in Meldungen verwenden. Klammern in echo-Texten innerhalb
+:: von ( ... )-Bloecken als ^( ^) escapen.
+
 echo.
 echo  ===================================
 echo   Zettelwirtschaft - Update
@@ -18,66 +22,79 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: .env lesen fuer Port
-set FRONTEND_PORT=8080
-if exist .env (
-    for /f "tokens=1,2 delims==" %%a in ('findstr /r "^FRONTEND_PORT=" .env') do set FRONTEND_PORT=%%b
-)
-
 :: =============================================
 :: Schritt 1: Lokales Datei-Backup
 :: =============================================
 echo  [1/5] Erstelle Sicherheitskopie der Daten...
 
+set "BACKUP_DIR="
 if not exist data (
     echo         Kein Datenverzeichnis vorhanden, ueberspringe Backup.
     goto :api_backup
 )
 
-:: Backup-Verzeichnis mit Zeitstempel
-for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /format:list') do set datetime=%%I
-set TIMESTAMP=%datetime:~0,8%_%datetime:~8,6%
-set BACKUP_DIR=data\backups\pre-update_%TIMESTAMP%
+:: Zeitstempel ueber PowerShell (WMIC fehlt auf aktuellem Windows 11)
+set "TIMESTAMP="
+for /f "delims=" %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "TIMESTAMP=%%I"
+if not defined TIMESTAMP (
+    echo  [FEHLER] Zeitstempel fuer das Backup konnte nicht ermittelt werden.
+    echo  Das Update wird aus Sicherheitsgruenden abgebrochen.
+    pause
+    exit /b 1
+)
+set "BACKUP_DIR=data\backups\pre-update_%TIMESTAMP%"
 
-mkdir "%BACKUP_DIR%" 2>nul
+mkdir "%BACKUP_DIR%"
+if not exist "%BACKUP_DIR%\" (
+    echo  [FEHLER] Backup-Verzeichnis konnte nicht angelegt werden: %BACKUP_DIR%
+    echo  Das Update wird aus Sicherheitsgruenden abgebrochen.
+    pause
+    exit /b 1
+)
 
 :: Datenbank sichern (kritischste Datei)
 if exist data\zettelwirtschaft.db (
-    copy /y data\zettelwirtschaft.db "%BACKUP_DIR%\zettelwirtschaft.db" >nul 2>&1
+    copy /y data\zettelwirtschaft.db "%BACKUP_DIR%\zettelwirtschaft.db" >nul
     if !ERRORLEVEL! EQU 0 (
         echo         Datenbank gesichert.
     ) else (
-        echo  [FEHLER] Datenbank konnte nicht gesichert werden!
+        echo  [FEHLER] Datenbank konnte nicht gesichert werden.
         echo  Das Update wird aus Sicherheitsgruenden abgebrochen.
         pause
         exit /b 1
     )
 )
 
-:: .env sichern
+:: .env sichern (enthaelt PIN und E-Mail-Schluessel)
 if exist .env (
-    copy /y .env "%BACKUP_DIR%\.env" >nul 2>&1
-    echo         Konfiguration gesichert.
+    copy /y .env "%BACKUP_DIR%\.env" >nul
+    if !ERRORLEVEL! EQU 0 (
+        echo         Konfiguration gesichert.
+    ) else (
+        echo  [FEHLER] Konfiguration ^(.env^) konnte nicht gesichert werden.
+        echo  Das Update wird aus Sicherheitsgruenden abgebrochen.
+        pause
+        exit /b 1
+    )
 )
 
 echo         Backup-Verzeichnis: %BACKUP_DIR%
 
 :: =============================================
-:: Schritt 2: API-Backup (falls Backend laeuft)
+:: Schritt 2: Vollstaendiges Backup im Container (DB + Dokumente)
 :: =============================================
 :api_backup
-echo  [2/5] Erstelle vollstaendiges API-Backup...
-:: B2: Backend ist seit N-001 nur ueber nginx (FRONTEND_PORT) erreichbar,
-:: nicht mehr direkt auf 8000. API-Backup-Fehlschlag wird jetzt sichtbar.
-curl -sf -X POST http://localhost:%FRONTEND_PORT%/api/system/backup
-if %ERRORLEVEL% EQU 0 (
-    echo.
-    echo         API-Backup erstellt.
+echo  [2/5] Erstelle vollstaendiges Backup ^(Datenbank + Dokumente^)...
+:: Direkt im Backend-Container statt per HTTP: die API verlangt bei aktivem
+:: PIN-Schutz (Installer-Default) eine Anmeldung und antwortete sonst mit 401.
+docker compose exec -T backend python -m app.entrypoint --backup --full
+set "FULL_RC=%ERRORLEVEL%"
+if "%FULL_RC%"=="0" (
+    echo         Backup erstellt ^(liegt in data\backups^).
 ) else (
-    echo.
-    echo  [WARNUNG] API-Backup fehlgeschlagen ^(Backend nicht erreichbar^).
-    echo  Lokale Sicherheitskopie wurde bereits erstellt — Update faehrt fort.
-    echo  Pruefe nach dem Update: docker compose logs backend
+    echo  [WARNUNG] Vollstaendiges Backup fehlgeschlagen ^(Exit %FULL_RC%^).
+    echo  Laeuft das Backend nicht, ist das bei einem ersten Start normal.
+    echo  Die lokale Sicherheitskopie aus Schritt 1 bleibt erhalten - Update faehrt fort.
 )
 
 :: =============================================
@@ -85,15 +102,20 @@ if %ERRORLEVEL% EQU 0 (
 :: =============================================
 :: ChromaDB-Volume wird beim Major-Bump (0.6 -> 1.x) inkompatibel.
 :: Tar-Backup erlaubt Rollback ohne Datenverlust.
-docker volume inspect zettelwirtschaft_chromadb-data >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo         Sichere ChromaDB-Volume...
-    docker run --rm -v zettelwirtschaft_chromadb-data:/src -v "%CD%\%BACKUP_DIR%":/dst alpine tar czf /dst/chromadb-volume.tar.gz -C /src . >nul 2>&1
+set "PROJECT="
+for /f "tokens=2" %%n in ('docker compose config 2^>nul ^| findstr /b /c:"name:"') do if not defined PROJECT set "PROJECT=%%n"
+if not defined PROJECT set "PROJECT=zettelwirtschaft"
+if defined BACKUP_DIR (
+    docker volume inspect %PROJECT%_chromadb-data >nul 2>&1
     if !ERRORLEVEL! EQU 0 (
-        echo         ChromaDB-Volume gesichert: %BACKUP_DIR%\chromadb-volume.tar.gz
-    ) else (
-        echo  [WARNUNG] ChromaDB-Volume konnte nicht gesichert werden.
-        echo  Falls das Update den Vector-Index verliert, neu aufbauen via "Vektor-Index neu aufbauen" in den Einstellungen.
+        echo         Sichere ChromaDB-Volume...
+        docker run --rm -v %PROJECT%_chromadb-data:/src -v "%CD%\%BACKUP_DIR%":/dst alpine tar czf /dst/chromadb-volume.tar.gz -C /src . >nul 2>&1
+        if !ERRORLEVEL! EQU 0 (
+            echo         ChromaDB-Volume gesichert: %BACKUP_DIR%\chromadb-volume.tar.gz
+        ) else (
+            echo  [WARNUNG] ChromaDB-Volume konnte nicht gesichert werden.
+            echo  Falls das Update den Vector-Index verliert, neu aufbauen via "Vektor-Index neu aufbauen" in den Einstellungen.
+        )
     )
 )
 
@@ -107,6 +129,25 @@ docker compose pull 2>nul
 :: Schritt 4: Neu bauen und starten
 :: =============================================
 echo  [4/5] Starte Services neu...
+:: Bisherige Modelle festschreiben (v1.6 hat neue Modell-Defaults): fehlt
+:: OLLAMA_MODEL/EMBEDDING_MODEL in der .env, lief die Installation mit dem
+:: alten Default. VOR "docker compose up" - der Container liest die .env nur
+:: beim Erstellen. Gleiche Regel wie install-gui.ps1 (scripts\model-tiers.ps1).
+if exist .env if exist scripts\model-tiers.ps1 (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; . '.\scripts\model-tiers.ps1'; $v=''; if (Test-Path 'data\.version') { $v=(Get-Content 'data\.version' -Raw).Trim() }; foreach ($k in @(Add-ZwLegacyModelDefaults -EnvPath '.env' -InstalledVersion $v)) { Write-Output ('        ' + $k + ' mit bisherigem Standard in .env eingetragen.') }"
+    if !ERRORLEVEL! NEQ 0 (
+        echo  [WARNUNG] Modell-Eintraege in der .env konnten nicht geprueft werden.
+    )
+)
+:: Host-Ordner/GPU/HTTPS-Konfiguration wie in start.bat vorbereiten
+if exist generate-mounts.ps1 (
+    powershell -NoProfile -ExecutionPolicy Bypass -File generate-mounts.ps1
+    if !ERRORLEVEL! EQU 1 (
+        echo  [FEHLER] Die Docker-Konfiguration ist ungueltig - siehe Meldung oben.
+        pause
+        exit /b 1
+    )
+)
 :: Erkennen ob Quellcode vorhanden (Dev) oder nur Images (Release)
 if exist backend (
     docker compose up --build -d
@@ -117,9 +158,11 @@ if %ERRORLEVEL% NEQ 0 (
     echo.
     echo  [FEHLER] Update fehlgeschlagen.
     echo.
-    echo  Die Sicherheitskopie liegt in: %BACKUP_DIR%
-    echo  Um die Datenbank wiederherzustellen:
-    echo    copy "%BACKUP_DIR%\zettelwirtschaft.db" data\zettelwirtschaft.db
+    if defined BACKUP_DIR (
+        echo  Die Sicherheitskopie liegt in: %BACKUP_DIR%
+        echo  Um die Datenbank wiederherzustellen:
+        echo    copy "%BACKUP_DIR%\zettelwirtschaft.db" data\zettelwirtschaft.db
+    )
     echo.
     pause
     exit /b 1
@@ -128,31 +171,22 @@ if %ERRORLEVEL% NEQ 0 (
 :: =============================================
 :: Schritt 5: Auf Health warten
 :: =============================================
-echo  [5/5] Warte auf Backend...
-set WAIT_COUNT=0
-:wait_loop
-timeout /t 2 /nobreak >nul
-:: B2: Health-Check ueber nginx (FRONTEND_PORT), nicht direkt auf 8000.
-curl -sf http://localhost:%FRONTEND_PORT%/api/health >nul 2>&1
-if %ERRORLEVEL% EQU 0 goto :healthy
-set /a WAIT_COUNT+=1
-if %WAIT_COUNT% GEQ 30 (
+echo  [5/5] Warte auf Zettelwirtschaft...
+:: Health-Check ueber nginx (HTTP auf FRONTEND_PORT bzw. HTTPS), max. 2 Minuten
+powershell -NoProfile -ExecutionPolicy Bypass -File wait-health.ps1 -TimeoutSeconds 120
+if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo  [WARNUNG] Backend antwortet nach 60 Sekunden nicht.
-    echo  Pruefe die Logs mit: docker compose logs backend
-    echo.
-    echo  Die Sicherheitskopie liegt in: %BACKUP_DIR%
+    if defined BACKUP_DIR echo  Die Sicherheitskopie liegt in: %BACKUP_DIR%
     pause
     exit /b 1
 )
-goto wait_loop
 
-:healthy
 echo.
-echo  Update erfolgreich abgeschlossen!
-echo  Zettelwirtschaft laeuft auf http://localhost:%FRONTEND_PORT%
+echo  Update erfolgreich abgeschlossen.
 echo.
-echo  Sicherheitskopie: %BACKUP_DIR%
-echo  (Kann nach erfolgreichem Test geloescht werden)
+if defined BACKUP_DIR (
+    echo  Sicherheitskopie: %BACKUP_DIR%
+    echo  ^(Kann nach erfolgreichem Test geloescht werden^)
+)
 echo.
 timeout /t 5 /nobreak >nul

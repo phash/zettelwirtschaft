@@ -1,5 +1,16 @@
 import { test, expect } from '@playwright/test';
-import { setupPinAuthMocks, setupBaseMocks, MOCK_AUTH_STATUS } from '../helpers/mock.helpers';
+import {
+  setupPinAuthMocks,
+  setupDashboardMocks,
+  setupDocumentsMocks,
+  setupSearchMocks,
+  MOCK_STATS,
+} from '../helpers/mock.helpers';
+
+// PIN-Schutz. setupPinAuthMocks bildet die Backend-Middleware nach: ohne
+// Sitzung antwortet jede geschuetzte /api/*-Route mit 401, nur /api/health und
+// /api/auth/* sind offen. Weitere Faelle (PIN-Seite ohne App-Shell, Abmelden,
+// Guard nach Ablauf) stehen in 20-app-shell.spec.ts.
 
 test.describe('Authentication - PIN Login', () => {
   test('Redirects to PIN page when PIN is enabled', async ({ page }) => {
@@ -26,93 +37,98 @@ test.describe('Authentication - PIN Login', () => {
     await setupPinAuthMocks(page);
     await page.goto('/pin');
 
-    const pinInput = page.locator('#pin');
-    const submitBtn = page.getByRole('button', { name: /anmelden/i });
-
-    await pinInput.fill('1234');
-    await expect(submitBtn).toBeEnabled();
+    await page.locator('#pin').fill('1234');
+    await expect(page.getByRole('button', { name: /anmelden/i })).toBeEnabled();
   });
 
-  test('Successful login redirects to dashboard', async ({ page }) => {
-    await setupPinAuthMocks(page);
-
-    // Mock dashboard endpoints for after redirect
-    await page.route('**/api/stats', (route) =>
-      route.fulfill({ json: { total_documents: 0, documents_this_month: 0, pending_reviews: 0, expiring_warranties_30d: 0, processing_jobs: 0 } })
-    );
-    await page.route('**/api/jobs**', (route) =>
-      route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } })
-    );
-    await page.route('**/api/documents?*', (route) =>
-      route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } })
-    );
-    await page.route('**/api/documents', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 20 } });
-      }
-      return route.continue();
-    });
-    await page.route('**/api/email/stats', (route) =>
-      route.fulfill({ json: { total_accounts: 0, active_accounts: 0, total_processed: 0, relevant_count: 0, irrelevant_count: 0, failed_count: 0 } })
-    );
-    await page.route('**/api/filing-scopes', (route) =>
-      route.fulfill({ json: [] })
-    );
-
-    // After login, auth status should return authenticated
-    await page.route('**/api/auth/login', async (route) => {
-      // Override auth status to authenticated after login
-      await page.route('**/api/auth/status', (r) =>
-        r.fulfill({ json: { pin_enabled: true, authenticated: true } })
-      );
-      return route.fulfill({ json: { success: true, message: 'OK' } });
-    });
+  test('Successful login redirects to dashboard with data', async ({ page }) => {
+    const session = await setupPinAuthMocks(page, { dataMocks: setupDashboardMocks });
 
     await page.goto('/pin');
     await page.locator('#pin').fill('1234');
-
     await page.getByRole('button', { name: /anmelden/i }).click();
-    await expect(page).toHaveURL('/', { timeout: 10000 });
+
+    await expect(page).toHaveURL('/');
+    expect(session.loginAttempts).toEqual(['1234']);
+    // Nach dem Login liefern die geschuetzten Endpunkte Daten (kein 401 mehr)
+    await expect(page.getByText('Gesamt Dokumente')).toBeVisible();
+    await expect(page.getByTestId('stat-cards')).toContainText(String(MOCK_STATS.total_documents));
   });
 
-  test('Failed login shows error message', async ({ page }) => {
+  test('Failed login shows error message and clears the input', async ({ page }) => {
     await setupPinAuthMocks(page);
-    await page.route('**/api/auth/login', (route) =>
-      route.fulfill({ status: 401, json: { detail: 'Falsche PIN' } })
-    );
 
     await page.goto('/pin');
     await page.locator('#pin').fill('0000');
     await page.getByRole('button', { name: /anmelden/i }).click();
 
-    // Error message should appear
-    await expect(page.locator('text=Falsche PIN').first()).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveText('Falscher PIN');
+    await expect(page.locator('#pin')).toHaveValue('');
+    await expect(page).toHaveURL(/\/pin/);
   });
 
-  test('Redirect preserves original target URL', async ({ page }) => {
+  test('Lockout (429) after too many attempts shows the wait time', async ({ page }) => {
     await setupPinAuthMocks(page);
-    await page.goto('/dokumente');
-    await expect(page).toHaveURL(/\/pin\?redirect=.*dokumente/);
+    let attempts = 0;
+    await page.route('**/api/auth/login', (route) => {
+      attempts += 1;
+      if (attempts <= 5) {
+        return route.fulfill({ status: 401, json: { success: false, detail: 'Falscher PIN' } });
+      }
+      return route.fulfill({ status: 429, json: { success: false, detail: 'Zu viele Fehlversuche. Bitte 30s warten.' } });
+    });
+
+    await page.goto('/pin');
+    for (let i = 0; i < 5; i++) {
+      await page.locator('#pin').fill('0000');
+      await page.getByRole('button', { name: /anmelden/i }).click();
+      await expect(page.getByRole('alert')).toHaveText('Falscher PIN');
+    }
+    await page.locator('#pin').fill('1234');
+    await page.getByRole('button', { name: /anmelden/i }).click();
+
+    await expect(page.getByRole('alert')).toHaveText('Zu viele Fehlversuche. Bitte 30s warten.');
+    await expect(page).toHaveURL(/\/pin/);
+    expect(attempts).toBe(6);
+  });
+
+  test('Redirect preserves original target URL and returns there after login', async ({ page }) => {
+    await setupPinAuthMocks(page, { dataMocks: setupDocumentsMocks });
+    await page.goto('/dokumente?typ=RECHNUNG');
+    await expect(page).toHaveURL(/\/pin\?redirect=/);
+    expect(new URL(page.url()).searchParams.get('redirect')).toBe('/dokumente?typ=RECHNUNG');
+
+    await page.locator('#pin').fill('1234');
+    await page.getByRole('button', { name: /anmelden/i }).click();
+    await expect(page).toHaveURL('/dokumente?typ=RECHNUNG');
+  });
+
+  test('Session expiry mid-use: 401 interceptor leads to PIN page exactly once', async ({ page }) => {
+    const session = await setupPinAuthMocks(page, { dataMocks: setupSearchMocks, authenticated: true });
+    await page.goto('/suche');
+    await expect(page.getByText('Stromrechnung Januar 2026').first()).toBeVisible();
+
+    // Sitzung laeuft serverseitig ab; die naechste Suche (ohne Reload) bekommt
+    // 401. Mehrere parallele 401 duerfen den redirect-Parameter nicht
+    // verschachteln.
+    session.expire();
+    const search = page.getByRole('searchbox', { name: 'Dokumente durchsuchen' });
+    await search.fill('Strom');
+    await search.press('Enter');
+
+    await expect(page).toHaveURL(/\/pin\?redirect=/);
+    expect(new URL(page.url()).searchParams.get('redirect')).toBe('/suche?q=Strom');
+
+    await page.locator('#pin').fill('1234');
+    await page.getByRole('button', { name: /anmelden/i }).click();
+    await expect(page).toHaveURL('/suche?q=Strom');
+    await expect(page.getByText('Stromrechnung Januar 2026').first()).toBeVisible();
   });
 
   test('No redirect when PIN is disabled', async ({ page }) => {
-    await setupBaseMocks(page);
-    // setupBaseMocks uses MOCK_AUTH_STATUS (pin_enabled: false)
-    // Need dashboard mocks too
-    await page.route('**/api/stats', (route) =>
-      route.fulfill({ json: { total_documents: 0, this_month: 0, pending_reviews: 0, expiring_warranties: 0, recent_documents: [] } })
-    );
-    await page.route('**/api/jobs/queue-status', (route) =>
-      route.fulfill({ json: { is_paused: false, active_jobs: 0, pending_jobs: 0 } })
-    );
-    await page.route('**/api/jobs*', (route) =>
-      route.fulfill({ json: { jobs: [], total: 0 } })
-    );
-    await page.route('**/api/email/stats', (route) =>
-      route.fulfill({ json: { total_accounts: 0, active_accounts: 0, total_processed: 0, relevant_count: 0, irrelevant_count: 0, failed_count: 0 } })
-    );
-
+    await setupDashboardMocks(page);
     await page.goto('/');
     await expect(page).toHaveURL('/');
+    await expect(page.getByTestId('stat-cards')).toContainText(String(MOCK_STATS.total_documents));
   });
 });

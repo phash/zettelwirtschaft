@@ -1,143 +1,125 @@
 """Embedding-Service: Erzeugt Textvektoren via Ollama /api/embed."""
 
-import asyncio
 import logging
 
-import httpx
-
 from app.config import Settings
-from app.services.llm_service import _backoff_seconds, _get_client
+from app.services.ollama_client import OllamaError, OllamaErrorKind, post_json
 
 logger = logging.getLogger("zettelwirtschaft.embedding")
 
+# Texte pro /api/embed-Request. Ein langes PDF hat hunderte Chunks — in einem
+# einzigen Request wuerde ein Timeout/Retry immer das ganze Dokument treffen.
+EMBED_BATCH_SIZE = 32
 
-async def embed_text(text: str, settings: Settings) -> list[float] | None:
-    """Erzeugt einen Embedding-Vektor fuer einen einzelnen Text.
 
-    Args:
-        text: Der zu vektorisierende Text.
-        settings: App-Konfiguration.
+# Modellfamilien (Namensanfang, ohne Tag), deren SUCHANFRAGEN mit einer
+# Aufgabenbeschreibung eingebettet werden muessen (asymmetrisches Retrieval).
+# Dokument-Chunks bleiben ohne Prefix. qwen3-embedding (alle Groessen):
+# Benchmark mit 70 Haushaltsbelegen R@1 100 % mit, 95,8 % ohne Prefix.
+# bge-m3, nomic-embed-text u.a.: kein Prefix.
+QWEN3_EMBEDDING_QUERY_PREFIX = (
+    "Instruct: Given a question about a personal household document, "
+    "retrieve the document passages that answer the question\nQuery:"
+)
+_QUERY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("qwen3-embedding", QWEN3_EMBEDDING_QUERY_PREFIX),
+)
 
-    Returns:
-        Liste von Floats (Embedding-Vektor), oder None bei Fehler.
+
+def _model_family(model: str) -> str:
+    """Modellname ohne Registry-/Namespace-Pfad und ohne Tag, kleingeschrieben.
+
+    "qwen3-embedding:4b" -> "qwen3-embedding",
+    "registry.local/library/qwen3-embedding:0.6b" -> "qwen3-embedding".
     """
-    result = await embed_texts([text], settings)
-    if result and len(result) > 0:
-        return result[0]
-    return None
+    last_segment = (model or "").strip().rsplit("/", 1)[-1]
+    return last_segment.split(":", 1)[0].lower()
+
+
+def query_prefix(model: str) -> str:
+    """Instruct-Prefix fuer Suchanfragen an ``model`` ("" = keiner).
+
+    Einzige Stelle der Regel; gilt nur fuer Anfragen, nie fuer Dokumente.
+    """
+    family = _model_family(model)
+    for prefix_family, prefix in _QUERY_PREFIXES:
+        if family.startswith(prefix_family):
+            return prefix
+    return ""
+
+
+def format_query(text: str, model: str) -> str:
+    """Suchanfrage so, wie sie ``model`` eingebettet bekommen muss."""
+    prefix = query_prefix(model)
+    return f"{prefix}{text}" if prefix else text
+
+
+async def embed_batch(texts: list[str], settings: Settings) -> list[list[float]]:
+    """Vektoren fuer alle ``texts`` (in Batches), gleiche Reihenfolge und Anzahl.
+
+    Retry-Politik wie beim LLM (shared ``ollama_client.post_json``):
+    Verbindungsfehler und 5xx werden wiederholt.
+
+    Raises:
+        OllamaError: Ollama nicht erreichbar, Modell fehlt, Serverfehler oder
+            Anzahl der Vektoren passt nicht zur Anzahl der Texte.
+    """
+    if not texts:
+        return []
+
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[start:start + EMBED_BATCH_SIZE]
+        payload = {
+            "model": settings.EMBEDDING_MODEL,
+            "input": batch,
+            "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+            "options": {"num_ctx": settings.OLLAMA_NUM_CTX},
+        }
+        data = await post_json(
+            "/api/embed", payload, settings,
+            timeout=settings.OLLAMA_TIMEOUT, purpose="embedding",
+        )
+        embeddings = data.get("embeddings") or []
+        if len(embeddings) != len(batch):
+            raise OllamaError(
+                OllamaErrorKind.INVALID_RESPONSE,
+                f"{len(embeddings)} Vektoren fuer {len(batch)} Texte",
+                settings.EMBEDDING_MODEL,
+            )
+        vectors.extend(embeddings)
+
+    logger.info(
+        "Embeddings erzeugt: %d Texte, Dimension %d",
+        len(vectors), len(vectors[0]) if vectors else 0,
+    )
+    return vectors
 
 
 async def embed_texts(
     texts: list[str], settings: Settings
 ) -> list[list[float]] | None:
-    """Erzeugt Embedding-Vektoren fuer mehrere Texte (Batch).
-
-    Args:
-        texts: Liste der zu vektorisierenden Texte.
-        settings: App-Konfiguration.
-
-    Returns:
-        Liste von Embedding-Vektoren, oder None bei Fehler.
-    """
-    if not texts:
-        return []
-
-    url = f"{settings.OLLAMA_BASE_URL}/api/embed"
-    payload = {
-        "model": settings.EMBEDDING_MODEL,
-        "input": texts,
-    }
-
-    # N-01 (Re-Review): nutzt jetzt den shared Singleton-Client und das
-    # exponentielle Backoff aus llm_service. Bei Initial-Vectorize ueber
-    # 1000+ Chunks spart das pro-call TCP+TLS-Setup.
-    client = _get_client()
-    request_timeout = httpx.Timeout(settings.OLLAMA_TIMEOUT)
-    max_retries = settings.OLLAMA_MAX_RETRIES
-
-    for attempt in range(max_retries + 1):
-        try:
-            response = await client.post(url, json=payload, timeout=request_timeout)
-            response.raise_for_status()
-
-            data = response.json()
-            embeddings = data.get("embeddings", [])
-            if embeddings:
-                logger.info(
-                    "Embeddings erzeugt: %d Texte, Dimension %d",
-                    len(embeddings),
-                    len(embeddings[0]),
-                )
-                return embeddings
-
-            logger.warning("Embedding-Antwort leer")
-            return None
-
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            err = type(e).__name__
-            if attempt < max_retries:
-                wait = _backoff_seconds(attempt)
-                logger.warning(
-                    "Ollama %s bei Embedding (Versuch %d/%d), warte %.1fs...",
-                    err, attempt + 1, max_retries + 1, wait,
-                )
-                await asyncio.sleep(wait)
-            else:
-                logger.error("Ollama %s nach %d Versuchen (Embedding)", err, max_retries + 1)
-                return None
-
-        except httpx.HTTPStatusError as e:
-            logger.error("Ollama HTTP-Fehler bei Embedding: %s", e)
-            return None
-
-        except Exception:
-            logger.exception("Unerwarteter Fehler bei Embedding")
-            return None
-
-    return None
-
-
-async def ensure_embedding_model(settings: Settings) -> bool:
-    """Stellt sicher, dass das Embedding-Modell in Ollama vorhanden ist.
-
-    Fuehrt 'ollama pull' aus, falls noetig.
-
-    Returns:
-        True wenn Modell verfuegbar, False sonst.
-    """
+    """Best-Effort-Variante von ``embed_batch``: ``None`` bei Fehler."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-            if resp.status_code != 200:
-                return False
+        return await embed_batch(texts, settings)
+    except OllamaError:
+        return None
 
-            models = resp.json().get("models", [])
-            model_names = [m.get("name", "") for m in models]
 
-            # Check ob Modell schon vorhanden (mit und ohne :latest Tag)
-            target = settings.EMBEDDING_MODEL
-            if any(n == target or n == f"{target}:latest" or n.startswith(f"{target}:") for n in model_names):
-                logger.info("Embedding-Modell '%s' bereits vorhanden", target)
-                return True
+async def embed_text(text: str, settings: Settings) -> list[float] | None:
+    """Embedding-Vektor fuer einen einzelnen Text, ``None`` bei Fehler."""
+    result = await embed_texts([text], settings)
+    return result[0] if result else None
 
-            # Modell pullen
-            logger.info("Pulling Embedding-Modell '%s'...", target)
-            pull_resp = await client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/pull",
-                json={"name": target, "stream": False},
-                timeout=httpx.Timeout(600.0),  # Modell-Download kann dauern
-            )
-            if pull_resp.status_code == 200:
-                logger.info("Embedding-Modell '%s' erfolgreich gepullt", target)
-                return True
-            else:
-                logger.error(
-                    "Pull von '%s' fehlgeschlagen: HTTP %d",
-                    target,
-                    pull_resp.status_code,
-                )
-                return False
 
-    except Exception:
-        logger.exception("Fehler beim Sicherstellen des Embedding-Modells")
-        return False
+async def embed_query(text: str, settings: Settings) -> list[float]:
+    """Vektor fuer eine SUCHANFRAGE (RAG/Chat-Retrieval).
+
+    Setzt bei Modellen, die das verlangen (qwen3-embedding*), den Instruct-
+    Prefix vor die Anfrage (``query_prefix``). Dokumente werden weiterhin mit
+    ``embed_batch`` ohne Prefix eingebettet.
+
+    Raises:
+        OllamaError: wie ``embed_batch``.
+    """
+    return (await embed_batch([format_query(text, settings.EMBEDDING_MODEL)], settings))[0]

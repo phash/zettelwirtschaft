@@ -3,31 +3,83 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.database import get_db
+from app.database import get_db, get_session_factory
 from app.models.email_account import EmailAccount, ScheduleType
+from app.models.filing_scope import FilingScope
 from app.models.processed_email import EmailStatus, ProcessedEmail
+from app.schemas.background_task import TaskResponse
 from app.schemas.email import (
+    CRON_REQUIRED_MESSAGE,
     EmailAccountCreate,
     EmailAccountResponse,
     EmailAccountUpdate,
     EmailFetchResult,
+    EmailSettingsInfo,
     EmailStatsResponse,
     EmailTestResult,
     ProcessedEmailResponse,
 )
-from app.services.crypto_service import decrypt_password, encrypt_password
-from app.services.email_fetch_service import fetch_emails_for_account, test_imap_connection
+from app.services.crypto_service import encrypt_password
+from app.services.email_fetch_service import (
+    ENCRYPTION_KEY_MISSING_MESSAGE,
+    account_fetch_lock,
+    fetch_emails_for_account,
+    test_imap_connection,
+)
+from app.services.email_scheduler_service import IDLE_INTERVAL_SECONDS
+from app.services.notification_service import notify_system
+from app.services.task_service import TaskContext, TaskError, start_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/email", tags=["email"])
 
+# SEC-DATA-02: Das gespeicherte Passwort gehoert zu genau diesem Server +
+# Benutzer. Wer Host/Port/SSL/Benutzer aendert, muss es neu eingeben — sonst
+# koennte jeder mit API-Zugang den Server auf einen eigenen Listener umbiegen
+# und per "Verbindung testen" das (sonst nie ausgelieferte) Passwort abgreifen.
+CREDENTIAL_BOUND_FIELDS = ("imap_host", "imap_port", "use_ssl", "username")
+PASSWORD_REQUIRED_MESSAGE = (
+    "Bei Änderung von Server, Port, SSL oder Benutzername muss das Passwort "
+    "erneut eingegeben werden."
+)
+
+
+def _require_encryption_key(settings: Settings) -> str:
+    key = settings.EMAIL_ENCRYPTION_KEY
+    if not key:
+        raise HTTPException(503, ENCRYPTION_KEY_MISSING_MESSAGE)
+    return key
+
+
+async def _get_account_or_404(db: AsyncSession, account_id: int) -> EmailAccount:
+    account = await db.get(EmailAccount, account_id)
+    if not account:
+        raise HTTPException(404, "Konto nicht gefunden")
+    return account
+
+
+async def _ensure_scope_exists(db: AsyncSession, filing_scope_id: str | None) -> None:
+    if filing_scope_id is not None and await db.get(FilingScope, filing_scope_id) is None:
+        raise HTTPException(422, "Ablagebereich nicht gefunden")
+
+
+@router.get("/settings", response_model=EmailSettingsInfo)
+async def get_email_settings(settings: Settings = Depends(get_settings)):
+    """Feste Abruf-Regeln (Zeitzone fuer CRON, nur ungelesene Mails, Limit)."""
+    return EmailSettingsInfo(
+        timezone=str(settings.local_tz),
+        unseen_only=True,
+        max_per_run=settings.EMAIL_MAX_PER_RUN,
+        idle_interval_minutes=IDLE_INTERVAL_SECONDS // 60,
+    )
+
 
 @router.get("/accounts", response_model=list[EmailAccountResponse])
-async def list_accounts(db: AsyncSession = Depends(get_db)):
+async def list_accounts(db: AsyncSession = Depends(get_db, scope="function")):
     result = await db.execute(select(EmailAccount).order_by(EmailAccount.name))
     return result.scalars().all()
 
@@ -35,16 +87,11 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
 @router.post("/accounts", response_model=EmailAccountResponse, status_code=201)
 async def create_account(
     data: EmailAccountCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    key = settings.EMAIL_ENCRYPTION_KEY
-    if not key:
-        raise HTTPException(
-            503,
-            "EMAIL_ENCRYPTION_KEY ist nicht konfiguriert. "
-            "Bitte in .env setzen, bevor E-Mail-Konten angelegt werden.",
-        )
+    key = _require_encryption_key(settings)
+    await _ensure_scope_exists(db, data.filing_scope_id)
 
     account = EmailAccount(
         name=data.name,
@@ -55,7 +102,7 @@ async def create_account(
         encrypted_password=encrypt_password(data.password, key),
         folder_inbox=data.folder_inbox,
         folder_processed=data.folder_processed,
-        schedule_type=ScheduleType(data.schedule_type),
+        schedule_type=data.schedule_type,
         cron_expression=data.cron_expression,
         filing_scope_id=data.filing_scope_id,
     )
@@ -69,23 +116,44 @@ async def create_account(
 async def update_account(
     account_id: int,
     data: EmailAccountUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    result = await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(404, "Konto nicht gefunden")
+    account = await _get_account_or_404(db, account_id)
+    changes = data.model_dump(exclude_unset=True)
 
-    for field, value in data.model_dump(exclude_unset=True).items():
-        if field == "password" and value:
-            key = settings.EMAIL_ENCRYPTION_KEY
-            if not key:
-                raise HTTPException(503, "EMAIL_ENCRYPTION_KEY ist nicht konfiguriert.")
-            account.encrypted_password = encrypt_password(value, key)
-        elif field == "schedule_type" and value:
-            account.schedule_type = ScheduleType(value)
-        elif field != "password":
+    # CRON braucht einen Ausdruck — gegen den zusammengefuehrten Zustand pruefen.
+    schedule_type = changes.get("schedule_type", account.schedule_type)
+    cron_expression = changes.get("cron_expression", account.cron_expression)
+    if schedule_type == ScheduleType.CRON and not cron_expression:
+        raise HTTPException(422, CRON_REQUIRED_MESSAGE)
+    if "filing_scope_id" in changes:
+        await _ensure_scope_exists(db, changes["filing_scope_id"])
+
+    rebound = [
+        field for field in CREDENTIAL_BOUND_FIELDS
+        if field in changes and changes[field] != getattr(account, field)
+    ]
+    if rebound and "password" not in changes:
+        raise HTTPException(422, PASSWORD_REQUIRED_MESSAGE)
+    if rebound:
+        old_target = f"{account.username}@{account.imap_host}:{account.imap_port}"
+        new_target = (
+            f"{changes.get('username', account.username)}@"
+            f"{changes.get('imap_host', account.imap_host)}:{changes.get('imap_port', account.imap_port)}"
+        )
+        logger.warning("E-Mail-Konto %s: Server/Zugang geaendert %s -> %s", account.id, old_target, new_target)
+        notify_system(
+            db,
+            "E-Mail-Konto geändert",
+            f"Konto „{account.name}“: Server/Zugang geändert von {old_target} auf {new_target}. "
+            "Falls Sie das nicht waren, bitte das Mail-Passwort beim Anbieter ändern.",
+        )
+
+    for field, value in changes.items():
+        if field == "password":
+            account.encrypted_password = encrypt_password(value, _require_encryption_key(settings))
+        else:
             setattr(account, field, value)
 
     await db.flush()
@@ -94,11 +162,8 @@ async def update_account(
 
 
 @router.delete("/accounts/{account_id}", status_code=204)
-async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(404, "Konto nicht gefunden")
+async def delete_account(account_id: int, db: AsyncSession = Depends(get_db, scope="function")):
+    account = await _get_account_or_404(db, account_id)
     await db.delete(account)
     await db.flush()
 
@@ -106,48 +171,60 @@ async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/accounts/{account_id}/test", response_model=EmailTestResult)
 async def test_connection(
     account_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    result = await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(404, "Konto nicht gefunden")
+    account = await _get_account_or_404(db, account_id)
     return await test_imap_connection(account, settings)
 
 
-@router.post("/accounts/{account_id}/fetch", response_model=EmailFetchResult)
+@router.post("/accounts/{account_id}/fetch", status_code=202, response_model=TaskResponse)
 async def manual_fetch(
     account_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
-):
-    result = await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(404, "Konto nicht gefunden")
-    stats = await fetch_emails_for_account(account, db, settings)
-    # M-21: ohne expliziten Commit bleiben ProcessedEmail-Eintraege + last_checked_at
-    # nicht persistent (get_db macht keinen Auto-Commit).
-    await db.commit()
-    return stats
+    session_factory=Depends(get_session_factory),
+) -> TaskResponse:
+    """Startet den manuellen Abruf als Hintergrund-Vorgang (HTTP 202).
+
+    IMAP-Download plus ein LLM-Aufruf pro Mail dauern laenger als ein Request
+    offen bleiben darf. Ergebnis (``EmailFetchResult``) per ``GET /api/tasks/{id}``.
+    """
+    await _get_account_or_404(db, account_id)
+    _require_encryption_key(settings)
+
+    async def work(ctx: TaskContext) -> dict:
+        lock = account_fetch_lock(account_id)
+        if lock.locked():
+            await ctx.report_progress(0, "Warte auf laufenden automatischen Abruf …")
+        async with lock:
+            stats = await fetch_emails_for_account(
+                account_id, ctx.session_factory, settings, progress=ctx.report_progress
+            )
+        if stats["error"]:
+            raise TaskError(stats["error"])
+        return EmailFetchResult(**stats).model_dump()
+
+    task = await start_task(
+        session_factory, "email_fetch", work, key=str(account_id),
+        conflict_message="Für dieses Konto läuft bereits ein Abruf.",
+    )
+    return TaskResponse.model_validate(task)
 
 
 @router.get("/accounts/{account_id}/history", response_model=list[ProcessedEmailResponse])
 async def get_history(
     account_id: int,
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    acc_result = await db.execute(select(EmailAccount).where(EmailAccount.id == account_id))
-    if not acc_result.scalar_one_or_none():
-        raise HTTPException(404, "Konto nicht gefunden")
+    await _get_account_or_404(db, account_id)
 
     result = await db.execute(
         select(ProcessedEmail)
         .where(ProcessedEmail.email_account_id == account_id)
-        .order_by(ProcessedEmail.created_at.desc())
+        .order_by(ProcessedEmail.created_at.desc(), ProcessedEmail.id.desc())
         .offset(offset)
         .limit(limit)
     )
@@ -155,9 +232,7 @@ async def get_history(
 
 
 @router.get("/stats", response_model=list[EmailStatsResponse])
-async def get_stats(db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import case
-
+async def get_stats(db: AsyncSession = Depends(get_db, scope="function")):
     # Single query: all accounts with aggregated email stats
     stmt = (
         select(

@@ -33,7 +33,7 @@ const steps = [
   {
     icon: 'send',
     title: 'Bereit loszulegen?',
-    text: 'Am besten startest du mit deinem ersten Dokument. Die Hilfe erreichst du jederzeit über das Fragezeichen oben rechts oder „Hilfe“ in der Seitenleiste.',
+    text: 'Am besten startest du mit deinem ersten Dokument. Alle Funktionen und häufige Fragen findest du jederzeit unter „Hilfe“ im Menü.',
   },
 ]
 
@@ -58,8 +58,20 @@ function goUpload() {
 
 function onKey(e) {
   if (e.key === 'Escape') finish()
-  else if (e.key === 'ArrowRight') next()
+  // Pfeil rechts blättert nur vor — auf dem letzten Schritt beendet er die
+  // Tour NICHT (ein Tastendruck zu viel hätte sie sonst dauerhaft verworfen).
+  else if (e.key === 'ArrowRight' && !isLast.value) next()
   else if (e.key === 'ArrowLeft') back()
+}
+
+// Die App hinter dem Dialog ist waehrend der Tour "inert": nicht fokussier-
+// und nicht klickbar. So bleibt Tab im Dialog (Fokusfalle), ohne eigene
+// Tab-Logik. Das Modal selbst haengt per teleport direkt an <body>.
+function setAppInert(inert) {
+  const appRoot = document.getElementById('app')
+  if (!appRoot) return
+  if (inert) appRoot.setAttribute('inert', '')
+  else appRoot.removeAttribute('inert')
 }
 
 // Keydown-Listener nur waehrend die Tour offen ist (nicht app-weit), plus
@@ -70,16 +82,21 @@ watch(
     if (isOpen) {
       lastFocused = document.activeElement
       document.addEventListener('keydown', onKey)
+      setAppInert(true)
       nextTick(() => panel.value?.focus())
     } else {
       document.removeEventListener('keydown', onKey)
+      setAppInert(false)
       if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus()
       lastFocused = null
     }
   },
   { immediate: true },
 )
-onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKey)
+  setAppInert(false)
+})
 
 const icons = {
   sparkles: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z',

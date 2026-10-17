@@ -32,7 +32,10 @@ class TestChatEndpoint:
             assert data["chunks_found"] == 3
 
     @pytest.mark.asyncio
-    async def test_chat_with_scope_filter(self, client):
+    async def test_chat_with_scope_filter(self, client, db_session):
+        from app.models.filing_scope import FilingScope
+        db_session.add(FilingScope(id="scope-123", name="Praxis-Chat", slug="praxis-chat"))
+        await db_session.commit()
         mock_result = {
             "answer": "Antwort",
             "sources": [],
@@ -50,6 +53,11 @@ class TestChatEndpoint:
             mock_ask.assert_called_once()
             call_kwargs = mock_ask.call_args
             assert call_kwargs.kwargs.get("filing_scope_id") == "scope-123"
+
+        # Verlauf wurde mit gueltiger Scope-Referenz gespeichert (FK)
+        history = (await client.get("/api/chat/history")).json()
+        assert history["total"] == 2
+        assert history["messages"][0]["filing_scope_id"] == "scope-123"
 
     @pytest.mark.asyncio
     async def test_chat_empty_question(self, client):

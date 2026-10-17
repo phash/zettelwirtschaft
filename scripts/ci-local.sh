@@ -5,6 +5,12 @@
 # Verwendung:
 #   bash scripts/ci-local.sh
 #   bash scripts/ci-local.sh --skip-e2e --skip-docker
+#
+# E2E laeuft gegen einen eigenen Preview-Server des aktuellen Builds (Port
+# E2E_PORT, Standard 4181 — startet Playwright selbst per webServer), NIE gegen
+# Port 8080: dort laeuft die echte Installation. Alle API-Aufrufe sind gemockt.
+# Die Smoke-Tests der Windows-Skripte (scripts/test-scripts.ps1) laufen nur
+# ueber ci-local.ps1.
 
 set -uo pipefail
 
@@ -58,27 +64,39 @@ frontend_build() {
     return $rc
 }
 
-docker_backend() { docker build -t zettelwirtschaft-backend ./backend; }
-docker_frontend() { docker build -t zettelwirtschaft-frontend ./frontend; }
+frontend_unit_tests() {
+    cd frontend
+    npm test
+    local rc=$?
+    cd ..
+    return $rc
+}
 
+docker_backend() { docker build -t zettelwirtschaft-backend ./backend; }
+docker_frontend() { docker build --build-context repo=. -t zettelwirtschaft-frontend ./frontend; }
+
+# Gemockte API, kein Backend/Stack noetig: Playwright baut das Frontend und
+# startet `vite preview --strictPort` auf E2E_PORT. Beide Projekte (Desktop-
+# Chromium + Pixel 5), damit mobile-only-Regressionen auffallen. BASE_URL wird
+# geleert, sonst wuerde der eigene Preview-Server umgangen.
 e2e_tests() {
-    if ! docker compose ps --format json 2>/dev/null | grep -q frontend; then
-        docker compose up -d || return 1
-        sleep 10
-    fi
     cd e2e
     if [ ! -d node_modules ]; then
         npm ci || { cd ..; return 1; }
         npx playwright install --with-deps chromium
     fi
-    npx playwright test --project=chromium --reporter=list
+    npm run typecheck || { cd ..; return 1; }
+    env -u BASE_URL npx playwright test --reporter=list
     local rc=$?
     cd ..
     return $rc
 }
 
 [ $skip_backend -eq 0 ] && run_step "Backend pytest" backend_tests
-[ $skip_frontend -eq 0 ] && run_step "Frontend npm build" frontend_build
+[ $skip_frontend -eq 0 ] && {
+    run_step "Frontend npm build" frontend_build
+    run_step "Frontend Vitest" frontend_unit_tests
+}
 [ $skip_docker -eq 0 ] && {
     run_step "Docker build backend" docker_backend
     run_step "Docker build frontend" docker_frontend

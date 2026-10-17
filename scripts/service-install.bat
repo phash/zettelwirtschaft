@@ -64,6 +64,10 @@ if errorlevel 1 (
 "%NSSM%" set "%SERVICE%" AppStderr "%LOG_DIR%\backend.log"
 "%NSSM%" set "%SERVICE%" AppRotateFiles 1
 "%NSSM%" set "%SERVICE%" AppRotateBytes 10485760
+:: Ohne AppRotateOnline rotiert NSSM nur beim Dienststart - ein wochenlang
+:: laufender Dienst wuerde backend.log unbegrenzt wachsen lassen.
+:: (update-wizard.ps1 setzt den Wert bei Updates ebenfalls nach.)
+"%NSSM%" set "%SERVICE%" AppRotateOnline 1
 "%NSSM%" set "%SERVICE%" AppStdoutCreationDisposition 4
 "%NSSM%" set "%SERVICE%" AppStderrCreationDisposition 4
 "%NSSM%" set "%SERVICE%" Start SERVICE_AUTO_START

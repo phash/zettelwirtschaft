@@ -190,7 +190,7 @@ docker compose up -d
 
 ### 7. Logging und Fehlerbehebung
 
-- Strukturiertes Logging (JSON-Format) in Dateien
+- Strukturiertes Logging (JSON-Format) in Dateien — *nicht umgesetzt: das Backend loggt Klartext (`%(asctime)s [%(levelname)s] %(name)s: ...`), siehe CLAUDE.md*
 - Log-Rotation (max. 100 MB, 5 Dateien)
 - Log-Level ueber Umgebungsvariable steuerbar
 - "Diagnose-Paket erstellen"-Button:

@@ -8,7 +8,8 @@ class TestListFilingScopes:
     async def test_list_empty(self, client):
         resp = await client.get("/api/filing-scopes")
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        # Frische DB ohne Seed: noch kein Ablagebereich angelegt
+        assert resp.json() == []
 
     async def test_list_after_create(self, client):
         await client.post("/api/filing-scopes", json={
@@ -122,16 +123,16 @@ class TestUpdateFilingScope:
     async def test_update_keywords(self, client):
         create_resp = await client.post("/api/filing-scopes", json={
             "name": "Test",
-            "keywords": ["a"],
+            "keywords": ["aa"],
             "is_default": False,
         })
         scope_id = create_resp.json()["id"]
 
         resp = await client.patch(f"/api/filing-scopes/{scope_id}", json={
-            "keywords": ["x", "y", "z"],
+            "keywords": ["xx", "yy", "zz"],
         })
         assert resp.status_code == 200
-        assert resp.json()["keywords"] == ["x", "y", "z"]
+        assert resp.json()["keywords"] == ["xx", "yy", "zz"]
 
     async def test_update_set_default(self, client):
         resp1 = await client.post("/api/filing-scopes", json={

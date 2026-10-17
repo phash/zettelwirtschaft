@@ -5,18 +5,23 @@ Datenbankmigrationen vor dem App-Start.
 Unterstützt Legacy-Installationen ohne alembic_version-Tracking:
 - Erkennt anhand tatsächlicher Tabellen/Spalten welche Migrationen angewandt wurden
 - Stempelt die alembic_version entsprechend
+- Frische (leere) DBs: Schema via create_all + stamp head
 - Führt dann `alembic upgrade head` aus
+- Stellt sicher, dass der Default-Ablagebereich "Privat" existiert
 """
-import os
 import sqlite3
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "sqlite+aiosqlite:///./data/zettelwirtschaft.db"
-)
-DB_PATH = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+
+def db_path() -> Path:
+    """SQLite-Datei aus den App-Settings (DATABASE_URL: ENV > config.toml > .env) —
+    derselbe Parser wie Native (``app/entrypoint.py``) und die App selbst."""
+    from app.config import get_settings
+
+    return get_settings().sqlite_db_path
 
 
 def has_table(cur: sqlite3.Cursor, table: str) -> bool:
@@ -62,10 +67,21 @@ def column_type(cur: sqlite3.Cursor, table: str, column: str) -> str | None:
 def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     """Erkennt die höchste angewandte Migration anhand des tatsächlichen Schemas.
 
-    Reihenfolge: neueste zuerst. B-01 (CODE_REVIEW_v3): bisher fehlten 010 + 011,
+    Reihenfolge: neueste zuerst. B-01 (docs/reviews/CODE_REVIEW_v3.md): bisher fehlten 010 + 011,
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
+    # 017_review_data_fixes ist eine reine (idempotente) Datenmigration ohne
+    # Schema-Merkmal: eine auf 016 gestempelte DB fuehrt sie einfach erneut aus.
+    # 016_schema_consistency: Partial Unique Index auf documents.file_hash.
+    if has_index(cur, "ux_documents_file_hash_active"):
+        return "016_schema_consistency"
+    # 015_job_document_id: Verknuepfung Job -> erzeugtes Dokument.
+    if has_column(cur, "processing_jobs", "document_id"):
+        return "015_job_document_id"
+    # 014_background_tasks: Tabelle fuer Hintergrund-Vorgaenge.
+    if has_table(cur, "background_tasks"):
+        return "014_background_tasks"
     # H-ARCH: 013 prüft an der **FK-Existenz** (nicht nur Index) — sonst stempelt
     # ein Legacy-Schema, dessen Index zufaellig via create_all entstanden ist,
     # auf 013 und die Migration legt den FK nie an (K-1 Re-Review).
@@ -105,9 +121,67 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     return None
 
 
+def is_fresh_db(cur: sqlite3.Cursor) -> bool:
+    """True wenn die DB noch keine User-Tabellen hat (alembic_version zaehlt nicht)."""
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
+    )
+    return cur.fetchone() is None
+
+
+def create_fresh_schema() -> None:
+    """Legt das komplette Schema einer frischen DB via ``Base.metadata.create_all`` an.
+
+    Die Alembic-Kette kann eine leere DB NICHT aufbauen: Migration 001 ist ein
+    ``ALTER TABLE processing_jobs`` ohne vorheriges CREATE (historisch auf
+    ``init_db()`` angewiesen). Frische DBs werden deshalb aus den Models erzeugt
+    und danach vom Aufrufer auf head gestempelt — gemeinsamer Pfad fuer Docker
+    (``main`` unten) und Native (``app/entrypoint.py``).
+
+    Nutzt die App-Engine (DATABASE_URL aus den Settings) — dieselbe Quelle
+    wie ``db_path()``.
+    """
+    import asyncio
+
+    from app.database import Base, engine
+
+    async def _create() -> None:
+        # Alle Models registrieren (app.models/__init__ importiert jedes Model).
+        import app.models  # noqa: F401
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(_create())
+
+
+def ensure_default_filing_scope(cur: sqlite3.Cursor) -> bool:
+    """Legt den Default-Ablagebereich "Privat" an, falls noch gar keiner existiert.
+
+    Migration 005 seedet ihn — bei frischen DBs (create_all + stamp head) laeuft
+    005 aber nie. Idempotent und auch fuer bereits so aufgesetzte Installationen
+    wirksam (der Default-Scope ist per API nicht loeschbar, eine leere Tabelle
+    ist also immer ein Bootstrap-Fehler). Werte identisch zu Migration 005.
+    Returns True wenn angelegt.
+    """
+    if not has_table(cur, "filing_scopes"):
+        return False
+    cur.execute("SELECT 1 FROM filing_scopes LIMIT 1")
+    if cur.fetchone() is not None:
+        return False
+    cur.execute(
+        "INSERT INTO filing_scopes (id, name, slug, description, keywords, is_default, color, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        (str(uuid.uuid4()), "Privat", "privat", "Privater Haushalt", "[]", 1, "#3B82F6"),
+    )
+    return True
+
+
 def fix_alembic_version() -> None:
     """Stempelt Legacy-DBs ohne alembic_version-Tracking auf die korrekte Version."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path())
     cur = conn.cursor()
 
     cur.execute(
@@ -128,36 +202,54 @@ def fix_alembic_version() -> None:
                 "INSERT INTO alembic_version (version_num) VALUES (?)", (stamp,)
             )
             conn.commit()
-        else:
-            print(
-                "[migrate] Frische DB – alembic erstellt vollständiges Schema",
-                flush=True,
-            )
 
     conn.close()
 
 
-def run_alembic() -> None:
+def run_alembic(*args: str) -> None:
     # M6: cwd aus dem Skript-Pfad ableiten (alembic.ini liegt neben migrate.py)
     # statt "/app" hartzucodieren — laeuft so auch ausserhalb des Docker-Image.
     result = subprocess.run(
-        ["alembic", "upgrade", "head"], cwd=str(Path(__file__).resolve().parent)
+        # sys.executable -m alembic statt "alembic" im PATH: nutzt garantiert
+        # dasselbe Environment wie dieses Skript (venv, Docker-Prefix).
+        [sys.executable, "-m", "alembic", *args],
+        cwd=str(Path(__file__).resolve().parent),
     )
     if result.returncode != 0:
-        print("[migrate] FEHLER: alembic upgrade head fehlgeschlagen", file=sys.stderr)
+        print(f"[migrate] FEHLER: alembic {' '.join(args)} fehlgeschlagen", file=sys.stderr)
         sys.exit(result.returncode)
 
 
 def main() -> None:
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    db_path().parent.mkdir(parents=True, exist_ok=True)
 
-    # B-01: KEIN create_all mehr vor alembic. Frisch-Installs werden komplett
-    # ueber die Migrationskette aufgebaut, Legacy-DBs ohne alembic_version
-    # werden ueber detect_stamp() korrekt verortet (inkl. 010 + 011).
-    fix_alembic_version()
+    conn = sqlite3.connect(db_path())
+    try:
+        fresh = is_fresh_db(conn.cursor())
+    finally:
+        conn.close()
+
+    if fresh:
+        # Frische DB: Schema aus den Models + Stamp auf head (die Alembic-Kette
+        # kann eine leere DB nicht aufbauen, siehe create_fresh_schema). Gleicher
+        # Pfad wie Native (app/entrypoint.py). B-01 bleibt gewahrt: create_all
+        # laeuft NUR auf leeren DBs, Legacy-DBs gehen ueber detect_stamp().
+        print("[migrate] Frische DB – Schema via create_all, stamp auf head", flush=True)
+        create_fresh_schema()
+        run_alembic("stamp", "head")
+    else:
+        fix_alembic_version()
 
     print("[migrate] Fuehre alembic upgrade head aus...", flush=True)
-    run_alembic()
+    run_alembic("upgrade", "head")
+
+    conn = sqlite3.connect(db_path())
+    try:
+        if ensure_default_filing_scope(conn.cursor()):
+            conn.commit()
+            print("[migrate] Default-Ablagebereich 'Privat' angelegt", flush=True)
+    finally:
+        conn.close()
     print("[migrate] Migrationen abgeschlossen", flush=True)
 
 

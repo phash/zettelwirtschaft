@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
 import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope } from '../services/api'
@@ -8,6 +8,7 @@ import { useFilingScopes } from '../composables/useFilingScopes'
 import { useNotificationStore } from '../stores/notifications'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatBytes } from '../utils/formatters'
+import { apiErrorMessage } from '../utils/apiErrors'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,7 +20,7 @@ const saving = ref(false)
 const showDeleteDialog = ref(false)
 const newTag = ref('')
 // H-FE-5: scopes aus dem shared Composable mit Cache + Invalidation.
-const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded, invalidate: invalidateScopes } = useFilingScopes()
+const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded, reload: reloadScopes } = useFilingScopes()
 
 // Editable fields
 const editForm = ref({})
@@ -27,12 +28,27 @@ const editForm = ref({})
 const taxCategories = [
   { value: 'Werbungskosten', label: 'Werbungskosten' },
   { value: 'Sonderausgaben', label: 'Sonderausgaben' },
-  { value: 'Aussergewoehnliche_Belastungen', label: 'Aussergewoehnliche Belastungen' },
+  { value: 'Aussergewoehnliche_Belastungen', label: 'Außergewöhnliche Belastungen' },
   { value: 'Handwerkerleistungen', label: 'Handwerkerleistungen' },
   { value: 'Haushaltsnahe_Dienstleistungen', label: 'Haushaltsnahe Dienstleistungen' },
   { value: 'Vorsorgeaufwendungen', label: 'Vorsorgeaufwendungen' },
-  { value: 'Keine', label: 'Keine' },
+  { value: 'Keine', label: 'Sonstige steuerrelevante Belege' },
 ]
+
+// Felder, die leer sein duerfen: ein geleertes Eingabefeld liefert '' (Text,
+// Datum) bzw. '' statt Zahl (v-model.number) — das Backend erwartet null.
+const NULLABLE_FIELDS = ['document_date', 'amount', 'issuer', 'recipient', 'reference_number', 'tax_category', 'tax_year', 'filing_scope_id']
+
+function normalizeForm(form) {
+  const out = { ...form }
+  for (const key of NULLABLE_FIELDS) {
+    if (typeof out[key] === 'string' && out[key].trim() === '') out[key] = null
+  }
+  return out
+}
+
+// Rueckfrage-Feld -> Formularfeld (review.py setzt bei "filing_scope" die ID).
+const QUESTION_FIELD_MAP = { filing_scope: 'filing_scope_id' }
 
 const confidenceColor = computed(() => {
   const c = doc.value?.ai_confidence || 0
@@ -46,15 +62,37 @@ const confidencePercent = computed(() => Math.round((doc.value?.ai_confidence ||
 const fileUrl = computed(() => doc.value ? `/api/documents/${doc.value.id}/file` : '')
 const thumbnailUrl = computed(() => doc.value ? `/api/documents/${doc.value.id}/thumbnail` : '')
 const isPdf = computed(() => doc.value?.file_type === 'pdf')
+// Browser (Chrome/Edge/Firefox) koennen TIFF nicht in <img> darstellen.
+const isTiff = computed(() => ['tiff', 'tif'].includes(doc.value?.file_type))
+const imageFailed = ref(false)
+const thumbnailFailed = ref(false)
+const previewUnavailable = computed(() => isTiff.value || imageFailed.value)
+
+const documentYear = computed(() => {
+  const d = editForm.value.document_date || doc.value?.document_date
+  return d ? String(d).slice(0, 4) : ''
+})
+
+const isDirty = computed(() => {
+  if (!doc.value) return false
+  return Object.entries(normalizeForm(editForm.value)).some(
+    ([key, value]) => value !== (doc.value[key] ?? null),
+  )
+})
 
 async function loadDocument() {
   loading.value = true
+  imageFailed.value = false
+  thumbnailFailed.value = false
   try {
     doc.value = await getDocument(route.params.id)
     resetForm()
-  } catch {
-    notify.error('Dokument konnte nicht geladen werden.')
-    router.push('/dokumente')
+  } catch (e) {
+    doc.value = null
+    notify.error(e.response?.status === 404
+      ? 'Dokument nicht gefunden – es wurde möglicherweise gelöscht.'
+      : 'Dokument konnte nicht geladen werden.')
+    router.replace('/dokumente')
   } finally {
     loading.value = false
   }
@@ -65,16 +103,16 @@ function resetForm() {
   editForm.value = {
     title: doc.value.title,
     document_type: doc.value.document_type,
-    document_date: doc.value.document_date,
-    amount: doc.value.amount,
+    document_date: doc.value.document_date ?? null,
+    amount: doc.value.amount ?? null,
     currency: doc.value.currency,
-    issuer: doc.value.issuer,
-    recipient: doc.value.recipient,
-    reference_number: doc.value.reference_number,
+    issuer: doc.value.issuer ?? null,
+    recipient: doc.value.recipient ?? null,
+    reference_number: doc.value.reference_number ?? null,
     tax_relevant: doc.value.tax_relevant,
-    tax_category: doc.value.tax_category,
-    tax_year: doc.value.tax_year,
-    filing_scope_id: doc.value.filing_scope_id,
+    tax_category: doc.value.tax_category ?? null,
+    tax_year: doc.value.tax_year ?? null,
+    filing_scope_id: doc.value.filing_scope_id ?? null,
   }
 }
 
@@ -82,8 +120,8 @@ async function saveChanges() {
   saving.value = true
   try {
     const updates = {}
-    for (const [key, value] of Object.entries(editForm.value)) {
-      if (value !== doc.value[key]) {
+    for (const [key, value] of Object.entries(normalizeForm(editForm.value))) {
+      if (value !== (doc.value[key] ?? null)) {
         updates[key] = value
       }
     }
@@ -94,22 +132,41 @@ async function saveChanges() {
     doc.value = await updateDocument(doc.value.id, updates)
     resetForm()
     notify.success('Änderungen gespeichert.')
-  } catch {
-    notify.error('Speichern fehlgeschlagen.')
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Speichern fehlgeschlagen.'))
   } finally {
     saving.value = false
   }
 }
 
+// Nach dem Loeschen bzw. bewusstem Verwerfen nicht erneut nachfragen.
+let skipLeaveGuard = false
+
 async function handleDelete() {
+  showDeleteDialog.value = false
   try {
     await deleteDocument(doc.value.id)
     notify.success('Dokument gelöscht.')
-    router.push('/dokumente')
-  } catch {
-    notify.error('Löschen fehlgeschlagen.')
+  } catch (e) {
+    if (e.response?.status !== 404) {
+      notify.error(apiErrorMessage(e, 'Löschen fehlgeschlagen.'))
+      return
+    }
+    // 404: bereits geloescht (z.B. in einem anderen Tab) — Ziel erreicht.
+    notify.info('Das Dokument war bereits gelöscht.')
   }
-  showDeleteDialog.value = false
+  skipLeaveGuard = true
+  router.push('/dokumente')
+}
+
+function goBack() {
+  // Mit Verlauf zurueck (stellt Filter/Seite der Liste aus der URL wieder her),
+  // bei Direktaufruf (kein Vorgaenger) zur Dokumentliste.
+  if (window.history.state?.back) {
+    router.back()
+  } else {
+    router.push('/dokumente')
+  }
 }
 
 async function handleAddTag() {
@@ -128,10 +185,10 @@ async function handleAddTag() {
   }
 }
 
-async function handleRemoveTag(tagName) {
+async function handleRemoveTag(tag) {
   try {
-    await removeTag(doc.value.id, tagName)
-    doc.value.tags = doc.value.tags.filter(t => t.name !== tagName)
+    await removeTag(doc.value.id, tag.id)
+    doc.value.tags = doc.value.tags.filter(t => t.id !== tag.id)
   } catch {
     notify.error('Tag konnte nicht entfernt werden.')
   }
@@ -147,14 +204,14 @@ async function quickAddScope() {
   creatingScopeInline.value = true
   try {
     const created = await createFilingScope({ name: newScopeName.value.trim(), keywords: [] })
-    invalidateScopes()
-    await ensureScopesLoaded(true)
+    // Fehler beim Nachladen ignorieren: der Bereich existiert, die Liste bleibt bis zum naechsten Laden alt.
+    await reloadScopes().catch(() => {})
     editForm.value.filing_scope_id = created.id
     newScopeName.value = ''
     showNewScope.value = false
     notify.success('Ablagebereich erstellt.')
   } catch (e) {
-    notify.error(e.response?.data?.detail || 'Erstellen fehlgeschlagen.')
+    notify.error(apiErrorMessage(e, 'Erstellen fehlgeschlagen.'))
   } finally {
     creatingScopeInline.value = false
   }
@@ -164,20 +221,85 @@ async function quickAddScope() {
 const reviewAnswers = ref({})
 
 async function submitAnswer(question) {
-  const answer = reviewAnswers.value[question.id]
-  if (!answer?.trim()) return
+  const answer = reviewAnswers.value[question.id]?.trim()
+  if (!answer) return
   try {
-    await answerReviewQuestion(doc.value.id, question.id, answer)
-    question.is_answered = true
-    question.answer = answer
-    notify.success('Antwort gespeichert.')
+    await answerReviewQuestion(question.id, answer)
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Antwort konnte nicht gespeichert werden.'))
+    return
+  }
+  question.is_answered = true
+  question.answer = answer
+  delete reviewAnswers.value[question.id]
+  notify.success('Antwort gespeichert.')
+  await syncAfterAnswer(question, answer)
+}
+
+// Der Server uebernimmt die Antwort ins betroffene Feld. Nur DIESES Feld (und
+// die Rueckfragen) aus dem frischen Stand uebernehmen — andere, noch nicht
+// gespeicherte Formular-Aenderungen bleiben erhalten.
+async function syncAfterAnswer(question, answer) {
+  if (question.field_affected === 'filing_scope' && answer.startsWith('NEU:')) {
+    // review.py legt den Ablagebereich ggf. neu an -> Auswahlliste auffrischen.
+    await reloadScopes().catch(() => {})
+  }
+  let fresh
+  try {
+    fresh = await getDocument(doc.value.id)
   } catch {
-    notify.error('Antwort konnte nicht gespeichert werden.')
+    return  // Antwort ist gespeichert; Anzeige aktualisiert sich beim naechsten Laden
+  }
+  doc.value.review_questions = fresh.review_questions
+  doc.value.review_status = fresh.review_status
+  const field = QUESTION_FIELD_MAP[question.field_affected] || question.field_affected
+  if (field && field in fresh) {
+    doc.value[field] = fresh[field]
+    if (field in editForm.value) editForm.value[field] = fresh[field] ?? null
   }
 }
 
-watch(() => route.params.id, () => {
-  loadDocument()
+// --- Ungespeicherte Aenderungen ---
+const showLeaveDialog = ref(false)
+let leaveResolve = null
+
+function confirmLeave() {
+  // Eine noch offene Rueckfrage (vom Router bereits abgebrochene Navigation)
+  // abschliessen, statt ihr Promise haengen zu lassen.
+  leaveResolve?.(false)
+  return new Promise((resolve) => {
+    leaveResolve = resolve
+    showLeaveDialog.value = true
+  })
+}
+
+function resolveLeave(ok) {
+  showLeaveDialog.value = false
+  leaveResolve?.(ok)
+  leaveResolve = null
+}
+
+async function guardUnsaved() {
+  if (skipLeaveGuard || !isDirty.value) return true
+  return confirmLeave()
+}
+
+onBeforeRouteLeave(guardUnsaved)
+onBeforeRouteUpdate(guardUnsaved)
+
+function onBeforeUnload(e) {
+  if (!isDirty.value) return
+  e.preventDefault()
+  e.returnValue = ''
+}
+window.addEventListener('beforeunload', onBeforeUnload)
+
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+})
+
+watch(() => route.params.id, (id) => {
+  if (id) loadDocument()
 })
 
 onMounted(async () => {
@@ -193,15 +315,17 @@ onMounted(async () => {
 
   <div v-else-if="doc" class="space-y-4">
     <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <button @click="router.push('/dokumente')" class="btn-secondary !px-3">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <!-- min-w-48: bei wenig Platz bricht die Aktionsgruppe in eine eigene Zeile um,
+           statt den Titel auf Breite 0 zu quetschen. -->
+      <div class="flex min-w-48 flex-1 items-center gap-3">
+        <button @click="goBack" class="btn-secondary !px-3 flex-shrink-0" aria-label="Zurück" title="Zurück">
           &larr;
         </button>
-        <h1 class="text-xl font-bold text-gray-900 truncate">{{ doc.title }}</h1>
-        <DocTypeBadge :type="doc.document_type" />
+        <h1 class="min-w-0 truncate text-xl font-bold text-gray-900">{{ doc.title }}</h1>
+        <DocTypeBadge :type="doc.document_type" class="flex-shrink-0" />
       </div>
-      <div class="flex gap-2">
+      <div class="flex flex-shrink-0 gap-2">
         <a :href="fileUrl" download class="btn-secondary">Herunterladen</a>
         <button @click="showDeleteDialog = true" class="btn-danger">Löschen</button>
       </div>
@@ -215,8 +339,19 @@ onMounted(async () => {
           <div v-if="isPdf && fileUrl" class="aspect-[3/4] bg-gray-100">
             <iframe :src="fileUrl" class="h-full w-full" title="PDF-Vorschau"></iframe>
           </div>
+          <div v-else-if="previewUnavailable" class="flex flex-col items-center justify-center gap-3 bg-gray-100 p-6 text-center" data-testid="preview-unavailable">
+            <img
+              v-if="!thumbnailFailed"
+              :src="thumbnailUrl"
+              :alt="`Miniaturansicht von ${doc.title}`"
+              class="max-h-[300px] object-contain"
+              @error="thumbnailFailed = true"
+            />
+            <p class="text-sm text-gray-500">Vorschau im Browser nicht verfügbar.</p>
+            <a :href="fileUrl" download class="btn-secondary">Herunterladen</a>
+          </div>
           <div v-else class="flex items-center justify-center bg-gray-100 p-4">
-            <img :src="fileUrl" :alt="doc.title" class="max-h-[600px] object-contain" />
+            <img :src="fileUrl" :alt="doc.title" class="max-h-[600px] object-contain" @error="imageFailed = true" />
           </div>
         </div>
         <p class="mt-2 text-xs text-gray-400">
@@ -231,49 +366,61 @@ onMounted(async () => {
           <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Metadaten</h2>
 
           <div>
-            <label class="block text-xs font-medium text-gray-500 mb-1">Titel</label>
-            <input v-model="editForm.title" class="input" />
+            <label for="docTitle" class="block text-xs font-medium text-gray-500 mb-1">Titel</label>
+            <input id="docTitle" v-model="editForm.title" class="input" />
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-gray-500 mb-1">Dokumenttyp</label>
-            <select v-model="editForm.document_type" class="input">
+            <label for="docType" class="block text-xs font-medium text-gray-500 mb-1">Dokumenttyp</label>
+            <select id="docType" v-model="editForm.document_type" class="input">
               <option v-for="t in documentTypes" :key="t" :value="t">{{ typeLabels[t] || t }}</option>
             </select>
           </div>
 
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="block text-xs font-medium text-gray-500 mb-1">Datum</label>
-              <input v-model="editForm.document_date" type="date" class="input" />
+              <label for="docDate" class="block text-xs font-medium text-gray-500 mb-1">Datum</label>
+              <input id="docDate" v-model="editForm.document_date" type="date" class="input" />
             </div>
             <div>
-              <label class="block text-xs font-medium text-gray-500 mb-1">Betrag</label>
-              <input v-model.number="editForm.amount" type="number" step="0.01" class="input" />
+              <label for="docAmount" class="block text-xs font-medium text-gray-500 mb-1">Betrag</label>
+              <input id="docAmount" v-model.number="editForm.amount" type="number" step="0.01" class="input" />
             </div>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-gray-500 mb-1">Aussteller</label>
-            <input v-model="editForm.issuer" class="input" />
+            <label for="docIssuer" class="block text-xs font-medium text-gray-500 mb-1">Aussteller</label>
+            <input id="docIssuer" v-model="editForm.issuer" class="input" />
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-gray-500 mb-1">Referenznummer</label>
-            <input v-model="editForm.reference_number" class="input" />
+            <label for="docReference" class="block text-xs font-medium text-gray-500 mb-1">Referenznummer</label>
+            <input id="docReference" v-model="editForm.reference_number" class="input" />
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-gray-500 mb-1">Ablagebereich</label>
+            <label for="docScope" class="block text-xs font-medium text-gray-500 mb-1">Ablagebereich</label>
             <div class="flex gap-2">
-              <select v-model="editForm.filing_scope_id" class="input flex-1">
+              <select id="docScope" v-model="editForm.filing_scope_id" class="input flex-1">
                 <option :value="null">Kein Bereich</option>
                 <option v-for="s in filingScopes" :key="s.id" :value="s.id">{{ s.name }}</option>
               </select>
-              <button @click="showNewScope = !showNewScope" class="btn-secondary !px-2" title="Neuen Ablagebereich anlegen">+</button>
+              <button
+                @click="showNewScope = !showNewScope"
+                class="btn-secondary !px-2"
+                title="Neuen Bereich anlegen"
+                aria-label="Neuen Bereich anlegen"
+                :aria-expanded="showNewScope"
+              >+</button>
             </div>
             <div v-if="showNewScope" class="mt-2 flex gap-2">
-              <input v-model="newScopeName" class="input flex-1 text-sm" placeholder="Neuer Bereich..." @keydown.enter="quickAddScope" />
+              <input
+                v-model="newScopeName"
+                class="input flex-1 text-sm"
+                placeholder="Neuer Bereich..."
+                aria-label="Name des neuen Ablagebereichs"
+                @keydown.enter="quickAddScope"
+              />
               <button @click="quickAddScope" :disabled="creatingScopeInline" class="btn-primary text-xs">Anlegen</button>
             </div>
           </div>
@@ -283,12 +430,27 @@ onMounted(async () => {
             <label for="taxToggle" class="text-sm text-gray-600">Steuerrelevant</label>
           </div>
 
-          <div v-if="editForm.tax_relevant">
-            <label class="block text-xs font-medium text-gray-500 mb-1">Steuerkategorie</label>
-            <select v-model="editForm.tax_category" class="input">
-              <option :value="null">Keine</option>
-              <option v-for="c in taxCategories" :key="c.value" :value="c.value">{{ c.label }}</option>
-            </select>
+          <div v-if="editForm.tax_relevant" class="grid grid-cols-3 gap-3">
+            <div class="col-span-2">
+              <label for="docTaxCategory" class="block text-xs font-medium text-gray-500 mb-1">Steuerkategorie</label>
+              <select id="docTaxCategory" v-model="editForm.tax_category" class="input">
+                <option :value="null">Nicht zugeordnet</option>
+                <option v-for="c in taxCategories" :key="c.value" :value="c.value">{{ c.label }}</option>
+              </select>
+            </div>
+            <div>
+              <label for="docTaxYear" class="block text-xs font-medium text-gray-500 mb-1">Steuerjahr</label>
+              <input
+                id="docTaxYear"
+                v-model.number="editForm.tax_year"
+                type="number"
+                min="1990"
+                max="2100"
+                step="1"
+                class="input"
+                :placeholder="documentYear"
+              />
+            </div>
           </div>
 
           <button @click="saveChanges" :disabled="saving" class="btn-primary w-full">
@@ -306,13 +468,17 @@ onMounted(async () => {
               class="inline-flex items-center gap-1 rounded-full bg-primary-50 px-3 py-1 text-sm text-primary-700"
             >
               {{ tag.name }}
-              <button @click="handleRemoveTag(tag.name)" class="ml-1 text-primary-400 hover:text-primary-700">&times;</button>
+              <button
+                @click="handleRemoveTag(tag)"
+                class="ml-1 text-primary-400 hover:text-primary-700"
+                :aria-label="`Tag „${tag.name}“ entfernen`"
+              >&times;</button>
             </span>
             <span v-if="!doc.tags?.length" class="text-sm text-gray-400">Keine Tags</span>
           </div>
           <div class="flex gap-2">
-            <input v-model="newTag" class="input flex-1" placeholder="Neuer Tag..." @keydown.enter="handleAddTag" />
-            <button @click="handleAddTag" class="btn-secondary !px-3">+</button>
+            <input v-model="newTag" class="input flex-1" placeholder="Neuer Tag..." aria-label="Neuer Tag" @keydown.enter="handleAddTag" />
+            <button @click="handleAddTag" class="btn-secondary !px-3" aria-label="Tag hinzufügen" title="Tag hinzufügen">+</button>
           </div>
         </div>
 
@@ -353,7 +519,7 @@ onMounted(async () => {
           <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider mb-3">Rückfragen</h2>
           <div class="space-y-4">
             <div v-for="q in doc.review_questions" :key="q.id">
-              <p class="text-sm font-medium text-gray-700">{{ q.question }}</p>
+              <p :id="`question-${q.id}`" class="text-sm font-medium text-gray-700">{{ q.question }}</p>
               <div v-if="q.is_answered" class="mt-1 rounded bg-green-50 p-2 text-sm text-green-700">
                 {{ q.answer }}
               </div>
@@ -362,6 +528,7 @@ onMounted(async () => {
                   v-model="reviewAnswers[q.id]"
                   class="input flex-1"
                   placeholder="Antwort eingeben..."
+                  :aria-labelledby="`question-${q.id}`"
                   @keydown.enter="submitAnswer(q)"
                 />
                 <button @click="submitAnswer(q)" class="btn-primary !px-3">Senden</button>
@@ -375,11 +542,22 @@ onMounted(async () => {
     <ConfirmDialog
       :show="showDeleteDialog"
       title="Dokument löschen"
-      message="Soll dieses Dokument wirklich gelöscht werden? Es kann später wiederhergestellt werden."
+      message="Soll dieses Dokument wirklich gelöscht werden? Das Dokument wird aus dem Archiv, der Suche und dem Assistenten entfernt."
       confirm-text="Löschen"
       :danger="true"
       @confirm="handleDelete"
       @cancel="showDeleteDialog = false"
+    />
+
+    <ConfirmDialog
+      :show="showLeaveDialog"
+      title="Ungespeicherte Änderungen"
+      message="Die Änderungen an diesem Dokument wurden noch nicht gespeichert. Seite trotzdem verlassen?"
+      confirm-text="Verwerfen und verlassen"
+      cancel-text="Weiter bearbeiten"
+      :danger="true"
+      @confirm="resolveLeave(true)"
+      @cancel="resolveLeave(false)"
     />
   </div>
 </template>

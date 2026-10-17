@@ -4,7 +4,8 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import date
 
-from app.services.vectorize_service import chunk_text, _build_metadata_chunk, vectorize_document, search_similar_chunks, get_collection_count, _chroma_delete_existing, _chroma_add
+from app.services.ollama_client import OllamaError, OllamaErrorKind
+from app.services.vectorize_service import VectorizeError, chunk_text, _build_metadata_chunk, vectorize_document, search_similar_chunks, get_collection_count
 
 
 class TestChunkText:
@@ -31,21 +32,20 @@ class TestChunkText:
     def test_sentence_boundary(self):
         text = "A" * 400 + ". " + "B" * 400 + ". Ende."
         chunks = chunk_text(text, chunk_size=500, overlap=50)
-        # Sollte an der Satzgrenze splitten
-        assert len(chunks) >= 2
+        # Schnitt direkt nach dem ersten Satzende, nicht mitten in den B-Block
+        assert len(chunks) == 2
+        assert chunks[0] == "A" * 400 + "."
+        assert chunks[1].endswith("B" * 400 + ". Ende.")
 
     def test_overlap_exists(self):
-        text = "Wort " * 200  # 1000 Zeichen
-        chunks = chunk_text(text, chunk_size=200, overlap=50)
+        # Eindeutige Woerter ohne Satzzeichen -> Schnitt exakt bei chunk_size,
+        # jeder Folge-Chunk beginnt `overlap` Zeichen vor dem Ende des vorigen.
+        text = " ".join(f"w{i:03d}" for i in range(300))
+        overlap = 50
+        chunks = chunk_text(text, chunk_size=200, overlap=overlap)
         assert len(chunks) > 1
-        # Chunks sollten ueberlappen
-        for i in range(len(chunks) - 1):
-            # Pruefe dass Teile des aktuellen Chunks im naechsten vorkommen
-            end_of_current = chunks[i][-30:]
-            assert any(
-                end_of_current[j:j+10] in chunks[i + 1]
-                for j in range(len(end_of_current) - 10)
-            ) or True  # Overlap ist nicht garantiert an exakt gleicher Stelle
+        for current, following in zip(chunks, chunks[1:]):
+            assert current[-20:] in following[:overlap]
 
     def test_newline_boundary(self):
         text = "Absatz eins hier.\nAbsatz zwei dort.\nAbsatz drei folgt."
@@ -108,17 +108,13 @@ class TestVectorizeDocument:
         doc.tax_category = None
         doc.tags = []
 
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {"ids": []}
-        mock_collection.add = MagicMock()
-
         # T17: _check_chromadb_reachable_async ersetzt to_thread fuer
-        # Reachable-Probe. to_thread wird jetzt nur noch fuer delete + add genutzt.
+        # Reachable-Probe. to_thread wird nur fuer das Ersetzen der Chunks genutzt.
         with patch("app.services.vectorize_service._check_chromadb_reachable_async", new_callable=AsyncMock) as mock_reach:
             mock_reach.return_value = True
             with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-                mock_thread.side_effect = [None, None]  # delete + add
-                with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
+                mock_thread.return_value = None  # upsert + Rest loeschen
+                with patch("app.services.vectorize_service.embed_batch", new_callable=AsyncMock) as mock_embed:
                     mock_embed.return_value = [[0.1, 0.2], [0.3, 0.4]]
                     result = await vectorize_document(doc, test_settings)
                     assert result == 2  # metadata chunk + text chunk
@@ -164,10 +160,11 @@ class TestVectorizeDocument:
         # R-04 (Re-Review): reachable-Probe ist async, nicht mehr to_thread.
         with patch("app.services.vectorize_service._check_chromadb_reachable_async", new_callable=AsyncMock, return_value=True):
             with patch("app.services.vectorize_service.asyncio.to_thread", new_callable=AsyncMock):
-                with patch("app.services.vectorize_service.embed_texts", new_callable=AsyncMock) as mock_embed:
-                    mock_embed.return_value = None
-                    result = await vectorize_document(doc, test_settings)
-                    assert result == 0
+                with patch("app.services.vectorize_service.embed_batch", new_callable=AsyncMock) as mock_embed:
+                    mock_embed.side_effect = OllamaError(OllamaErrorKind.UNREACHABLE, "down")
+                    # Unterscheidbarer Fehler statt stiller 0 (Rebuild kann zaehlen)
+                    with pytest.raises(VectorizeError):
+                        await vectorize_document(doc, test_settings)
 
 
 class TestSearchSimilarChunks:
@@ -261,4 +258,4 @@ class TestGetCollectionCount:
 
     def test_count_error(self, test_settings):
         with patch("app.services.vectorize_service._get_collection_sync", side_effect=Exception("error")):
-            assert get_collection_count(test_settings) == 0
+            assert get_collection_count(test_settings) is None  # Fehler != leer

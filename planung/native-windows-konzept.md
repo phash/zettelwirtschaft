@@ -108,12 +108,12 @@ session_timeout_minutes = 1440
 
 [ollama]
 base_url = "http://localhost:11434"      # Native-Default
-model = "qwen2.5:7b-instruct"
+model = "gemma4:e2b-it-qat"              # ab v1.6 (vorher qwen2.5:7b-instruct); Stufe nach Hardware
 timeout_seconds = 300
 max_retries = 2
 
 [embedding]
-model = "bge-m3"
+model = "qwen3-embedding:4b"             # ab v1.6 (vorher bge-m3); < 12 GB RAM: qwen3-embedding:0.6b
 
 [email]
 encryption_key = "<vom Installer kryptografisch generiert>"
@@ -177,7 +177,7 @@ nativ in Windows-Update integrierbar. Fuer Heim-Setup ist NSIS klar besser
 | Ollama-Setup (separates Download oder included) | ~ 600 MB (oder als optionaler Download) |
 | **Total ohne Ollama** | ~ 150 MB |
 | **Total mit Ollama** | ~ 750 MB |
-| LLM-Modell (qwen2.5:7b-instruct GGUF) | ~ 4.5 GB — wird zur Laufzeit gepullt, nicht gebundelt |
+| LLM-Modell (gemma4:e2b-it-qat, ab v1.6) | ~ 4.3 GB — wird zur Laufzeit gepullt, nicht gebundelt |
 
 **Empfehlung:** Setup.exe ohne Ollama (~ 150 MB) + Ollama als optionaler Download
 im Wizard (mit Fortschrittsanzeige). Modell wird beim ersten Start vom Service
@@ -543,7 +543,7 @@ Nur die Distributions-Schicht (`install-gui.ps1`, `docker-compose.yml`,
 
 1. **Code-Signing-Cert?** Self-Sign (gratis, ueble UX) vs. OV-Cert (~100 €/Jahr) vs. EV-Cert (~300 €/Jahr)
 2. **Ollama bundled oder Optional-Download?** 600 MB Setup-Groesse — fuer 1.0-Release sinnvoll als Optional-Download mit Fortschrittsanzeige.
-3. **GPU-Support?** Ollama detected GPU automatisch. Wizard koennte Hardware-Check anzeigen (CUDA available? -> qwen2.5:7b OK, sonst llama3.2 empfehlen).
+3. **GPU-Support?** Ollama detected GPU automatisch. Wizard koennte Hardware-Check anzeigen (CUDA available? -> qwen2.5:7b OK, sonst llama3.2 empfehlen). **Umgesetzt in v1.6:** `scripts/model-tiers.ps1` (NVIDIA-GPU >= 10 GB VRAM laut nvidia-smi -> gemma4:12b-it-qat, sonst gemma4:e2b-it-qat; < 12 GB RAM -> qwen3-embedding:0.6b), genutzt von New-NativeConfig.ps1 ohne eigene Wizard-Seite.
 4. **Tray-Icon in Phase 1 oder spaeter?** Phase 2 reicht — Startmenue-Eintrag ist Mindeststandard.
 5. **MSI statt NSIS fuer Enterprise/GPO-Faelle?** Aktuell aus Komplexitaetsgruenden Nein. Spaeter machbar wenn jemand das nachfragt.
 6. **Auto-Update aktivieren by Default?** Privacy-Frage. Mein Vorschlag: Check by default, Download nur auf Klick.

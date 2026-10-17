@@ -12,7 +12,8 @@ class ChatRequest(BaseModel):
 
 class ChatSource(BaseModel):
     document_id: str
-    title: str
+    # Aeltere Verlaufseintraege koennen Dokumente ohne Titel referenzieren.
+    title: str | None = None
     document_type: str | None = None
     document_date: str | None = None
     issuer: str | None = None

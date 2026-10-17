@@ -1,0 +1,25 @@
+# Dateien des Docker-Release-Pakets (ZIP/tar.gz UND Setup.exe aus setup.nsi).
+# Einzige Liste: .github/workflows/release.yml staged sie per
+# scripts/release_manifest.py, das daraus auch manifest.nsh fuer setup.nsi
+# (Installieren + Deinstallieren) erzeugt. Pfade relativ zum Repo-Root, mit "/".
+#
+# docker-compose.yml und VERSION werden beim Release danach ueberschrieben
+# (GHCR-Images statt build:, Versionsnummer aus dem Tag).
+docker-compose.yml
+docker-compose.ssl.yml
+VERSION
+.env.example
+install.bat
+install.ps1
+install-gui.ps1
+start.bat
+stop.bat
+update.bat
+uninstall.bat
+generate-mounts.ps1
+wait-health.ps1
+scripts/model-tiers.ps1
+scripts/secure-acl.ps1
+ssl/generate-cert.sh
+ssl/generate-self-signed-cert.py
+ssl/nginx-ssl.conf

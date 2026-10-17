@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -93,23 +93,53 @@ class TestExtractTextImage:
 
 
 class TestExtractTextMocked:
-    async def test_pdf_digital_fallback_to_ocr(self, test_settings: Settings, tmp_path: Path):
-        """Wenn pdfplumber keinen Text findet, wird OCR verwendet."""
+    async def test_pdf_without_text_layer_is_ocrd(self, test_settings: Settings, tmp_path: Path):
+        """Wenn pdfplumber keinen Text findet, wird jede Seite per OCR gelesen."""
         dummy_pdf = tmp_path / "scan.pdf"
         dummy_pdf.write_bytes(b"%PDF-1.4 minimal")
 
         with patch(
-            "app.services.ocr_service._extract_pdf_digital_sync", return_value=None
+            "app.services.ocr_service._read_pdf_text_pages", return_value=[""]
         ), patch(
-            "app.services.ocr_service._extract_pdf_ocr_sync",
-            return_value=OcrResult(
-                full_text="Gescannter Text",
-                pages=[PageText(page_number=1, text="Gescannter Text", confidence=0.85)],
-                average_confidence=0.85,
-                page_count=1,
-            ),
+            "app.services.ocr_service._ocr_pdf_page",
+            return_value=PageText(page_number=1, text="Gescannter Text", confidence=0.85),
         ):
             result = await extract_text(dummy_pdf, "pdf", test_settings)
             assert result is not None
             assert result.full_text == "Gescannter Text"
             assert result.average_confidence == 0.85
+
+
+class TestPreprocessForOcr:
+    """Echter Pillow-Pfad (ohne Mocks) — faengt API-Brueche bei Pillow-Bumps."""
+
+    def test_small_image_upscaled_and_grayscale(self):
+        from PIL import Image
+
+        from app.services.ocr_service import _preprocess_for_ocr
+
+        img = Image.new("RGB", (600, 400), "white")
+        out = _preprocess_for_ocr(img)
+        assert out.mode == "L"
+        assert out.size == (1200, 800)
+
+    def test_large_image_not_upscaled(self):
+        from PIL import Image
+
+        from app.services.ocr_service import _preprocess_for_ocr
+
+        img = Image.new("RGB", (1600, 2000), "white")
+        out = _preprocess_for_ocr(img)
+        assert out.size == (1600, 2000)
+
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_decompression_bomb_returns_none(self, tmp_path: Path, test_settings: Settings):
+        from PIL import Image
+
+        from app.services.ocr_service import _extract_image_ocr_sync
+
+        src = tmp_path / "bomb.png"
+        Image.new("1", (10_000, 7_000)).save(src)  # 70 Mpx > 64 Mpx-Limit
+        with patch("pytesseract.image_to_data") as ocr:
+            assert _extract_image_ocr_sync(src, test_settings) is None
+            ocr.assert_not_called()

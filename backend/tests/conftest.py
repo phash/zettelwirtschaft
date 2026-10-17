@@ -1,7 +1,7 @@
-import io
 import json
 import struct
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.database import Base, get_db
+from app.database import Base, configure_sqlite_engine, get_db, get_session_factory
 
 # Alle Modelle importieren, damit Base.metadata vollstaendig ist
 import app.models.document  # noqa: F401
@@ -24,6 +24,7 @@ import app.models.correction_mapping  # noqa: F401
 import app.models.chat_message  # noqa: F401
 import app.models.email_account  # noqa: F401
 import app.models.processed_email  # noqa: F401
+import app.models.background_task  # noqa: F401
 
 
 @pytest.fixture
@@ -41,14 +42,47 @@ def test_settings(tmp_path: Path) -> Settings:
         WATCH_DIR=str(watch_dir),
         ARCHIVE_DIR=str(archive_dir),
         THUMBNAIL_DIR=str(thumbnail_dir),
-        OLLAMA_BASE_URL="http://localhost:11434",
+        # Tests duerfen nie die echten Dienste erreichen (Produktions-Ollama auf
+        # 11434, ChromaDB auf 8000): Port 9 (discard) -> sofort "connection
+        # refused". Tests, die Ollama/Chroma brauchen, mocken die Aufrufe.
+        OLLAMA_BASE_URL="http://127.0.0.1:9",
+        # Modelle = Code-Defaults, unabhaengig von OLLAMA_MODEL/EMBEDDING_MODEL
+        # in der Umgebung (release.yml setzte frueher OLLAMA_MODEL=llama3.2).
+        OLLAMA_MODEL=Settings.model_fields["OLLAMA_MODEL"].default,
+        EMBEDDING_MODEL=Settings.model_fields["EMBEDDING_MODEL"].default,
+        CHROMADB_HOST="127.0.0.1",
+        CHROMADB_PORT=9,
         LOG_LEVEL="DEBUG",
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_caches():
+    """Modulweite Caches/Zaehler zwischen Tests leeren — sonst haengt das
+    Ergebnis eines Tests (Health-Cache, Rate-Limit-Zaehler, Login-Versuche)
+    von der Reihenfolge ab."""
+    from app.api import auth, system
+    from app.core.rate_limit import limiter
+    from app.services import ollama_client, vectorize_service
+
+    def _reset():
+        ollama_client.reset_health_cache()
+        vectorize_service._reachable_cache = None
+        system._reset_system_info_cache()
+        limiter.reset()
+        auth.reset_login_state()
+
+    _reset()
+    yield
+    _reset()
 
 
 @pytest.fixture
 async def test_engine(test_settings: Settings):
     engine = create_async_engine(test_settings.DATABASE_URL, echo=False)
+    # Gleiche Verbindungs-PRAGMAs wie die App (FK-Enforcement, busy_timeout) —
+    # sonst bestehen Tests, die in Produktion an FK-Constraints scheitern.
+    configure_sqlite_engine(engine.sync_engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     # FTS5 Virtual Table ist nicht in Base.metadata - manuell erstellen (wie Lifespan)
@@ -76,13 +110,20 @@ async def db_session(test_session_factory) -> AsyncGenerator[AsyncSession]:
         yield session
 
 
-@pytest.fixture
-async def client(test_settings: Settings, test_engine, test_session_factory):
+@asynccontextmanager
+async def make_test_client(
+    settings: Settings, session_factory: async_sessionmaker[AsyncSession]
+) -> AsyncIterator[AsyncClient]:
+    """HTTP-Client gegen die App mit Test-DB + ``settings``.
+
+    Einzige Stelle fuer die Dependency-Overrides — Varianten (z.B. PIN aktiv)
+    bauen nur andere Settings (``test_settings.model_copy(update=...)``).
+    """
     from app.config import get_settings
     from app.main import app
 
     async def override_get_db() -> AsyncGenerator[AsyncSession]:
-        async with test_session_factory() as session:
+        async with session_factory() as session:
             try:
                 yield session
                 await session.commit()
@@ -91,13 +132,21 @@ async def client(test_settings: Settings, test_engine, test_session_factory):
                 raise
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_settings] = lambda: test_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_settings] = lambda: settings
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.clear()
 
-    app.dependency_overrides.clear()
+
+@pytest.fixture
+async def client(test_settings: Settings, test_engine, test_session_factory):
+    async with make_test_client(test_settings, test_session_factory) as ac:
+        yield ac
 
 
 @pytest.fixture
@@ -195,7 +244,7 @@ def sample_image_with_text(tmp_path: Path) -> Path:
 def mock_ollama_response() -> dict:
     """Simulierte Ollama-Antwort fuer die kombinierte Analyse."""
     return {
-        "model": "llama3.2",
+        "model": "gemma4:e2b-it-qat",
         "message": {
             "role": "assistant",
             "content": json.dumps({

@@ -6,3 +6,16 @@ tests/
 .env.*
 *.db
 data/
+
+# Native-Build-/Dev-Artefakte (Windows-venv, PyInstaller) - gehoeren nicht ins
+# Linux-Image (sonst ~500 MB zusaetzlich, durch chown doppelt).
+.venv/
+venv/
+build/
+dist/
+.ruff_cache/
+.serena/
+*.spec
+requirements-build.txt
+requirements-dev.txt
+pytest.ini

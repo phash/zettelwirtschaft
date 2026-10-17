@@ -1,5 +1,11 @@
 ; Zettelwirtschaft - NSIS Installer
 ; Erzeugt eine Setup.exe die alle Dateien entpackt und den Konfigurationsassistenten startet
+;
+; Wird im vorbereiteten Release-Ordner gebaut (siehe .github/workflows/release.yml):
+;   python scripts/release_manifest.py stage release
+;   cd release && makensis -DVERSION=x.y.z setup.nsi
+; Die Dateiliste kommt aus release-manifest.txt (-> manifest.nsh), damit ZIP,
+; Setup.exe und Uninstaller dieselben Dateien kennen.
 
 !include "MUI2.nsh"
 
@@ -57,22 +63,16 @@ alle Dienste."
 ; --- Language ---
 !insertmacro MUI_LANGUAGE "German"
 
+; Dateiliste (ZW_INSTALL_FILES / ZW_UNINSTALL_FILES), erzeugt aus release-manifest.txt
+!include "manifest.nsh"
+
 ; --- Install Section ---
 Section "Zettelwirtschaft" SecMain
     SectionIn RO
     SetOutPath "$INSTDIR"
 
-    ; Anwendungsdateien
-    File "docker-compose.yml"
-    File ".env.example"
-    File "VERSION"
-    File "install.bat"
-    File "install.ps1"
-    File "install-gui.ps1"
-    File "start.bat"
-    File "stop.bat"
-    File "update.bat"
-    File "uninstall.bat"
+    ; Anwendungsdateien (release-manifest.txt)
+    !insertmacro ZW_INSTALL_FILES
 
     ; data-Verzeichnis anlegen
     CreateDirectory "$INSTDIR\data"
@@ -116,19 +116,10 @@ Section "Uninstall"
     ; Container stoppen
     nsExec::ExecToLog 'cmd /c "cd /d "$INSTDIR" && docker compose down --remove-orphans 2>nul"'
 
-    ; Anwendungsdateien entfernen
-    Delete "$INSTDIR\docker-compose.yml"
+    ; Anwendungsdateien entfernen (release-manifest.txt) + zur Laufzeit erzeugte
+    !insertmacro ZW_UNINSTALL_FILES
     Delete "$INSTDIR\docker-compose.override.yml"
-    Delete "$INSTDIR\.env.example"
     Delete "$INSTDIR\.env"
-    Delete "$INSTDIR\VERSION"
-    Delete "$INSTDIR\install.bat"
-    Delete "$INSTDIR\install.ps1"
-    Delete "$INSTDIR\install-gui.ps1"
-    Delete "$INSTDIR\start.bat"
-    Delete "$INSTDIR\stop.bat"
-    Delete "$INSTDIR\update.bat"
-    Delete "$INSTDIR\uninstall.bat"
     Delete "$INSTDIR\Uninstall.exe"
 
     ; Startmenue entfernen

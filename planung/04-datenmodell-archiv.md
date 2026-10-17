@@ -154,7 +154,7 @@ Erstelle Pydantic-Schemas fuer die API (Request/Response):
 - `DocumentUpdate` - Felder die der Benutzer manuell korrigieren kann
 - `TagResponse`, `TagCreate`
 - `WarrantyInfoResponse`
-- `ReviewQuestionResponse`, `ReviewQuestionAnswer`
+- `ReviewQuestionResponse` (Antworten laufen ueber `POST /api/review/questions/{id}/answer` mit `{answer}`; das fruehere Schema `ReviewQuestionAnswer` entfiel in 1.6.0)
 
 ### 4. Archivierungs-Service (`services/archive_service.py`)
 
@@ -180,7 +180,7 @@ GET    /api/documents/{id}/file      # Original-Datei herunterladen
 GET    /api/documents/{id}/thumbnail # Thumbnail herunterladen
 GET    /api/tags                     # Alle Tags auflisten
 POST   /api/documents/{id}/tags      # Tag zu Dokument hinzufuegen
-DELETE /api/documents/{id}/tags/{tag} # Tag entfernen
+DELETE /api/documents/{id}/tags/{tag_id} # Tag entfernen (per Tag-ID)
 ```
 
 ### 6. Pipeline-Integration

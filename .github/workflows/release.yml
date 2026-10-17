@@ -21,19 +21,21 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # requirements-dev.txt = Runtime (-r requirements.txt) + pytest/pytest-asyncio
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short -x
         env:
           DATABASE_URL: "sqlite+aiosqlite:///./test.db"
           OLLAMA_BASE_URL: "http://localhost:11434"
-          OLLAMA_MODEL: "llama3.2"
           UPLOAD_DIR: "./test_uploads"
           ARCHIVE_DIR: "./test_archive"
 
@@ -73,6 +75,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ./frontend
+          # Benannter Context fuer COPY --from=repo VERSION im Dockerfile
+          build-contexts: repo=.
           push: true
           tags: |
             ghcr.io/${{ github.repository }}/frontend:${{ steps.version.outputs.VERSION }}
@@ -99,29 +103,27 @@ jobs:
           REPO=${{ github.repository }}
           mkdir -p release
 
+          # Installer-/Skript-Dateien laut release-manifest.txt kopieren (einzige
+          # Liste, erzeugt auch manifest.nsh fuer setup.nsi)
+          python3 scripts/release_manifest.py stage release
+
           # docker-compose.yml: build-Direktiven durch GHCR-Image-Referenzen ersetzen
+          # (frontend: mehrzeiliger build-Block inkl. additional_contexts -> eine image-Zeile)
           sed \
             -e "s|build: ./backend|image: ghcr.io/${REPO}/backend:${VERSION}|" \
-            -e "s|build: ./frontend|image: ghcr.io/${REPO}/frontend:${VERSION}|" \
+            -e "/^  frontend:/,/^    ports:/{" \
+            -e "/^    build:$/,/^        repo: \.$/c\    image: ghcr.io/${REPO}/frontend:${VERSION}" \
+            -e "}" \
             docker-compose.yml > release/docker-compose.yml
-
-          # Installer-Dateien kopieren
-          cp .env.example release/
-          cp install.bat release/
-          cp install.ps1 release/
-          cp install-gui.ps1 release/
-          cp start.bat release/
-          cp stop.bat release/
-          cp update.bat release/
-          cp uninstall.bat release/
 
           # VERSION-Datei mit aktueller Version schreiben
           echo "${VERSION}" > release/VERSION
 
-          # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit)
+          # Archive erstellen (Glob * schliesst Dotfiles aus, daher explizit;
+          # manifest.nsh ist nur Build-Input fuer setup.nsi)
           cd release
-          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz .env.example *
-          zip -r ../zettelwirtschaft-${VERSION}.zip .env.example *
+          tar -czf ../zettelwirtschaft-${VERSION}.tar.gz --exclude=manifest.nsh .env.example *
+          zip -r ../zettelwirtschaft-${VERSION}.zip .env.example * -x manifest.nsh
 
       - name: Install NSIS
         run: sudo apt-get install -y nsis
@@ -160,7 +162,7 @@ jobs:
 
             ### Installation
 
-            **Setup.exe (empfohlen):**
+            **Setup.exe (Docker-Variante):**
             1. `Zettelwirtschaft-${{ steps.version.outputs.VERSION }}-Setup.exe` herunterladen
             2. Ausfuehren und den Anweisungen folgen
 

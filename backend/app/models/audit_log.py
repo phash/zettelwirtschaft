@@ -1,9 +1,10 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -16,6 +17,9 @@ class AuditAction(str, enum.Enum):
     TAG_ADDED = "TAG_ADDED"
     TAG_REMOVED = "TAG_REMOVED"
     REVIEWED = "REVIEWED"
+    # KI-Re-Analyse hat Felder ueberschrieben. Bewusst NICHT "UPDATED": UPDATED
+    # markiert Benutzer-Aenderungen, die eine spaetere Re-Analyse schuetzt.
+    REANALYZED = "REANALYZED"
 
 
 class AuditLog(Base):
@@ -30,5 +34,5 @@ class AuditLog(Base):
     )
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )

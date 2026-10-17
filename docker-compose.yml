@@ -7,16 +7,22 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      # X-Real-IP/X-Forwarded-For nur von nginx akzeptieren: nginx erreicht das
+      # Backend ausschliesslich ueber proxy-net (festes Subnetz, siehe unten).
+      # Clients aus dem LAN koennen ihre IP fuer das PIN-Lockout so nicht faelschen.
+      TRUSTED_PROXIES: ${ZW_PROXY_SUBNET:-172.31.250.0/24}
     depends_on:
       ollama:
         condition: service_healthy
       chromadb:
         condition: service_healthy
-    # B4: Backend ist in zwei Netzen — public (default) fuer nginx, und das
-    # interne chromadb-net fuer den Embedding-Store. Andere Container im
-    # default-Netz koennen ChromaDB damit nicht erreichen.
+    # B4: Backend ist in drei Netzen — default (Ollama), proxy-net (nur nginx ->
+    # Backend) und das interne chromadb-net fuer den Embedding-Store. Andere
+    # Container im default-Netz koennen ChromaDB damit nicht erreichen.
     networks:
       - default
+      - proxy-net
       - chromadb-net
     restart: unless-stopped
     # Defense-in-Depth: keine zusaetzlichen Privilegien, alle Capabilities weg.
@@ -33,7 +39,10 @@ services:
       start_period: 15s
 
   ollama:
-    image: ollama/ollama:latest
+    # Konkrete Version statt :latest -> reproduzierbare Installs/Updates
+    # (Ollama-API /api/chat + /api/embed kann sich zwischen Versionen aendern).
+    # Bewusst aktualisieren: Tag hier anheben, dann `docker compose pull`.
+    image: ollama/ollama:0.40.5
     volumes:
       - ollama-models:/root/.ollama
     restart: unless-stopped
@@ -84,12 +93,21 @@ services:
       start_period: 10s
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      # Repo-Root als benannter Context "repo": das Dockerfile kopiert daraus
+      # nur VERSION (Single Source of Truth fuer die angezeigte App-Version).
+      additional_contexts:
+        repo: .
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
     depends_on:
       backend:
         condition: service_started
+    # Nur proxy-net: die Verbindung nginx -> Backend kommt damit immer aus dem
+    # festen Subnetz, das das Backend als TRUSTED_PROXIES kennt.
+    networks:
+      - proxy-net
     restart: unless-stopped
     # nginx laeuft seit N-006 als USER nginx und listen 8080 — keine Caps
     # mehr noetig.
@@ -109,3 +127,11 @@ volumes:
 networks:
   chromadb-net:
     internal: true
+  # Netz nur fuer nginx (frontend) -> backend. Festes Subnetz, damit das Backend
+  # genau dieses als vertrauenswuerdigen Proxy kennt (TRUSTED_PROXIES oben).
+  # Kollidiert es mit einem vorhandenen Netz ("Pool overlaps"), in .env
+  # ZW_PROXY_SUBNET=<freies /24> setzen.
+  proxy-net:
+    ipam:
+      config:
+        - subnet: ${ZW_PROXY_SUBNET:-172.31.250.0/24}

@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -16,5 +17,5 @@ class SavedSearch(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     query_params: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )

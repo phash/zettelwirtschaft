@@ -16,16 +16,20 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: .env lesen fuer Port
-set FRONTEND_PORT=8080
-if exist .env (
-    for /f "tokens=1,2 delims==" %%a in ('findstr /r "^FRONTEND_PORT=" .env') do set FRONTEND_PORT=%%b
+:: Compose-Konfiguration vorbereiten (IMMER, auch ohne data\.host-mounts.json:
+:: Host-Ordner-Mounts, GPU-Block, HTTPS-Overlay via COMPOSE_FILE in .env).
+if not exist generate-mounts.ps1 (
+    echo  [FEHLER] generate-mounts.ps1 fehlt im Installationsordner.
+    echo  Bitte Zettelwirtschaft neu installieren oder aktualisieren.
+    pause
+    exit /b 1
 )
-
-:: Host-Mounts generieren (Volume-Mounts fuer externe Windows-Ordner)
-if exist data\.host-mounts.json (
-    echo  Konfiguriere Host-Ordner...
-    powershell -ExecutionPolicy Bypass -File generate-mounts.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File generate-mounts.ps1
+if %ERRORLEVEL% EQU 1 (
+    echo.
+    echo  [FEHLER] Die Docker-Konfiguration ist ungueltig - siehe Meldung oben.
+    pause
+    exit /b 1
 )
 
 :: Services starten
@@ -39,15 +43,13 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo  Warte auf Backend...
-:wait_loop
-timeout /t 2 /nobreak >nul
-curl -sf http://localhost:8000/api/health >nul 2>&1
-if %ERRORLEVEL% NEQ 0 goto wait_loop
-
-echo  Zettelwirtschaft laeuft!
-echo.
-echo  Oeffne http://localhost:%FRONTEND_PORT% im Browser...
-start http://localhost:%FRONTEND_PORT%
+echo  Warte auf Zettelwirtschaft...
+:: Health-Check ueber nginx (HTTP auf FRONTEND_PORT bzw. HTTPS), max. 2 Minuten.
+powershell -NoProfile -ExecutionPolicy Bypass -File wait-health.ps1 -TimeoutSeconds 120 -OpenBrowser
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    pause
+    exit /b 1
+)
 echo.
 timeout /t 3 /nobreak >nul

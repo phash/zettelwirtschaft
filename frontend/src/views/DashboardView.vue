@@ -1,13 +1,16 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import StatCard from '../components/common/StatCard.vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
-import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob, getEmailStats } from '../services/api'
+import ConfirmDialog from '../components/common/ConfirmDialog.vue'
+import { getDashboardStats, getDocuments, getJobs, uploadDocuments, getQueueStatus, pauseQueue, resumeQueue, retryJob, deleteJob, getEmailStats } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
-import { formatDate } from '../utils/formatters'
+import { formatDate, formatDateTime } from '../utils/formatters'
+import { copyToClipboard } from '../utils/clipboard'
+import { apiErrorMessage } from '../utils/apiErrors'
+import { reportUploadResult } from '../utils/uploadResult'
+import { FILE_TYPES_LABEL } from '../constants/fileTypes'
 
-const router = useRouter()
 const notify = useNotificationStore()
 const stats = ref(null)
 const recentDocs = ref([])
@@ -16,15 +19,39 @@ const failedJobs = ref([])
 const isDragging = ref(false)
 const queuePaused = ref(false)
 const emailStats = ref(null)
-const loadingData = ref(false)
+const jobToDiscard = ref(null)
+
+// Polling: 3 s solange Jobs laufen. Bei Fehlern (Backend nicht erreichbar)
+// exponentieller Backoff bis 30 s und nur EIN Toast, bis wieder ein Laden
+// klappt. Bei pausierter Queue aendert sich kaum etwas -> langsames Polling.
+const POLL_BASE_MS = 3000
+const POLL_MAX_MS = 30000
 let pollTimer = null
-// Request-Token: gegen Race-Bedingungen wenn Polling eine zweite loadData
-// startet, waehrend die erste E-Mail-Stats noch nicht aufgeloest hat.
+let errorDelay = POLL_BASE_MS
+let loadFailed = false
+let unmounted = false
+// Request-Token: ein neues loadData (Poll, Pausieren/Fortsetzen, Upload,
+// Wiederholen) ueberholt ein noch laufendes. Nur die Antwort des zuletzt
+// gestarteten Ladens setzt den Zustand und plant den naechsten Poll — sonst
+// setzte ein vor dem Pausieren gestarteter Poll queuePaused wieder zurueck.
 let activeRequestId = 0
 
+const statCardCount = computed(() => (emailStats.value ? 5 : 4))
+
+function clearPoll() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null }
+}
+
+// H-FE-2: Polling pausiert wenn der Tab im Hintergrund ist (siehe
+// visibilitychange-Handler unten). Beim Sichtbarwerden wird sofort neu geladen.
+function schedulePoll(delay) {
+  clearPoll()
+  if (unmounted || document.visibilityState !== 'visible') return
+  pollTimer = setTimeout(loadData, delay)
+}
+
 async function loadData() {
-  if (loadingData.value) return
-  loadingData.value = true
+  clearPoll()
   const requestId = ++activeRequestId
   try {
     const [s, docs, activeJobs, failJobs, qStatus] = await Promise.all([
@@ -34,37 +61,37 @@ async function loadData() {
       getJobs({ status: 'FAILED', page_size: 10 }),
       getQueueStatus(),
     ])
-    if (requestId !== activeRequestId) return  // veraltet
+    if (requestId !== activeRequestId || unmounted) return  // veraltet
     stats.value = s
     recentDocs.value = docs.items
     processingJobs.value = activeJobs.items?.filter(j => ['PENDING', 'PROCESSING'].includes(j.status)) || []
     failedJobs.value = failJobs.items || []
     queuePaused.value = qStatus.paused
+    loadFailed = false
+    errorDelay = POLL_BASE_MS
 
     // E-Mail-Stats separat laden (blockiert Dashboard nicht wenn E-Mail nicht konfiguriert)
-    getEmailStats().then(stats => {
+    getEmailStats().then(accounts => {
       if (requestId !== activeRequestId) return  // veraltet, nicht ueberschreiben
-      if (stats && stats.length > 0) {
-        emailStats.value = stats.reduce((acc, s) => ({
-          total: acc.total + s.total_processed,
-          relevant: acc.relevant + s.relevant,
+      if (accounts && accounts.length > 0) {
+        emailStats.value = accounts.reduce((acc, a) => ({
+          total: acc.total + a.total_processed,
+          relevant: acc.relevant + a.relevant,
         }), { total: 0, relevant: 0 })
       }
     }).catch(() => { /* E-Mail nicht konfiguriert, ignorieren */ })
 
-    // H-FE-2: Polling pausiert wenn der Tab im Hintergrund ist
-    // (siehe visibilitychange-Handler unten). Beim Sichtbarwerden wird ein
-    // sofortiges loadData() ausgeloest, das den Timer dann ggf. wieder setzt.
-    if (processingJobs.value.length > 0 && !pollTimer && document.visibilityState === 'visible') {
-      pollTimer = setInterval(loadData, 3000)
-    } else if (processingJobs.value.length === 0 && pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
+    if (processingJobs.value.length > 0) {
+      schedulePoll(queuePaused.value ? POLL_MAX_MS : POLL_BASE_MS)
     }
   } catch {
-    notify.error('Dashboard-Daten konnten nicht geladen werden.')
-  } finally {
-    loadingData.value = false
+    if (requestId !== activeRequestId || unmounted) return  // ueberholt
+    if (!loadFailed) {
+      notify.error('Dashboard-Daten konnten nicht geladen werden. Neuer Versuch läuft automatisch.')
+      loadFailed = true
+    }
+    schedulePoll(errorDelay)
+    errorDelay = Math.min(errorDelay * 2, POLL_MAX_MS)
   }
 }
 
@@ -79,50 +106,73 @@ async function toggleQueue() {
       queuePaused.value = true
       notify.success('Verarbeitung pausiert.')
     }
+    await loadData()
   } catch {
     notify.error('Queue-Status konnte nicht geändert werden.')
   }
+}
+
+function isDuplicate(job) {
+  return job.error_code === 'DUPLICATE'
 }
 
 async function handleRetry(job) {
   try {
     await retryJob(job.id)
     failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
-    notify.success(`"${job.original_filename}" wird erneut verarbeitet.`)
+    notify.success(`„${job.original_filename}“ wird erneut verarbeitet.`)
     await loadData()
-  } catch {
-    notify.error('Wiederholung fehlgeschlagen.')
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Wiederholung fehlgeschlagen.'))
   }
 }
 
-function copyForClaude(job) {
+async function confirmDiscard() {
+  const job = jobToDiscard.value
+  jobToDiscard.value = null
+  if (!job) return
+  try {
+    await deleteJob(job.id)
+    failedJobs.value = failedJobs.value.filter(j => j.id !== job.id)
+    notify.success(`„${job.original_filename}“ wurde verworfen.`)
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Verwerfen fehlgeschlagen.'))
+  }
+}
+
+async function copyErrorReport(job) {
   const text = [
     '## Zettelwirtschaft Fehler-Report',
     '',
     `**Datei:** ${job.original_filename}`,
     `**Status:** ${job.status}`,
     `**Fehler:** ${job.error_message || 'Keine Fehlermeldung verfügbar'}`,
-    `**Zeitpunkt:** ${new Date(job.updated_at || job.created_at).toLocaleString('de-DE')}`,
+    `**Zeitpunkt:** ${formatDateTime(job.updated_at || job.created_at)}`,
     '',
-    '**Zur Diagnose bitte in der Konsole ausführen:**',
+    '**Zur Diagnose:**',
+    '- Docker-Installation (in der Konsole im Installationsordner ausführen):',
     '```',
     'docker compose logs backend --tail=100',
     'docker compose logs ollama --tail=50',
     'docker compose ps',
     '```',
+    '- Windows-Installation (Setup.exe): Log-Datei `%USERPROFILE%\\Documents\\Zettelwirtschaft\\logs\\backend.log`',
     '',
     '**Mögliche Ursachen:**',
     '- Ollama nicht erreichbar oder Modell nicht geladen',
     '- OCR-Fehler bei beschädigter Datei',
     '- Speicherplatz voll',
   ].join('\n')
-  navigator.clipboard.writeText(text).then(() => notify.success('Fehlerinfo kopiert.'))
+  if (await copyToClipboard(text)) {
+    notify.success('Fehlerinfo kopiert.')
+  } else {
+    notify.error('Kopieren nicht möglich. Bitte die Fehlermeldung manuell markieren.')
+  }
 }
 
-// H-FE-2: Polling pausieren wenn Tab im Hintergrund, beim Re-Show neu laden.
 function onVisibility() {
   if (document.visibilityState === 'hidden') {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    clearPoll()
   } else if (document.visibilityState === 'visible') {
     loadData()
   }
@@ -130,7 +180,8 @@ function onVisibility() {
 document.addEventListener('visibilitychange', onVisibility)
 
 onUnmounted(() => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  unmounted = true
+  clearPoll()
   document.removeEventListener('visibilitychange', onVisibility)
 })
 
@@ -140,15 +191,8 @@ async function handleDrop(e) {
   if (!files.length) return
 
   try {
-    const result = await uploadDocuments(files)
-    const count = result.uploaded?.length || 0
-    if (count > 0) {
-      notify.success(`${count} Datei(en) hochgeladen.`)
-      loadData()
-    }
-    if (result.rejected?.length) {
-      result.rejected.forEach(r => notify.error(`${r.filename}: ${r.error}`))
-    }
+    const { uploaded } = reportUploadResult(await uploadDocuments(files), notify)
+    if (uploaded.length > 0) loadData()
   } catch {
     notify.error('Fehler beim Upload.')
   }
@@ -162,12 +206,16 @@ onMounted(loadData)
     <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
 
     <!-- Stats -->
-    <div v-if="stats" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <StatCard label="Gesamt Dokumente" :value="stats.total_documents" color="blue" />
-      <StatCard label="Diesen Monat" :value="stats.documents_this_month" color="green" />
-      <StatCard label="Offene Rückfragen" :value="stats.pending_reviews" color="orange" />
-      <StatCard label="Garantien (30 Tage)" :value="stats.expiring_warranties_30d" color="purple" />
-      <StatCard v-if="emailStats" label="E-Mails importiert" :value="emailStats.relevant" color="indigo" />
+    <div
+      v-if="stats"
+      data-testid="stat-cards"
+      :class="['grid grid-cols-1 gap-4 sm:grid-cols-2', statCardCount === 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4']"
+    >
+      <StatCard label="Gesamt Dokumente" :value="stats.total_documents" color="blue" icon="document" />
+      <StatCard label="Diesen Monat" :value="stats.documents_this_month" color="green" icon="calendar" />
+      <StatCard label="Offene Rückfragen" :value="stats.pending_reviews" color="orange" icon="question" />
+      <StatCard label="Garantien (30 Tage)" :value="stats.expiring_warranties_30d" color="purple" icon="shield" />
+      <StatCard v-if="emailStats" label="E-Mails importiert" :value="emailStats.relevant" color="indigo" icon="mail" />
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -212,11 +260,11 @@ onMounted(loadData)
           @drop.prevent="handleDrop"
           @click="$router.push('/upload')"
         >
-          <svg class="mx-auto h-10 w-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <svg class="mx-auto h-10 w-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
           <p class="mt-2 text-sm font-medium text-gray-600">Dateien hierher ziehen oder klicken</p>
-          <p class="text-xs text-gray-400">PDF, JPG, PNG, TIFF</p>
+          <p class="text-xs text-gray-400">{{ FILE_TYPES_LABEL }}</p>
         </div>
 
         <!-- Processing queue -->
@@ -232,10 +280,10 @@ onMounted(loadData)
                   : 'bg-orange-100 text-orange-700 hover:bg-orange-200',
               ]"
             >
-              <svg v-if="queuePaused" class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <svg v-if="queuePaused" class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M6.3 2.84A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.27l9.344-5.891a1.5 1.5 0 000-2.538L6.3 2.84z" />
               </svg>
-              <svg v-else class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <svg v-else class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
               </svg>
               {{ queuePaused ? 'Fortsetzen' : 'Pausieren' }}
@@ -256,17 +304,23 @@ onMounted(loadData)
         </div>
 
         <!-- Failed jobs -->
-        <div v-if="failedJobs.length > 0" class="card border border-red-100">
-          <h2 class="text-lg font-semibold text-red-700 mb-4">Systemfehler</h2>
+        <div v-if="failedJobs.length > 0" class="card border border-red-100" data-testid="failed-jobs">
+          <h2 class="text-lg font-semibold text-red-700 mb-4">Fehlgeschlagene Verarbeitung</h2>
           <div class="space-y-3">
-            <div v-for="job in failedJobs" :key="job.id" class="rounded-lg bg-red-50 p-3">
-              <div class="flex items-start justify-between gap-2">
+            <div
+              v-for="job in failedJobs"
+              :key="job.id"
+              :class="['rounded-lg p-3', isDuplicate(job) ? 'bg-amber-50' : 'bg-red-50']"
+              data-testid="failed-job"
+            >
+              <div class="flex flex-wrap items-start justify-between gap-2">
                 <div class="min-w-0 flex-1">
                   <p class="text-sm font-medium text-gray-900 truncate">{{ job.original_filename }}</p>
-                  <p class="mt-1 text-xs text-gray-500">{{ new Date(job.updated_at || job.created_at).toLocaleString('de-DE') }}</p>
+                  <p class="mt-1 text-xs text-gray-500">{{ formatDateTime(job.updated_at || job.created_at) }}</p>
                 </div>
                 <div class="flex gap-1 flex-shrink-0">
                   <button
+                    v-if="!isDuplicate(job)"
                     @click="handleRetry(job)"
                     title="Erneut verarbeiten"
                     class="rounded-md bg-white px-2 py-1 text-xs font-medium text-primary-600 shadow-sm ring-1 ring-gray-200 hover:bg-primary-50"
@@ -274,21 +328,50 @@ onMounted(loadData)
                     Wiederholen
                   </button>
                   <button
-                    @click="copyForClaude(job)"
+                    v-if="!isDuplicate(job)"
+                    @click="copyErrorReport(job)"
                     title="Fehlerinfo kopieren"
                     class="rounded-md bg-white px-2 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-gray-200 hover:bg-gray-50"
                   >
                     Kopieren
                   </button>
+                  <button
+                    @click="jobToDiscard = job"
+                    title="Eintrag und hochgeladene Datei entfernen"
+                    class="rounded-md bg-white px-2 py-1 text-xs font-medium text-red-600 shadow-sm ring-1 ring-gray-200 hover:bg-red-50"
+                  >
+                    Verwerfen
+                  </button>
                 </div>
               </div>
-              <div class="mt-2 rounded bg-red-100 p-2 text-xs text-red-700 font-mono break-all select-all cursor-text">
-                {{ job.error_message || 'Keine Fehlermeldung verfügbar. Bitte "Kopieren" nutzen und Logs prüfen.' }}
+              <div v-if="isDuplicate(job)" class="mt-2 text-xs text-amber-800">
+                <span class="badge bg-amber-100 text-amber-800">Bereits vorhanden</span>
+                <span class="ml-1">{{ job.error_message || 'Diese Datei ist bereits archiviert.' }}</span>
+                <router-link
+                  v-if="job.document_id"
+                  :to="`/dokumente/${job.document_id}`"
+                  class="ml-1 font-medium text-primary-600 hover:text-primary-700"
+                >
+                  Vorhandenes Dokument öffnen
+                </router-link>
+              </div>
+              <div v-else class="mt-2 rounded bg-red-100 p-2 text-xs text-red-700 font-mono break-all select-all cursor-text">
+                {{ job.error_message || 'Keine Fehlermeldung verfügbar. Bitte „Kopieren“ nutzen und Logs prüfen.' }}
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      :show="!!jobToDiscard"
+      title="Eintrag verwerfen"
+      :message="`Der fehlgeschlagene Eintrag „${jobToDiscard?.original_filename || ''}“ und die zugehörige hochgeladene Datei werden entfernt. Archivierte Dokumente bleiben unverändert.`"
+      confirm-text="Verwerfen"
+      :danger="true"
+      @confirm="confirmDiscard"
+      @cancel="jobToDiscard = null"
+    />
   </div>
 </template>

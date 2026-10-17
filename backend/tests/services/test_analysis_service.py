@@ -117,7 +117,7 @@ class TestAnalyzeDocument:
             new_callable=AsyncMock,
             return_value=ocr_result,
         ), patch(
-            "app.services.analysis_service.call_llm",
+            "app.services.analysis_service.chat_json",
             new_callable=AsyncMock,
             return_value=llm_response,
         ):
@@ -164,7 +164,7 @@ class TestAnalyzeDocument:
             new_callable=AsyncMock,
             return_value=ocr_result,
         ), patch(
-            "app.services.analysis_service.call_llm",
+            "app.services.analysis_service.chat_json",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -213,7 +213,7 @@ class TestAnalyzeDocument:
             new_callable=AsyncMock,
             return_value=ocr_result,
         ), patch(
-            "app.services.analysis_service.call_llm",
+            "app.services.analysis_service.chat_json",
             new_callable=AsyncMock,
             return_value=llm_response,
         ):
@@ -248,7 +248,7 @@ class TestAnalyzeDocument:
             new_callable=AsyncMock,
             return_value=ocr_result,
         ), patch(
-            "app.services.analysis_service.call_llm",
+            "app.services.analysis_service.chat_json",
             new_callable=AsyncMock,
             return_value=llm_response,
         ):
@@ -304,7 +304,7 @@ class TestAnalyzeDocument:
             new_callable=AsyncMock,
             return_value=ocr_result,
         ), patch(
-            "app.services.analysis_service.call_llm",
+            "app.services.analysis_service.chat_json",
             side_effect=mock_call_llm,
         ):
             ocr, analysis = await analyze_document(test_file, "pdf", test_settings)
@@ -351,7 +351,7 @@ class TestFewShotCorrections:
             return '{"document_type": "RECHNUNG", "confidence": 0.9, "needs_review": false}'
 
         corrections = [{"field": "sender", "original": "X", "corrected": "Y", "count": 3}]
-        with patch("app.services.analysis_service.call_llm", side_effect=fake_call_llm):
+        with patch("app.services.analysis_service.chat_json", side_effect=fake_call_llm):
             result = await _try_combined_analysis("Test OCR", test_settings, corrections=corrections)
 
         assert result is not None
@@ -359,32 +359,6 @@ class TestFewShotCorrections:
         # Korrekturen muessen im Prompt enthalten sein
         assert "sender" in captured_prompt["text"]
         assert "Y" in captured_prompt["text"]
-
-
-class TestHybridSearch:
-    """RRF-Logik in rag_service."""
-
-    def test_rrf_boosts_chunks_in_fts_results(self):
-        from app.services.rag_service import _apply_rrf
-        chunks = [
-            {"doc_id": "doc-A", "text": "a"},  # vec_rank=0
-            {"doc_id": "doc-B", "text": "b"},  # vec_rank=1
-            {"doc_id": "doc-C", "text": "c"},  # vec_rank=2
-        ]
-        # FTS5 reiht doc-C ganz oben — sollte trotz schlechtem vec_rank profitieren
-        result = _apply_rrf(chunks, fts_doc_ids=["doc-C"], target_k=3)
-        assert len(result) == 3
-        # doc-A ist immer noch vorne (1/60 + 0 vs 1/62 + 1/60),
-        # aber doc-C ueberholt doc-B durch FTS-Boost
-        c_idx = next(i for i, c in enumerate(result) if c["doc_id"] == "doc-C")
-        b_idx = next(i for i, c in enumerate(result) if c["doc_id"] == "doc-B")
-        assert c_idx < b_idx
-
-    def test_rrf_without_fts_ids_passes_through(self):
-        from app.services.rag_service import _apply_rrf
-        chunks = [{"doc_id": "doc-A", "text": "a"}, {"doc_id": "doc-B", "text": "b"}]
-        result = _apply_rrf(chunks, fts_doc_ids=[], target_k=10)
-        assert result == chunks  # unveraendert
 
 
 class TestVerifierPass:
@@ -462,42 +436,3 @@ class TestVerifierPass:
         assert "(nicht erkannt)" in captured["prompt"]
         # Kein literales "None None" mehr
         assert "None None" not in captured["prompt"]
-
-
-class TestRateLimitTrustedIP:
-    """Tests fuer trusted_client_ip (NEW-002 X-Real-IP-Defense)."""
-
-    def _request(self, host, headers=None):
-        from unittest.mock import MagicMock
-        req = MagicMock()
-        req.client = MagicMock()
-        req.client.host = host
-        req.headers = headers or {}
-        return req
-
-    def test_real_ip_trusted_when_from_docker_network(self):
-        from app.core.rate_limit import trusted_client_ip
-        req = self._request("172.18.0.5", {"X-Real-IP": "192.168.1.42"})
-        assert trusted_client_ip(req) == "192.168.1.42"
-
-    def test_real_ip_trusted_when_from_localhost(self):
-        from app.core.rate_limit import trusted_client_ip
-        req = self._request("127.0.0.1", {"X-Real-IP": "192.168.1.42"})
-        assert trusted_client_ip(req) == "192.168.1.42"
-
-    def test_real_ip_ignored_when_from_external(self):
-        from app.core.rate_limit import trusted_client_ip
-        req = self._request("8.8.8.8", {"X-Real-IP": "spoofed-ip"})
-        # Externe Connection -> X-Real-IP ignoriert, fallback auf Socket-Peer
-        assert trusted_client_ip(req) == "8.8.8.8"
-
-    def test_no_real_ip_falls_back_to_socket(self):
-        from app.core.rate_limit import trusted_client_ip
-        req = self._request("172.18.0.5", {})
-        assert trusted_client_ip(req) == "172.18.0.5"
-
-    def test_invalid_socket_host_handled(self):
-        from app.core.rate_limit import trusted_client_ip
-        req = self._request("not-an-ip", {"X-Real-IP": "10.0.0.1"})
-        # Untrusted (kann nicht parsen) -> Real-IP ignoriert
-        assert trusted_client_ip(req) == "not-an-ip"

@@ -3,18 +3,42 @@
 import asyncio
 import logging
 import re
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import chromadb
+import httpx
+from sqlalchemy import inspect as sa_inspect, select
+from sqlalchemy.exc import NoInspectionAvailable
 
 from app.config import Settings
-from app.models.document import Document
-from app.services.embedding_service import embed_texts
+from app.core.normalize import enum_value
+from app.models.document import Document, DocumentStatus, DocumentTag, Tag
+from app.services.embedding_service import embed_batch
+from app.services.ollama_client import OllamaError, probe_ollama
+from app.services.task_service import TaskConflictError, TaskContext, TaskError, start_task
 
 logger = logging.getLogger("zettelwirtschaft.vectorize")
 
+# Dokumentfelder, die im Metadaten-Chunk stehen (_build_metadata_chunk) — eine
+# Aenderung erfordert Re-Vektorisierung, sonst zitiert der Chat alte Werte.
+# Ein reiner Ablagebereichs-Wechsel braucht nur update_scope_metadata.
+METADATA_CHUNK_FIELDS = frozenset({
+    "title", "document_type", "document_date", "amount", "currency", "issuer",
+    "summary", "tax_relevant", "tax_category",
+})
+
 # Satzende-Muster fuer saubere Chunk-Grenzen
 SENTENCE_END_RE = re.compile(r"[.!?]\s|\n")
+
+
+class VectorizeError(Exception):
+    """Vektorisierung fehlgeschlagen (Chroma/Embedding nicht verfuegbar).
+
+    Bestehende Vektoren des Dokuments bleiben dabei erhalten.
+    """
 
 
 def _resolve_chroma_path(settings: Settings) -> Path:
@@ -30,16 +54,38 @@ def _resolve_chroma_path(settings: Settings) -> Path:
     return archive.parent / "chromadb"
 
 
-def _get_chroma_client(settings: Settings):
-    """Erstellt einen ChromaDB-Client. Embedded (Native) oder HTTP (Docker)."""
+def _client_key(settings: Settings) -> tuple:
     if settings.CHROMADB_MODE == "embedded":
-        path = _resolve_chroma_path(settings)
-        path.mkdir(parents=True, exist_ok=True)
-        return chromadb.PersistentClient(path=str(path))
-    return chromadb.HttpClient(
-        host=settings.CHROMADB_HOST,
-        port=settings.CHROMADB_PORT,
-    )
+        return ("embedded", str(_resolve_chroma_path(settings).resolve()))
+    return ("http", settings.CHROMADB_HOST, settings.CHROMADB_PORT)
+
+
+# Client- und Collection-Cache: Ein neuer HttpClient kostet mehrere HTTP-
+# Roundtrips (Identity, Tenant, Database) plus get_or_create_collection — vorher
+# pro Operation, also mehrfach pro Dokument. Die Chroma-Aufrufe laufen in
+# Worker-Threads (to_thread), daher der Lock.
+_cache_lock = threading.Lock()
+_clients: dict[tuple, object] = {}
+_collections: dict[tuple, chromadb.Collection] = {}
+
+
+def _get_chroma_client(settings: Settings):
+    """ChromaDB-Client (gecacht). Embedded (Native) oder HTTP (Docker)."""
+    key = _client_key(settings)
+    with _cache_lock:
+        client = _clients.get(key)
+        if client is None:
+            if settings.CHROMADB_MODE == "embedded":
+                path = _resolve_chroma_path(settings)
+                path.mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(path=str(path))
+            else:
+                client = chromadb.HttpClient(
+                    host=settings.CHROMADB_HOST,
+                    port=settings.CHROMADB_PORT,
+                )
+            _clients[key] = client
+        return client
 
 
 def _collection_name(settings: Settings) -> str:
@@ -56,12 +102,45 @@ def _collection_name(settings: Settings) -> str:
 
 
 def _get_collection_sync(settings: Settings) -> chromadb.Collection:
-    """Holt oder erstellt die documents-Collection (synchron)."""
-    client = _get_chroma_client(settings)
-    return client.get_or_create_collection(
+    """Holt oder erstellt die documents-Collection (synchron, gecacht)."""
+    key = (_client_key(settings), _collection_name(settings))
+    with _cache_lock:
+        collection = _collections.get(key)
+    if collection is not None:
+        return collection
+    collection = _get_chroma_client(settings).get_or_create_collection(
         name=_collection_name(settings),
         metadata={"hnsw:space": "cosine"},
     )
+    with _cache_lock:
+        _collections[key] = collection
+    return collection
+
+
+def _drop_cached(settings: Settings) -> None:
+    """Cache nach einem Chroma-Fehler verwerfen (Server neu gestartet,
+    Collection geloescht ...) — der naechste Aufruf baut neu auf."""
+    key = _client_key(settings)
+    with _cache_lock:
+        _clients.pop(key, None)
+        for cache_key in [k for k in _collections if k[0] == key]:
+            _collections.pop(cache_key, None)
+
+
+def _with_collection(settings: Settings, operation: Callable[[chromadb.Collection], object]):
+    """Fuehrt ``operation(collection)`` aus; bei Fehler wird der Cache verworfen."""
+    try:
+        return operation(_get_collection_sync(settings))
+    except Exception:
+        _drop_cached(settings)
+        raise
+
+
+def reset_chroma_cache() -> None:
+    """Nur fuer Tests."""
+    with _cache_lock:
+        _clients.clear()
+        _collections.clear()
 
 
 def chunk_text(
@@ -73,8 +152,9 @@ def chunk_text(
 
     Args:
         text: Der zu teilende Text.
-        chunk_size: Maximale Zeichenzahl pro Chunk.
-        overlap: Ueberlappung in Zeichen.
+        chunk_size: Maximale Zeichenzahl pro Chunk (> 0).
+        overlap: Ueberlappung in Zeichen; wird auf < chunk_size // 2 begrenzt,
+            damit jede Runde Fortschritt macht.
 
     Returns:
         Liste von Text-Chunks.
@@ -83,6 +163,8 @@ def chunk_text(
         return []
 
     text = text.strip()
+    chunk_size = max(1, chunk_size)
+    overlap = min(max(0, overlap), max(0, chunk_size // 2 - 1))
 
     if len(text) <= chunk_size:
         return [text]
@@ -111,21 +193,21 @@ def chunk_text(
         if chunk:
             chunks.append(chunk)
 
-        # Naechster Start mit Overlap
-        start = end - overlap
-        if start <= (end - chunk_size):
-            start = end  # Vermeide Endlosschleife
+        # Naechster Start mit Overlap — muss echt vorwaerts gehen, sonst
+        # Endlosschleife (Chunk-Ende > chunk_size // 2 > overlap garantiert das).
+        next_start = end - overlap
+        start = next_start if next_start > start else end
 
     return chunks
 
 
-def _build_metadata_chunk(doc: Document) -> str:
+def _build_metadata_chunk(doc: Document, tag_names: list[str] | None = None) -> str:
     """Erstellt einen Metadaten-Chunk fuer quantitative Fragen."""
     parts = []
     if doc.title:
         parts.append(f"Titel: {doc.title}")
     if doc.document_type:
-        parts.append(f"Typ: {doc.document_type.value if hasattr(doc.document_type, 'value') else doc.document_type}")
+        parts.append(f"Typ: {enum_value(doc.document_type)}")
     if doc.issuer:
         parts.append(f"Aussteller: {doc.issuer}")
     if doc.amount is not None:
@@ -138,14 +220,37 @@ def _build_metadata_chunk(doc: Document) -> str:
     if doc.tax_relevant:
         parts.append("Steuerrelevant: Ja")
         if doc.tax_category:
-            parts.append(f"Steuerkategorie: {doc.tax_category}")
-    try:
-        if doc.tags:
-            tag_names = [t.name for t in doc.tags]
-            parts.append(f"Tags: {', '.join(tag_names)}")
-    except Exception:
-        pass  # Tags nicht verfuegbar (z.B. MissingGreenlet in async-Kontext)
+            parts.append(f"Steuerkategorie: {enum_value(doc.tax_category)}")
+    if tag_names:
+        parts.append(f"Tags: {', '.join(tag_names)}")
     return "\n".join(parts)
+
+
+async def _load_tag_names(doc: Document, session_factory=None) -> list[str]:
+    """Tag-Namen eines Dokuments, ohne Lazy-Load im async-Kontext.
+
+    Ein frisch archiviertes Dokument bekommt seine Tags ueber die Junction-
+    Table; ``doc.tags`` ist dann nicht geladen und ein Zugriff wuerde einen
+    synchronen Lazy-Load ausloesen (MissingGreenlet). In dem Fall werden die
+    Namen in einer eigenen, kurzen Session gelesen.
+    """
+    try:
+        state = sa_inspect(doc)
+    except NoInspectionAvailable:  # z.B. Test-Doubles
+        return [t.name for t in (getattr(doc, "tags", None) or [])]
+    if "tags" not in state.unloaded:
+        return [t.name for t in doc.tags]
+
+    if session_factory is None:
+        from app.database import async_session_factory as session_factory
+    async with session_factory() as session:
+        result = await session.execute(
+            select(Tag.name)
+            .join(DocumentTag, DocumentTag.tag_id == Tag.id)
+            .where(DocumentTag.document_id == str(doc.id))
+            .order_by(Tag.name)
+        )
+        return [row[0] for row in result.all()]
 
 
 # T17: Erreichbarkeitscheck mit TTL-Cache. Bei initial-Vectorize ueber tausende
@@ -168,9 +273,6 @@ async def _check_chromadb_reachable_async(settings: Settings) -> bool:
         return True
 
     global _reachable_cache
-    import time
-    import httpx as _httpx
-
     now = time.monotonic()
     if _reachable_cache is not None:
         cached_at, cached_ok = _reachable_cache
@@ -179,7 +281,7 @@ async def _check_chromadb_reachable_async(settings: Settings) -> bool:
             return cached_ok
 
     try:
-        async with _httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(
                 f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat"
             )
@@ -191,132 +293,157 @@ async def _check_chromadb_reachable_async(settings: Settings) -> bool:
     return ok
 
 
-def _check_chromadb_reachable(settings: Settings) -> bool:
-    """Sync-Variante fuer Aufrufe aus Threads. Nutzt eigenen HTTP-Call.
-
-    Wer im async-Kontext laeuft, soll `_check_chromadb_reachable_async`
-    verwenden — das ist deutlich effizienter und nutzt TTL-Cache.
-    Native (embedded): immer True.
-    """
-    if settings.CHROMADB_MODE == "embedded":
-        return True
-    import httpx as _httpx
-    try:
-        resp = _httpx.get(
-            f"http://{settings.CHROMADB_HOST}:{settings.CHROMADB_PORT}/api/v2/heartbeat",
-            timeout=2.0,
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
 def _chroma_delete_existing(settings: Settings, doc_id: str) -> None:
-    """Loescht bestehende Chunks eines Dokuments (synchron, fuer to_thread).
+    """Loescht alle Chunks eines Dokuments (synchron, fuer to_thread).
 
     Nutzt direkt collection.delete(where=...) statt vorab alle IDs + Embeddings
     zu laden — bei grossen Dokumenten (10000+ Chunks) spart das mehrere MB
     Memory-Spike pro Re-Index.
     """
-    collection = _get_collection_sync(settings)
-    collection.delete(where={"doc_id": doc_id})
+    _with_collection(settings, lambda c: c.delete(where={"doc_id": doc_id}))
 
 
-def _chroma_add(settings: Settings, ids, embeddings, documents, metadatas) -> None:
-    """Fuegt Chunks zu ChromaDB hinzu (synchron, fuer to_thread)."""
-    collection = _get_collection_sync(settings)
-    collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=documents,
-        metadatas=metadatas,
-    )
+def _chroma_replace(settings: Settings, doc_id: str, ids, embeddings, documents, metadatas) -> None:
+    """Ersetzt die Chunks eines Dokuments (synchron, fuer to_thread).
+
+    Upsert mit deterministischen IDs, danach nur die ueberzaehligen alten
+    Chunks (chunk_index >= neue Anzahl) loeschen. So gibt es keinen Moment,
+    in dem das Dokument gar keine Vektoren hat.
+    """
+    def _op(collection):
+        collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+        collection.delete(where={"$and": [{"doc_id": doc_id}, {"chunk_index": {"$gte": len(ids)}}]})
+
+    _with_collection(settings, _op)
 
 
-async def vectorize_document(doc: Document, settings: Settings) -> int:
+async def vectorize_document(doc: Document, settings: Settings, session_factory=None) -> int:
     """Vektorisiert ein Dokument und speichert es in ChromaDB.
+
+    Erst werden alle Embeddings erzeugt, dann die Chunks ersetzt — faellt
+    Ollama aus, bleiben die bisherigen Vektoren erhalten.
 
     Args:
         doc: Das zu vektorisierende Dokument.
         settings: App-Konfiguration.
+        session_factory: Fuer das Nachladen der Tags (Default: App-Datenbank).
 
     Returns:
-        Anzahl gespeicherter Chunks.
+        Anzahl gespeicherter Chunks (0 = Dokument ohne Inhalt).
+
+    Raises:
+        VectorizeError: ChromaDB oder Embedding nicht verfuegbar.
     """
     doc_id = str(doc.id)
 
     # T17: Async-Reachable-Check mit TTL-Cache statt to_thread pro Aufruf.
-    reachable = await _check_chromadb_reachable_async(settings)
-    if not reachable:
-        logger.debug("ChromaDB nicht erreichbar, ueberspringe Vektorisierung fuer %s", doc_id)
-        return 0
+    if not await _check_chromadb_reachable_async(settings):
+        raise VectorizeError("ChromaDB nicht erreichbar")
 
-    # Bestehende Chunks fuer dieses Dokument loeschen (Re-Indexierung)
-    try:
-        await asyncio.to_thread(_chroma_delete_existing, settings, doc_id)
-    except Exception:
-        logger.warning("Konnte alte Chunks nicht loeschen fuer %s", doc_id, exc_info=True)
-
-    # Text-Chunks erzeugen
     text_chunks = chunk_text(
         doc.ocr_text or "",
         chunk_size=settings.RAG_CHUNK_SIZE,
         overlap=settings.RAG_CHUNK_OVERLAP,
     )
-
-    # Metadaten-Chunk hinzufuegen
-    meta_chunk = _build_metadata_chunk(doc)
+    meta_chunk = _build_metadata_chunk(doc, await _load_tag_names(doc, session_factory))
     if meta_chunk:
         text_chunks.insert(0, meta_chunk)
 
     if not text_chunks:
         logger.info("Keine Chunks fuer Dokument %s", doc_id)
+        await asyncio.to_thread(_chroma_delete_existing, settings, doc_id)
         return 0
 
-    # Embeddings erzeugen
-    embeddings = await embed_texts(text_chunks, settings)
-    if not embeddings:
-        logger.warning("Embedding fehlgeschlagen fuer Dokument %s", doc_id)
-        return 0
+    try:
+        embeddings = await embed_batch(text_chunks, settings)
+    except OllamaError as e:
+        raise VectorizeError(f"Embedding fehlgeschlagen: {e}") from e
 
-    # In ChromaDB speichern
     ids = [f"{doc_id}_chunk_{i}" for i in range(len(text_chunks))]
     metadatas = []
-    for i, chunk in enumerate(text_chunks):
+    for i in range(len(text_chunks)):
+        # Nur Felder, die gelesen werden: doc_id (Zuordnung/Filter),
+        # chunk_index (Ersetzen ueberzaehliger Chunks), chunk_type (Metadaten-
+        # Chunk erkennbar) und filing_scope_id (serverseitiger Scope-Filter,
+        # H-13). Titel/Betrag/Datum stehen im Metadaten-Chunk-Text — als
+        # Metadaten wuerden sie bei jeder Bearbeitung veralten.
         meta = {
             "doc_id": doc_id,
             "chunk_type": "metadata" if i == 0 and meta_chunk else "text",
             "chunk_index": i,
         }
-        if doc.title:
-            meta["title"] = doc.title
-        if doc.document_type:
-            meta["document_type"] = doc.document_type.value if hasattr(doc.document_type, "value") else str(doc.document_type)
-        if doc.issuer:
-            meta["issuer"] = doc.issuer
-        if doc.amount is not None:
-            meta["amount"] = float(doc.amount)
-        if doc.document_date:
-            meta["document_date"] = doc.document_date.isoformat()
-        # filing_scope_id als Metadata speichern, damit ChromaDB serverseitig
-        # filtern kann (H-13). Ohne das musste der RAG-Service in Python
-        # nachfiltern und konnte relevante Chunks ausserhalb der Top-K-Auswahl
-        # nicht mehr sehen.
         if doc.filing_scope_id:
             meta["filing_scope_id"] = str(doc.filing_scope_id)
         metadatas.append(meta)
 
     try:
-        await asyncio.to_thread(_chroma_add, settings, ids, embeddings, text_chunks, metadatas)
-        logger.info(
-            "Dokument %s vektorisiert: %d Chunks",
-            doc_id,
-            len(text_chunks),
-        )
-        return len(text_chunks)
-    except Exception:
+        await asyncio.to_thread(_chroma_replace, settings, doc_id, ids, embeddings, text_chunks, metadatas)
+    except Exception as e:
         logger.exception("ChromaDB-Speicherung fehlgeschlagen fuer %s", doc_id)
+        raise VectorizeError(f"ChromaDB-Speicherung fehlgeschlagen: {type(e).__name__}") from e
+
+    logger.info("Dokument %s vektorisiert: %d Chunks", doc_id, len(text_chunks))
+    return len(text_chunks)
+
+
+async def revectorize_document_safe(doc_id: str, settings: Settings, session_factory) -> int | None:
+    """Nach einer Bearbeitung (PATCH, Tags, Review-Antwort) neu vektorisieren.
+
+    Eigene Session, NACH dem Commit des Aufrufers aufrufen. Geloeschte
+    Dokumente werden uebersprungen. Best-Effort: Fehler werden geloggt.
+
+    Returns:
+        Anzahl Chunks, oder None bei Fehler / unbekanntem / geloeschtem Dokument.
+    """
+    try:
+        async with session_factory() as session:
+            doc = (await session.execute(select(Document).where(Document.id == doc_id))).scalar_one_or_none()
+            if doc is None or doc.status == DocumentStatus.DELETED:
+                return None
+        # Session ist zu, bevor Embedding/Chroma laufen (keine offene
+        # Transaktion). Spalten und Tags (lazy="selectin") sind geladen.
+        return await vectorize_document(doc, settings, session_factory)
+    except VectorizeError as e:
+        logger.warning("Re-Vektorisierung fuer %s fehlgeschlagen: %s", doc_id, e)
+    except Exception:
+        logger.warning("Re-Vektorisierung fuer %s fehlgeschlagen", doc_id, exc_info=True)
+    return None
+
+
+def _chroma_update_scope(settings: Settings, doc_ids: list[str], scope_id: str | None) -> int:
+    def _op(collection):
+        found = collection.get(where={"doc_id": {"$in": doc_ids}}, include=["metadatas"])
+        ids = found.get("ids") or []
+        if not ids:
+            return 0
+        # None entfernt den Schluessel (Chroma-Update-Semantik).
+        metadatas = [{**(m or {}), "filing_scope_id": scope_id} for m in found["metadatas"]]
+        collection.update(ids=ids, metadatas=metadatas)
+        return len(ids)
+
+    return _with_collection(settings, _op)
+
+
+async def update_scope_metadata(doc_ids: list[str], new_scope_id: str | None, settings: Settings) -> int:
+    """Setzt filing_scope_id aller Chunks der Dokumente neu (ohne Re-Embedding).
+
+    Fuer Ablagebereichs-Wechsel und -Loeschung; ``None`` entfernt die Zuordnung.
+    Best-Effort: bei Fehler 0 (geloggt).
+    """
+    if not doc_ids:
         return 0
+    if not await _check_chromadb_reachable_async(settings):
+        logger.warning("ChromaDB nicht erreichbar — Scope-Metadaten nicht aktualisiert")
+        return 0
+    try:
+        count = await asyncio.to_thread(
+            _chroma_update_scope, settings, [str(d) for d in doc_ids], new_scope_id,
+        )
+    except Exception:
+        logger.warning("Scope-Metadaten in ChromaDB nicht aktualisiert", exc_info=True)
+        return 0
+    logger.info("Scope-Metadaten aktualisiert: %d Chunks, %d Dokumente", count, len(doc_ids))
+    return count
 
 
 async def delete_document_vectors(doc_id: str, settings: Settings) -> None:
@@ -326,6 +453,22 @@ async def delete_document_vectors(doc_id: str, settings: Settings) -> None:
         logger.info("Vektoren geloescht fuer Dokument %s", doc_id)
     except Exception:
         logger.warning("Konnte Vektoren nicht loeschen fuer %s", doc_id, exc_info=True)
+
+
+def _to_chunks(results) -> list[dict]:
+    if not (results and results.get("ids") and results["ids"][0]):
+        return []
+    chunks = []
+    for i, chunk_id in enumerate(results["ids"][0]):
+        metadata = results["metadatas"][0][i] or {}
+        chunks.append({
+            "id": chunk_id,
+            "doc_id": metadata.get("doc_id", ""),
+            "text": results["documents"][0][i] if results.get("documents") else "",
+            "distance": results["distances"][0][i] if results.get("distances") else 0,
+            "metadata": metadata,
+        })
+    return chunks
 
 
 def search_similar_chunks(
@@ -350,62 +493,225 @@ def search_similar_chunks(
     k = top_k or settings.RAG_TOP_K
     where_filter = {"filing_scope_id": filing_scope_id} if filing_scope_id else None
 
-    def _do_query(where):
-        # B7: Bei Scope-Filter mehr Kandidaten holen, damit der DB-seitige
-        # Nachfilter (rag_service) nicht hungert. Ohne Scope-Filter reicht k.
+    def _do_query(collection, where):
+        # B7: Im Fallback ohne Filter mehr Kandidaten holen, damit der
+        # DB-seitige Nachfilter (rag_service) nicht hungert.
         n = k * 3 if where is None and filing_scope_id else k
-        collection = _get_collection_sync(settings)
-        return collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n,
-            where=where,
-        )
+        return collection.query(query_embeddings=[query_embedding], n_results=n, where=where)
 
     try:
-        results = _do_query(where_filter)
+        collection = _get_collection_sync(settings)
+        chunks = _to_chunks(_do_query(collection, where_filter))
+        # B7: Fallback wenn Scope-Filter leer zurueckkommt.
+        # Alte Chunks (vor Migration 005) haben kein filing_scope_id-Metadata —
+        # ChromaDB filtert sie serverseitig weg. Retry ohne Filter; der Caller
+        # macht DB-seitig einen zusaetzlichen Scope-Check ueber das Document-Join.
+        if not chunks and filing_scope_id:
+            logger.info(
+                "ChromaDB-Suche mit Scope-Filter leer — Fallback ohne Filter "
+                "(eventuell alte Chunks ohne filing_scope_id-Metadata)"
+            )
+            chunks = _to_chunks(_do_query(collection, None))
+        return chunks
     except Exception:
+        _drop_cached(settings)
         logger.exception("ChromaDB-Suche fehlgeschlagen")
         return []
 
-    has_results = results and results["ids"] and results["ids"][0]
 
-    # B7: Fallback wenn Scope-Filter leer zurueckkommt.
-    # Alte Chunks (vor Migration 005) haben kein filing_scope_id-Metadata —
-    # ChromaDB filtert sie serverseitig weg. Retry ohne Filter; der Caller
-    # macht DB-seitig einen zusaetzlichen Scope-Check ueber das Document-Join.
-    if not has_results and filing_scope_id:
-        logger.info(
-            "ChromaDB-Suche mit Scope-Filter leer — Fallback ohne Filter "
-            "(eventuell alte Chunks ohne filing_scope_id-Metadata)"
-        )
-        try:
-            results = _do_query(None)
-            has_results = results and results["ids"] and results["ids"][0]
-        except Exception:
-            logger.exception("ChromaDB-Fallback-Suche fehlgeschlagen")
-            return []
+def best_chunks_for_documents(
+    query_embedding: list[float],
+    settings: Settings,
+    doc_ids: list[str],
+) -> list[dict]:
+    """Der zur Frage aehnlichste Chunk je Dokument (fuer FTS-only-Treffer im RAG).
 
-    if not has_results:
+    Reihenfolge wie ``doc_ids``; Dokumente ohne Vektoren fehlen.
+    """
+    if not doc_ids:
         return []
-
-    chunks = []
-    for i, chunk_id in enumerate(results["ids"][0]):
-        chunk = {
-            "id": chunk_id,
-            "doc_id": results["metadatas"][0][i].get("doc_id", ""),
-            "text": results["documents"][0][i] if results["documents"] else "",
-            "distance": results["distances"][0][i] if results["distances"] else 0,
-            "metadata": results["metadatas"][0][i],
-        }
-        chunks.append(chunk)
-
-    return chunks
-
-
-def get_collection_count(settings: Settings) -> int:
-    """Gibt die Anzahl der Eintraege in der ChromaDB-Collection zurueck."""
     try:
         collection = _get_collection_sync(settings)
-        return collection.count()
+        chunks: list[dict] = []
+        for doc_id in doc_ids:
+            found = _to_chunks(collection.query(
+                query_embeddings=[query_embedding], n_results=1, where={"doc_id": doc_id},
+            ))
+            chunks.extend(found[:1])
+        return chunks
     except Exception:
-        return 0
+        _drop_cached(settings)
+        logger.warning("ChromaDB-Suche fuer FTS-Treffer fehlgeschlagen", exc_info=True)
+        return []
+
+
+def get_collection_count(settings: Settings) -> int | None:
+    """Anzahl der Eintraege in der ChromaDB-Collection, ``None`` bei Fehler.
+
+    Synchron (Chroma-Client) — aus async-Code ueber ``asyncio.to_thread`` aufrufen.
+    """
+    try:
+        return _with_collection(settings, lambda c: c.count())
+    except Exception:
+        logger.warning("ChromaDB-Count fehlgeschlagen", exc_info=True)
+        return None
+
+
+async def vectorize_all_documents(
+    session_factory,
+    settings: Settings,
+    on_progress: Callable[[dict], Awaitable[None]] | None = None,
+) -> dict:
+    """Vektorisiert alle nicht geloeschten Dokumente nacheinander.
+
+    ``on_progress`` (async) bekommt nach jedem Dokument den Zwischenstand.
+
+    Returns:
+        {"total", "processed", "chunks", "failed"} — ``failed`` zaehlt
+        Dokumente, deren Vektorisierung fehlgeschlagen ist.
+    """
+    async with session_factory() as session:
+        docs = (await session.execute(
+            select(Document).where(Document.status != DocumentStatus.DELETED)
+        )).scalars().all()
+
+    status = {"total": len(docs), "processed": 0, "chunks": 0, "failed": 0}
+    if on_progress:
+        await on_progress(dict(status))
+    for doc in docs:
+        try:
+            status["chunks"] += await vectorize_document(doc, settings, session_factory)
+        except Exception as e:
+            status["failed"] += 1
+            logger.warning("Vektorisierung fehlgeschlagen fuer Dokument %s: %s", doc.id, e)
+        status["processed"] += 1
+        if on_progress:
+            await on_progress(dict(status))
+    return status
+
+
+# Vektor-Rebuild als Hintergrund-Vorgang (gemeinsame Task-Infrastruktur wie
+# Re-Analyse, E-Mail-Abruf und Backup): manueller Rebuild (Wartung) und die
+# initiale Vektorisierung beim Start belegen denselben (kind, key) — es laeuft
+# nie mehr als ein Rebuild gleichzeitig.
+REBUILD_TASK_KIND = "rebuild_vectors"
+REBUILD_TASK_KEY = "global"
+REBUILD_CONFLICT_MESSAGE = "Der Vektor-Index wird bereits neu aufgebaut."
+NOTHING_EMBEDDED_MESSAGE = (
+    "Es wurden keine Abschnitte eingebettet. Ist das Embedding-Modell in Ollama verfügbar?"
+)
+
+
+async def rebuild_vectors_work(ctx: TaskContext, settings: Settings) -> dict:
+    """``work``-Funktion des Vorgangs ``rebuild_vectors``.
+
+    Ergebnis wie :func:`vectorize_all_documents`. Wurde bei vorhandenen
+    Dokumenten gar nichts eingebettet (Embedding-Modell fehlt, Ollama aus),
+    endet der Vorgang als FAILED statt als scheinbarer Erfolg.
+    """
+    async def progress(status: dict) -> None:
+        total, processed = status["total"], status["processed"]
+        await ctx.report_progress(
+            int(processed * 100 / total) if total else None,
+            f"{processed} von {total} Dokumenten verarbeitet",
+        )
+
+    result = await vectorize_all_documents(ctx.session_factory, settings, on_progress=progress)
+    logger.info(
+        "Vektor-Rebuild abgeschlossen: %d Dokumente, %d Chunks, %d fehlgeschlagen",
+        result["total"], result["chunks"], result["failed"],
+    )
+    if result["total"] and result["chunks"] == 0:
+        raise TaskError(NOTHING_EMBEDDED_MESSAGE)
+    return result
+
+
+async def start_vector_rebuild(session_factory, settings: Settings):
+    """Startet den Vektor-Rebuild. Raises TaskConflictError, wenn schon einer laeuft."""
+    async def work(ctx: TaskContext) -> dict:
+        return await rebuild_vectors_work(ctx, settings)
+
+    return await start_task(
+        session_factory, REBUILD_TASK_KIND, work,
+        key=REBUILD_TASK_KEY, conflict_message=REBUILD_CONFLICT_MESSAGE,
+    )
+
+
+# Abstand zwischen zwei Pruefungen, ob das Embedding-Modell bereitsteht.
+MODEL_WAIT_POLL_SECONDS = 30.0
+
+
+async def wait_for_embedding_model(settings: Settings, poll: float = MODEL_WAIT_POLL_SECONDS) -> None:
+    """Wartet (ohne Obergrenze), bis Ollama erreichbar und EMBEDDING_MODEL installiert ist.
+
+    Nach einem Modellwechsel laedt ``ensure_configured_models`` das neue Modell
+    parallel herunter (Minuten); Native startet Ollama oft erst nach dem
+    Backend. Ein Rebuild in dieser Zeit wuerde jedes Dokument fehlschlagen
+    lassen — und sobald danach ein neues Dokument vektorisiert ist, ist die
+    Collection nicht mehr leer und der Rebuild wuerde nie nachgeholt.
+    Abbruch nur ueber Task-Cancel beim Shutdown.
+    """
+    logged = False
+    while True:
+        probe = await probe_ollama(settings, required=[settings.EMBEDDING_MODEL])
+        if probe.ok:
+            return
+        if not logged:
+            logger.info(
+                "Initiale Vektorisierung wartet auf Embedding-Modell '%s': %s",
+                settings.EMBEDDING_MODEL, probe.message(),
+            )
+            logged = True
+        await asyncio.sleep(poll)
+
+
+async def run_initial_vectorize(
+    session_factory,
+    settings: Settings,
+    *,
+    delay: float = 5.0,
+    count_attempts: int = 3,
+    model_poll: float = MODEL_WAIT_POLL_SECONDS,
+):
+    """Startup-Hintergrundtask: Index aufbauen, wenn die Collection leer ist.
+
+    - Wartet ``delay`` Sekunden (ChromaDB-Container startet ggf. parallel) und
+      fragt den Count bis zu ``count_attempts``-mal ab (to_thread, nicht im
+      Event-Loop). Ist Chroma nicht erreichbar, wird NICHT vektorisiert —
+      sonst wuerde jeder Neustart mit kaputtem Chroma alle Dokumente sinnlos
+      durch das Embedding-Modell schicken.
+    - Ist die Collection leer (neue Installation oder neues Embedding-Modell
+      -> neue Collection), wird zuerst auf das Embedding-Modell gewartet
+      (``wait_for_embedding_model``: Auto-Pull laeuft parallel). Danach wird
+      der Count NICHT erneut geprueft — in der Wartezeit archivierte Dokumente
+      fuellen die Collection, die Altbestaende fehlen aber trotzdem.
+    - Startet den Rebuild als Hintergrund-Vorgang ``rebuild_vectors`` (in der
+      Wartung sichtbar, gleicher Schutz vor parallelem manuellem Rebuild).
+
+    Returns:
+        Den gestarteten Vorgang (BackgroundTask) oder None, wenn nichts zu tun war.
+    """
+    if delay:
+        await asyncio.sleep(delay)
+
+    count = None
+    for attempt in range(count_attempts):
+        count = await asyncio.to_thread(get_collection_count, settings)
+        if count is not None:
+            break
+        if attempt < count_attempts - 1:
+            await asyncio.sleep(delay or 1.0)
+    if count is None:
+        logger.warning("ChromaDB nicht erreichbar — initiale Vektorisierung uebersprungen")
+        return None
+    if count > 0:
+        logger.info("ChromaDB enthaelt %d Eintraege, ueberspringe initiale Vektorisierung", count)
+        return None
+    await wait_for_embedding_model(settings, poll=model_poll)
+    try:
+        task = await start_vector_rebuild(session_factory, settings)
+    except TaskConflictError:
+        logger.info("Vektor-Rebuild laeuft bereits — initiale Vektorisierung uebersprungen")
+        return None
+    logger.info("Initiale Vektorisierung gestartet (Vorgang %s)", task.id)
+    return task

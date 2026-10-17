@@ -22,9 +22,20 @@ import sys
 from pathlib import Path
 
 
+class ConfigNotFoundError(Exception):
+    pass
+
+
 def _set_config_from_args(args: argparse.Namespace) -> None:
+    """--config uebernehmen. Eine explizit angegebene, aber fehlende Datei ist
+    ein Fehler — sonst liefe alles still mit den relativen Defaults
+    (./data/... relativ zum CWD) weiter, z.B. ein "erfolgreiches" Backup der
+    falschen bzw. keiner Datenbank."""
     if args.config:
-        os.environ["ZETTELWIRTSCHAFT_CONFIG"] = str(Path(args.config).resolve())
+        config_path = Path(args.config).resolve()
+        if not config_path.is_file():
+            raise ConfigNotFoundError(f"Konfigurationsdatei nicht gefunden: {config_path}")
+        os.environ["ZETTELWIRTSCHAFT_CONFIG"] = str(config_path)
 
 
 def _ensure_data_dirs() -> None:
@@ -61,48 +72,26 @@ def _run_migrations() -> int:
 
     settings = get_settings()
 
-    db_url = settings.DATABASE_URL
-    db_path = db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+    db_path = str(settings.sqlite_db_path)
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    # Gemeinsame Bootstrap-Helfer mit dem Docker-Pfad (migrate.py).
+    from migrate import create_fresh_schema, detect_stamp, ensure_default_filing_scope, is_fresh_db
+
     # 1. Pruefen ob die DB komplett leer ist (keine User-Tabellen)
-    is_fresh_db = False
     conn = sqlite3.connect(db_path)
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
-        )
-        existing_tables = [r[0] for r in cur.fetchall()]
-        is_fresh_db = len(existing_tables) == 0
+        fresh_db = is_fresh_db(conn.cursor())
     finally:
         conn.close()
 
-    if is_fresh_db:
+    if fresh_db:
         # Frische DB: Schema komplett ueber SQLAlchemy create_all anlegen,
         # dann auf head stampen. Migrationen sind dann no-op.
-        import asyncio
-        from app.database import Base, engine
-
-        async def _create_schema():
-            # Alle Models importieren damit Base.metadata komplett ist
-            import app.models  # noqa: F401
-            from app.models import (  # noqa: F401
-                audit_log, chat_message, correction_mapping, document,
-                email_account, filing_scope, notification, processed_email,
-                processing_job, review_question, saved_search, warranty_info,
-            )
-            async with engine.begin() as conn_:
-                await conn_.run_sync(Base.metadata.create_all)
-            await engine.dispose()
-
         logging.info("[migrate] Frische DB — Schema via create_all anlegen")
-        asyncio.run(_create_schema())
+        create_fresh_schema()
 
     # 2. Legacy-Stamping (DBs ohne alembic_version)
-    from migrate import detect_stamp
-
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
@@ -114,16 +103,11 @@ def _run_migrations() -> int:
         cur.execute("SELECT version_num FROM alembic_version")
         versions = [r[0] for r in cur.fetchall()]
         if not versions:
-            if is_fresh_db:
+            if fresh_db:
                 # Eben angelegtes Schema entspricht head — direkt stampen.
                 # Holen wir den head dynamisch.
                 from alembic.script import ScriptDirectory
-                from alembic.config import Config as AlembicConfig
-                ini_path = _resolve_alembic_ini()
-                _cfg = AlembicConfig(str(ini_path))
-                if getattr(sys, "frozen", False):
-                    _cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
-                head_rev = ScriptDirectory.from_config(_cfg).get_current_head()
+                head_rev = ScriptDirectory.from_config(_alembic_config()).get_current_head()
                 logging.info("[migrate] Frisches Schema stamping auf %s", head_rev)
                 cur.execute("INSERT INTO alembic_version (version_num) VALUES (?)", (head_rev,))
             else:
@@ -135,17 +119,22 @@ def _run_migrations() -> int:
     finally:
         conn.close()
 
-    # 3. Alembic upgrade head via Public-API (keine subprocess-Calls)
+    # 3. Alembic upgrade head via Public-API (keine subprocess-Calls).
+    # Die DB-URL liest alembic/env.py selbst aus den Settings.
     from alembic import command
-    from alembic.config import Config as AlembicConfig
 
-    ini_path = _resolve_alembic_ini()
-    cfg = AlembicConfig(str(ini_path))
-    if getattr(sys, "frozen", False):
-        cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", db_url.replace("+aiosqlite", ""))
-    command.upgrade(cfg, "head")
+    command.upgrade(_alembic_config(), "head")
     logging.info("[migrate] Alembic-Migrationen abgeschlossen")
+
+    # 4. Default-Ablagebereich sicherstellen (frische DBs durchlaufen Migration
+    # 005 nicht, die ihn seedet — auch Bestands-Installs mit leerer Tabelle).
+    conn = sqlite3.connect(db_path)
+    try:
+        if ensure_default_filing_scope(conn.cursor()):
+            conn.commit()
+            logging.info("[migrate] Default-Ablagebereich 'Privat' angelegt")
+    finally:
+        conn.close()
     return 0
 
 
@@ -154,6 +143,16 @@ def _resolve_alembic_ini() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "alembic.ini"
     return Path(__file__).resolve().parents[1] / "alembic.ini"
+
+
+def _alembic_config():
+    """Alembic-Config fuer Bundle (Skripte in _MEIPASS) und Dev."""
+    from alembic.config import Config as AlembicConfig
+
+    cfg = AlembicConfig(str(_resolve_alembic_ini()))
+    if getattr(sys, "frozen", False):
+        cfg.set_main_option("script_location", str(Path(sys._MEIPASS) / "alembic"))
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,16 +180,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _set_config_from_args(args)
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    try:
+        _set_config_from_args(args)
+    except ConfigNotFoundError as exc:
+        print(f"FEHLER: {exc}", file=sys.stderr)
+        return 2
+
     if args.version:
-        from app.main import _read_version
-        print(_read_version())
+        from app.core.version import read_app_version
+        print(read_app_version())
         return 0
 
     if args.backup:
@@ -200,8 +203,15 @@ def main(argv: list[str] | None = None) -> int:
         from app.config import get_settings
         from app.services.backup_service import create_backup
 
-        settings = get_settings()
-        path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
+        # Exit-Code != 0 bei jedem Fehler: Uninstaller und Update-Wizard melden
+        # nur bei 0 "Backup liegt in ..." — direkt vor "Daten loeschen?".
+        try:
+            settings = get_settings()
+            path = create_backup(settings, include_documents=args.full, out_dir=args.out_dir)
+        except Exception as exc:
+            logging.exception("Backup fehlgeschlagen")
+            print(f"FEHLER: Backup fehlgeschlagen: {exc}", file=sys.stderr)
+            return 1
         print(path)
         return 0
 

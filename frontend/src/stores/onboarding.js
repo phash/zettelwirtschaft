@@ -28,10 +28,6 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     if (!completed.value && !open.value) open.value = true
   }
 
-  function start() {
-    open.value = true
-  }
-
   // Beenden ODER ueberspringen -> als gesehen markieren.
   function finish() {
     open.value = false
@@ -47,5 +43,5 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     open.value = true
   }
 
-  return { open, completed, maybeAutoStart, start, finish, restart }
+  return { open, completed, maybeAutoStart, finish, restart }
 })

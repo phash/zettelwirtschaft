@@ -1,13 +1,6 @@
-import io
-import struct
 from pathlib import Path
 
-import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models.processing_job import JobStatus, ProcessingJob
 
 
 class TestUploadEndpoint:
@@ -71,27 +64,44 @@ class TestUploadEndpoint:
         assert len(data["rejected"]) == 1
 
 
-@pytest.mark.asyncio
-class TestDashboardStats:
-    async def test_stats_endpoint_exists(self, client: AsyncClient):
-        """GET /api/stats muss erreichbar sein (Dashboard-Endpunkt)."""
-        resp = await client.get("/api/stats")
-        assert resp.status_code == 200
-
-    async def test_stats_structure(self, client: AsyncClient):
-        resp = await client.get("/api/stats")
-        assert resp.status_code == 200
+    async def test_upload_oversized_rejected_and_not_stored(
+        self, client: AsyncClient, test_settings, sample_pdf: Path,
+    ):
+        test_settings.MAX_UPLOAD_SIZE_MB = 1
+        big = sample_pdf.read_bytes() + b"0" * (1024 * 1024 + 10)
+        resp = await client.post(
+            "/api/documents/upload",
+            files=[("files", ("gross.pdf", big, "application/pdf"))],
+        )
         data = resp.json()
-        assert "total_documents" in data
-        assert "documents_this_month" in data
-        assert "pending_reviews" in data
-        assert "expiring_warranties_30d" in data
+        assert data["uploaded"] == []
+        assert "zu groß" in data["rejected"][0]["error"]
+        assert list(Path(test_settings.UPLOAD_DIR).iterdir()) == []
 
-    async def test_stats_total_is_non_negative(self, client: AsyncClient):
-        resp = await client.get("/api/stats")
+    async def test_upload_magic_mismatch_removes_file(self, client: AsyncClient, test_settings):
+        resp = await client.post(
+            "/api/documents/upload",
+            files=[("files", ("fake.pdf", b"MZ\x90\x00not a pdf", "application/pdf"))],
+        )
+        assert "überein" in resp.json()["rejected"][0]["error"]
+        assert list(Path(test_settings.UPLOAD_DIR).iterdir()) == []
+
+    async def test_upload_tif_alias_accepted(self, client: AsyncClient, tmp_path: Path):
+        from PIL import Image
+
+        src = tmp_path / "scan.tif"
+        Image.new("L", (20, 20), 255).save(src, "TIFF")
+        resp = await client.post(
+            "/api/documents/upload",
+            files=[("files", ("scan.tif", src.read_bytes(), "image/tiff"))],
+        )
         data = resp.json()
-        assert data["total_documents"] >= 0
-        assert data["pending_reviews"] >= 0
+        assert data["rejected"] == []
+        status = await client.get(f"/api/documents/{data['uploaded'][0]['job_id']}/status")
+        assert status.json()["file_type"] == "tiff"
+
+
+# Dashboard-Stats: siehe test_document_crud.TestDashboardStats
 
 
 class TestDocumentStatusEndpoint:
@@ -101,14 +111,19 @@ class TestDocumentStatusEndpoint:
             "/api/documents/upload",
             files=[("files", ("test.pdf", sample_pdf.read_bytes(), "application/pdf"))],
         )
-        doc_id = resp.json()["uploaded"][0]["document_id"]
+        uploaded = resp.json()["uploaded"][0]
+        # Upload liefert die Job-ID (das Dokument entsteht erst bei der Archivierung)
+        assert "document_id" not in uploaded
+        job_id = uploaded["job_id"]
 
         # Status abrufen
-        resp = await client.get(f"/api/documents/{doc_id}/status")
+        resp = await client.get(f"/api/documents/{job_id}/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["id"] == doc_id
-        assert data["status"] in ["PENDING", "PROCESSING", "COMPLETED"]
+        assert data["id"] == job_id
+        # Im Test-Client laeuft kein Queue-Worker -> Job bleibt PENDING, noch kein Dokument
+        assert data["status"] == "PENDING"
+        assert data["document_id"] is None
 
     async def test_status_not_found(self, client: AsyncClient):
         resp = await client.get("/api/documents/nonexistent-id/status")

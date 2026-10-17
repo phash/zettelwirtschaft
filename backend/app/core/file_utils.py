@@ -1,26 +1,75 @@
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
-# Magic Bytes fuer erlaubte Dateitypen
-MAGIC_BYTES: dict[str, list[bytes]] = {
-    "pdf": [b"%PDF"],
-    "jpg": [b"\xff\xd8\xff"],
-    "jpeg": [b"\xff\xd8\xff"],
-    "png": [b"\x89PNG\r\n\x1a\n"],
-    "tiff": [b"II\x2a\x00", b"MM\x00\x2a"],
-    "bmp": [b"BM"],
+
+@dataclass(frozen=True)
+class FileTypeInfo:
+    """Eigenschaften eines unterstuetzten Dateityps (Single Source fuer
+    Validierung, Thumbnail, OCR und Download-MIME)."""
+
+    magic: tuple[bytes, ...]
+    mime: str
+    kind: str  # "pdf" oder "image"
+
+
+# Registry aller unterstuetzten Dateitypen (kanonische Extension -> Info).
+FILE_TYPES: dict[str, FileTypeInfo] = {
+    "pdf": FileTypeInfo((b"%PDF",), "application/pdf", "pdf"),
+    "jpg": FileTypeInfo((b"\xff\xd8\xff",), "image/jpeg", "image"),
+    "jpeg": FileTypeInfo((b"\xff\xd8\xff",), "image/jpeg", "image"),
+    "png": FileTypeInfo((b"\x89PNG\r\n\x1a\n",), "image/png", "image"),
+    "tiff": FileTypeInfo((b"II\x2a\x00", b"MM\x00\x2a"), "image/tiff", "image"),
+    "bmp": FileTypeInfo((b"BM",), "image/bmp", "image"),
 }
 
+# Alternative Schreibweisen -> kanonische Extension. ".tif" bietet z.B. der
+# Datei-Dialog der UploadView an; ohne Alias wurde es von der Validierung
+# abgelehnt und vom Watch-Ordner uebersprungen.
+FILE_TYPE_ALIASES: dict[str, str] = {"tif": "tiff"}
+
+# Magic Bytes je Extension (inkl. Aliase) — fuer Aufrufer, die nur die
+# Signaturen brauchen (z.B. E-Mail-Anhang-Erkennung).
+MAGIC_BYTES: dict[str, list[bytes]] = {
+    ext: list(info.magic) for ext, info in FILE_TYPES.items()
+} | {alias: list(FILE_TYPES[target].magic) for alias, target in FILE_TYPE_ALIASES.items()}
+
 # Maximale Laenge der zu pruefenden Bytes
-_MAX_MAGIC_LEN = max(len(sig) for sigs in MAGIC_BYTES.values() for sig in sigs)
+_MAX_MAGIC_LEN = max(len(sig) for info in FILE_TYPES.values() for sig in info.magic)
+
+
+def normalize_file_type(ext: str) -> str:
+    """Extension/Dateityp kanonisieren: Kleinbuchstaben, ohne Punkt, Alias aufgeloest."""
+    ext_lower = ext.lower().lstrip(".")
+    return FILE_TYPE_ALIASES.get(ext_lower, ext_lower)
+
+
+def get_file_type_info(ext: str) -> FileTypeInfo | None:
+    """Registry-Eintrag fuer eine Extension (Aliase werden aufgeloest)."""
+    return FILE_TYPES.get(normalize_file_type(ext))
+
+
+def is_image_type(ext: str) -> bool:
+    info = get_file_type_info(ext)
+    return info is not None and info.kind == "image"
+
+
+def is_pdf_type(ext: str) -> bool:
+    info = get_file_type_info(ext)
+    return info is not None and info.kind == "pdf"
+
+
+def mime_type_for(ext: str) -> str:
+    """MIME-Typ fuer Download/Vorschau; unbekannte Typen als application/octet-stream."""
+    info = get_file_type_info(ext)
+    return info.mime if info else "application/octet-stream"
 
 
 def validate_magic_bytes(path: Path, ext: str) -> bool:
     """Prueft ob die Magic Bytes einer Datei zur Extension passen."""
-    ext_lower = ext.lower().lstrip(".")
-    signatures = MAGIC_BYTES.get(ext_lower)
-    if signatures is None:
+    info = get_file_type_info(ext)
+    if info is None:
         return False
 
     try:
@@ -29,7 +78,7 @@ def validate_magic_bytes(path: Path, ext: str) -> bool:
     except OSError:
         return False
 
-    return any(header.startswith(sig) for sig in signatures)
+    return any(header.startswith(sig) for sig in info.magic)
 
 
 def sanitize_filename(name: str) -> str:

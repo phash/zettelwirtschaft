@@ -3,11 +3,17 @@
 # Zweck: ermoeglicht den Smartphone-Scan (Kamera-API) und den PWA-Service-Worker
 # im Heim-WLAN — beide verlangen einen Secure Context (HTTPS oder localhost).
 #
-# Voraussetzung: einmalig das Zertifikat erzeugen:
+# Voraussetzung: einmalig das Zertifikat erzeugen (legt ssl/cert.pem + key.pem an):
 #     bash ssl/generate-cert.sh
+#   oder (Windows, Python mit "cryptography"):
+#     python ssl\generate-self-signed-cert.py
 #
-# Start:
-#     docker compose -f docker-compose.yml -f docker-compose.ssl.yml up -d
+# Start: einfach start.bat. Sobald ssl\cert.pem + ssl\key.pem existieren, setzt
+# generate-mounts.ps1 COMPOSE_FILE in .env auf docker-compose.yml +
+# docker-compose.ssl.yml (+ Override). Damit bleibt HTTPS bei JEDEM
+# compose-Aufruf aktiv (start/stop/update, auch manuell). Zum Abschalten die
+# beiden .pem-Dateien loeschen und start.bat erneut ausfuehren.
+# Ohne die Windows-Skripte: docker compose -f docker-compose.yml -f docker-compose.ssl.yml up -d
 #
 # Danach am Smartphone https://<server-ip>/ oeffnen und die einmalige
 # Browser-Warnung (selbstsigniertes Zertifikat) akzeptieren.
@@ -30,7 +36,10 @@ services:
       - SETUID
       - SETGID
       - CHOWN
-    ports:
+    # !override ersetzt das Port-Mapping der Basis (FRONTEND_PORT -> 8080), statt
+    # es zu ergaenzen: nginx-ssl.conf lauscht nur auf 80/443, ein veroeffentlichter
+    # 8080-Port waere tot.
+    ports: !override
       - "80:80"     # HTTP -> 301 Redirect auf HTTPS
       - "443:443"   # HTTPS
     volumes:

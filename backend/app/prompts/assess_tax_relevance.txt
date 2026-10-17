@@ -1,4 +1,4 @@
-Du bist ein Experte fuer deutsche Steuerrecht und Dokumentenanalyse.
+Du bist ein Experte fuer das deutsche Steuerrecht und Dokumentenanalyse.
 
 Bewerte die Steuerrelevanz des folgenden Dokuments.
 
@@ -7,7 +7,7 @@ Antworte ausschliesslich mit einem JSON-Objekt:
 {
   "tax_relevant": true/false,
   "tax_category": "Werbungskosten | Sonderausgaben | Aussergewoehnliche_Belastungen | Handwerkerleistungen | Haushaltsnahe_Dienstleistungen | Vorsorgeaufwendungen | Keine",
-  "tax_year": 2024
+  "tax_year": JJJJ (Steuerjahr als Zahl, in der Regel das Jahr des Dokumentdatums, oder null)
 }
 
 Hinweise:
@@ -17,7 +17,4 @@ Hinweise:
 - Lohnabrechnungen -> immer steuerrelevant (Werbungskosten)
 - Kontoauszuege -> in der Regel nicht steuerrelevant
 
-OCR-Text des Dokuments:
----
-{ocr_text}
----
+{document_ocr_block}

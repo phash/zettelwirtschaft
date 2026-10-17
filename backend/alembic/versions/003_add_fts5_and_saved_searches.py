@@ -1,7 +1,7 @@
 """add fts5 and saved_searches
 
 Revision ID: 003_add_fts5_saved
-Revises: 002_add_documents
+Revises: 002_add_document_models
 Create Date: 2026-02-19
 """
 

@@ -1,5 +1,15 @@
 # E-Mail-Anbindung (Issue #18)
 
+> **Historisches Design-Dokument (Stand 2026-03).** Die Umsetzung weicht ab — massgeblich ist der Code
+> (`backend/app/services/email_*.py`) und `CLAUDE.md`. Wichtigste Korrekturen:
+> - Verschluesselung: Fernet = AES-128-CBC + HMAC-SHA256 (nicht AES-256).
+> - `EMAIL_ENCRYPTION_KEY` wird vom Installer erzeugt; fehlt er, antwortet die API mit HTTP 503 (keine Auto-Generierung).
+> - IDLE ist ein Polling alle 5 Minuten, keine IMAP-IDLE-Push-Verbindung.
+> - CRON wird in der lokalen Zeitzone (`TIMEZONE`, Default Europe/Berlin) ausgewertet.
+> - Abruf nur ungelesener Mails per `UID FETCH BODY.PEEK[]` (max. `EMAIL_MAX_PER_RUN` pro Lauf); Ablage per
+>   `UID MOVE` bzw. `UID COPY` + gezieltem `UID EXPUNGE`, Zielordner wird angelegt. Manueller Abruf laeuft als
+>   Hintergrund-Vorgang (HTTP 202 + `GET /api/tasks/{id}`).
+
 ## Ziel
 
 Automatischer IMAP-Abruf von E-Mails aus mehreren Konten. LLM entscheidet ueber Relevanz. Relevante Anhaenge und E-Mail-Texte werden in die bestehende Verarbeitungs-Pipeline eingespeist. Konfiguration ueber die Web-UI.
@@ -20,7 +30,7 @@ IMAP-Polling-Service als neuer Background-Task im Backend-Container. Kein zusaet
 | imap_port | Integer | Default 993 |
 | use_ssl | Boolean | Default True |
 | username | String | Login-Benutzername |
-| encrypted_password | String | AES-verschluesselt (Fernet) |
+| encrypted_password | String | Fernet-verschluesselt (AES-128-CBC + HMAC) |
 | folder_inbox | String | Zu ueberwachender Ordner (Default "INBOX") |
 | folder_processed | String | Zielordner nach Verarbeitung |
 | schedule_type | Enum | CRON, MANUAL, IDLE |
@@ -69,14 +79,14 @@ IMAP-Verbindung via Python `imaplib` (Standardbibliothek). Pro Konto:
 
 ### Passwort-Verschluesselung
 
-- AES-256 via `cryptography.fernet`
-- Schluessel: `EMAIL_ENCRYPTION_KEY` in `.env` (auto-generiert beim ersten Konto falls leer)
+- Fernet (AES-128-CBC + HMAC-SHA256) via `cryptography.fernet`
+- Schluessel: `EMAIL_ENCRYPTION_KEY` in `.env` bzw. `config.toml` (vom Installer erzeugt; leer -> HTTP 503 beim Anlegen eines Kontos, keine stille Generierung)
 
 ### Scheduling
 
 - **CRON**: Background-Task mit asyncio + `croniter` Library
 - **MANUAL**: API-Endpoint `POST /api/email/accounts/{id}/fetch`
-- **IDLE**: IMAP IDLE Command (Push-Notification, langlebige Verbindung)
+- **IDLE**: Polling alle 5 Minuten durch den Scheduler (keine IMAP-IDLE-Push-Verbindung)
 
 ## API-Endpoints
 

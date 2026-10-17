@@ -2,25 +2,55 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core.date_utils import add_months, parse_date_lenient
+from app.core.normalize import DEFAULT_CURRENCY, normalize_currency, normalize_tax_category
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, ReviewStatus, Tag, TaxCategory
+from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, ReviewStatus, Tag
 from app.models.review_question import ReviewQuestion
 from app.models.warranty_info import WarrantyInfo, WarrantyType
 from app.services.analysis_service import AnalysisResult
 from app.services.ocr_service import OcrResult
-from app.services.search_service import index_document
+from app.services.search_service import reindex_document_fts
+from app.services.tax_year import ensure_tax_year
 
 logger = logging.getLogger("zettelwirtschaft.archive")
+
+_DEFAULT_PRODUCT_NAME = "Unbekanntes Produkt"
+_DEFAULT_WARRANTY_MONTHS = 24  # gesetzliche Gewaehrleistung
+_MAX_NAME_LEN = 500  # WarrantyInfo.product_name / retailer
+
+
+class DuplicateDocumentError(ValueError):
+    """Die Datei (gleicher SHA-256) ist bereits als aktives Dokument archiviert.
+
+    Geloeschte Dokumente (Soft-Delete) zaehlen nicht: eine erneut hochgeladene
+    Datei wird dann als neues Dokument angelegt.
+    """
+
+    def __init__(self, existing_document_id: str, existing_title: str | None):
+        self.existing_document_id = existing_document_id
+        self.existing_title = existing_title
+        title = existing_title or "ohne Titel"
+        super().__init__(f"Diese Datei ist bereits archiviert („{title}“).")
+
+
+class ArchiveDataError(Exception):
+    """Deterministischer Datenfehler beim Speichern (z.B. Constraint-Verletzung
+    durch unerwartete Analysedaten). Ein erneuter Versuch fuehrt zum selben
+    Ergebnis — der Worker markiert den Job deshalb sofort als FAILED."""
 
 
 def coerce_decimal_amount(value) -> Decimal | None:
@@ -55,7 +85,11 @@ def _build_archive_path(
     stored_filename: str,
     scope_slug: str | None = None,
 ) -> Path:
-    """Erstellt den Archiv-Pfad: archive/{scope_slug}/{jahr}/{monat}/{document_type}/filename."""
+    """Erstellt den Archiv-Pfad: archive/{scope_slug}/{jahr}/{monat}/{document_type}/filename.
+
+    Reine Pfadberechnung — das Verzeichnis legt erst _copy_file an, damit bei
+    einem Fehler vor dem Kopieren keine leeren Ordner entstehen.
+    """
     if document_date:
         year = str(document_date.year)
         month = f"{document_date.month:02d}"
@@ -67,19 +101,23 @@ def _build_archive_path(
     base = Path(archive_dir)
     if scope_slug:
         base = base / scope_slug
-    archive_path = base / year / month / document_type
-    archive_path.mkdir(parents=True, exist_ok=True)
-    return archive_path / stored_filename
+    return base / year / month / document_type / stored_filename
 
 
-def _parse_document_date(date_str: str | None) -> date | None:
-    """Parst ein Datumsstring im Format YYYY-MM-DD."""
-    if not date_str:
-        return None
-    try:
-        return date.fromisoformat(date_str)
-    except (ValueError, TypeError):
-        return None
+def _copy_file(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(source), str(dest))
+
+
+def remove_created_files(paths: list[Path]) -> None:
+    """Entfernt die von archive_document angelegten Kopien (Archiv + Export),
+    wenn die Transaktion danach scheitert — sonst bleiben verwaiste Dateien
+    ohne DB-Eintrag zurueck."""
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Verwaiste Archivdatei konnte nicht entfernt werden: %s", path, exc_info=True)
 
 
 def _parse_document_type(type_str: str | None) -> DocumentType:
@@ -93,17 +131,9 @@ def _parse_document_type(type_str: str | None) -> DocumentType:
 
 
 def _parse_tax_category(category_str: str | None) -> str | None:
-    """Parst die Steuerkategorie. Bei Compound-Werten (z.B. 'A | B') wird der erste genommen."""
-    if not category_str:
-        return None
-    # LLM liefert manchmal compound-Werte wie "Werbungskosten | Aussergewoehnliche_Belastungen"
-    parts = [p.strip() for p in category_str.split("|")]
-    for part in parts:
-        try:
-            return TaxCategory(part).value
-        except ValueError:
-            continue
-    return None
+    """Steuerkategorie aus dem LLM-Wert (erster gueltiger Teil bei 'A | B').
+    Delegiert an app.core.normalize (Single Source fuer alle Pfade)."""
+    return normalize_tax_category(category_str)
 
 
 async def _get_or_create_tags(
@@ -111,12 +141,21 @@ async def _get_or_create_tags(
     session: AsyncSession,
     auto_generated: bool = True,
 ) -> list[Tag]:
-    """Holt oder erstellt Tags anhand der Namen."""
-    tags = []
-    for name in tag_names:
-        name = name.strip().lower()
-        if not name:
+    """Holt oder erstellt Tags anhand der Namen (normalisiert, ohne Duplikate).
+
+    Das LLM liefert gelegentlich Varianten wie ["Strom", "strom "] — ohne
+    Deduplizierung entstanden doppelte DocumentTag-Primaerschluessel und die
+    Archivierung brach ab.
+    """
+    tags: list[Tag] = []
+    seen: set[str] = set()
+    for raw_name in tag_names:
+        if not isinstance(raw_name, str):
             continue
+        name = raw_name.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
 
         result = await session.execute(select(Tag).where(Tag.name == name))
         tag = result.scalar_one_or_none()
@@ -128,29 +167,78 @@ async def _get_or_create_tags(
     return tags
 
 
+# Ab dieser LLM-Konfidenz gilt eine Scope-Zuordnung als sicher (CLAUDE.md:
+# Keyword-Match > LLM (>= 0.7) > Default).
+SCOPE_CONFIDENCE_THRESHOLD = 0.7
+
+
+class ScopeMatch(NamedTuple):
+    scope_id: str | None
+    scope_slug: str | None
+    new_scope_suggestion: str | None
+    # "forced" (E-Mail-Konto), "keyword", "llm", "default" oder None (keine Scopes)
+    source: str | None
+
+
+@lru_cache(maxsize=512)
+def _keyword_pattern(keyword: str) -> re.Pattern:
+    """Kompiliert ein Scope-Keyword zu einem Suchmuster (gecacht).
+
+    Kurze Keywords (<= 3 Zeichen) und Abkuerzungen in Grossbuchstaben matchen
+    nur als ganzes Wort — sonst traf 'AG' in 'Vertrag'. Laengere Keywords
+    bleiben Teilstring-Treffer, damit 'Praxis' auch 'Zahnarztpraxis' findet.
+    """
+    escaped = re.escape(keyword)
+    if len(keyword) <= 3 or (keyword.isupper() and len(keyword) > 1):
+        return re.compile(rf"(?<!\w){escaped}(?!\w)", re.IGNORECASE)
+    return re.compile(escaped, re.IGNORECASE)
+
+
+def _count_keyword_hits(keywords: list, text: str) -> int:
+    hits = 0
+    for kw in keywords or []:
+        if not isinstance(kw, str):
+            continue
+        kw = kw.strip()
+        # Leere/Whitespace-Keywords (Altbestand) wuerden sonst jedes Dokument treffen.
+        if not kw:
+            continue
+        if _keyword_pattern(kw).search(text):
+            hits += 1
+    return hits
+
+
 def _match_filing_scope(
     analysis: AnalysisResult,
     filing_scopes: list[dict],
     ocr_text: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
-    """Bestimmt den Filing Scope. Returns (scope_id, scope_slug, new_scope_suggestion).
+    forced_scope_id: str | None = None,
+) -> ScopeMatch:
+    """Bestimmt den Filing Scope.
 
     Prioritaet:
+    0. Erzwungener Scope (Ablagebereich des E-Mail-Kontos), solange er noch existiert
     1. Keyword-Match im OCR-Text (zuverlaessiger als LLM)
     2. LLM-Zuweisung (wenn Konfidenz >= 0.7 und Scope existiert)
     3. LLM-Vorschlag fuer neuen Scope (wenn Name unbekannt)
     4. Default-Scope als Fallback
     """
+    # 0. Vom E-Mail-Konto vorgegebener Ablagebereich
+    if forced_scope_id:
+        for scope in filing_scopes:
+            if scope["id"] == forced_scope_id:
+                return ScopeMatch(scope["id"], scope["slug"], None, "forced")
+        logger.info(
+            "Ablagebereich %s des E-Mail-Kontos existiert nicht mehr — normale Zuordnung",
+            forced_scope_id,
+        )
+
     # 1. Keyword-Match im OCR-Text - hat Vorrang
     if ocr_text:
-        text_lower = ocr_text.lower()
         best_scope = None
         best_hits = 0
         for scope in filing_scopes:
-            keywords = scope.get("keywords", [])
-            if not keywords:
-                continue
-            hits = sum(1 for kw in keywords if kw.lower() in text_lower)
+            hits = _count_keyword_hits(scope.get("keywords", []), ocr_text)
             if hits > best_hits:
                 best_hits = hits
                 best_scope = scope
@@ -159,13 +247,13 @@ def _match_filing_scope(
                 "Filing Scope '%s' via Keyword-Match (%d Treffer)",
                 best_scope["name"], best_hits,
             )
-            return best_scope["id"], best_scope["slug"], None
+            return ScopeMatch(best_scope["id"], best_scope["slug"], None, "keyword")
 
     # 2. LLM-Zuweisung (bekannter Scope)
-    if analysis.filing_scope and analysis.filing_scope_confidence >= 0.7:
+    if analysis.filing_scope and analysis.filing_scope_confidence >= SCOPE_CONFIDENCE_THRESHOLD:
         for scope in filing_scopes:
             if scope["name"].lower() == analysis.filing_scope.lower():
-                return scope["id"], scope["slug"], None
+                return ScopeMatch(scope["id"], scope["slug"], None, "llm")
 
     # 3. LLM-Vorschlag fuer neuen Scope (Name unbekannt)
     new_scope_suggestion = None
@@ -181,22 +269,173 @@ def _match_filing_scope(
     # 4. Fallback auf Default-Scope
     for scope in filing_scopes:
         if scope.get("is_default"):
-            return scope["id"], scope["slug"], new_scope_suggestion
+            return ScopeMatch(scope["id"], scope["slug"], new_scope_suggestion, "default")
 
     # 5. Erster Scope als Fallback
     if filing_scopes:
-        return filing_scopes[0]["id"], filing_scopes[0]["slug"], new_scope_suggestion
+        return ScopeMatch(filing_scopes[0]["id"], filing_scopes[0]["slug"], new_scope_suggestion, "default")
 
-    return None, None, new_scope_suggestion
+    return ScopeMatch(None, None, new_scope_suggestion, None)
+
+
+async def find_active_duplicate(file_hash: str, session: AsyncSession) -> Document | None:
+    """Aktives (nicht geloeschtes) Dokument mit diesem Datei-Hash."""
+    result = await session.execute(
+        select(Document).where(
+            Document.file_hash == file_hash,
+            Document.status != DocumentStatus.DELETED,
+        )
+    )
+    return result.scalars().first()
 
 
 async def check_duplicate(file_path: Path, session: AsyncSession) -> Document | None:
-    """Prueft ob eine Datei bereits archiviert wurde (via SHA-256)."""
+    """Prueft ob eine Datei bereits als aktives Dokument archiviert wurde (via SHA-256).
+
+    Wird vom Worker VOR Thumbnail/OCR/LLM aufgerufen, damit Duplikate nicht
+    erst nach der teuren Analyse auffallen.
+    """
     file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
-    result = await session.execute(
-        select(Document).where(Document.file_hash == file_hash)
+    return await find_active_duplicate(file_hash, session)
+
+
+def _truncate(value, max_len: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:max_len] if text else None
+
+
+def _parse_months(value) -> int | None:
+    try:
+        months = int(value)
+    except (TypeError, ValueError):
+        return None
+    return months if 0 < months <= 600 else None
+
+
+def _parse_warranty_type(value) -> WarrantyType:
+    if isinstance(value, str):
+        try:
+            return WarrantyType(value.strip().upper())
+        except ValueError:
+            pass
+    return WarrantyType.LEGAL
+
+
+def _build_warranty_info(warranty, document_id: str, document_date: date | None) -> WarrantyInfo | None:
+    """Erstellt WarrantyInfo aus den LLM-Garantiedaten.
+
+    - Kaufdatum faellt auf das Dokumentdatum zurueck.
+    - Fehlt das Enddatum (oder liegt es nicht nach dem Kaufdatum), wird es aus
+      Kaufdatum + Laufzeit berechnet (Default: 24 Monate Gewaehrleistung).
+    - LLM-null-Werte fuer Produkt/Haendler/Laufzeit fuehren nicht mehr zu
+      NOT-NULL-Fehlern.
+    """
+    if not isinstance(warranty, dict) or not warranty.get("has_warranty"):
+        return None
+
+    purchase_date = parse_date_lenient(warranty.get("purchase_date")) or document_date
+    if purchase_date is None:
+        logger.info("Garantie ohne Kauf-/Dokumentdatum fuer %s — wird nicht angelegt", document_id)
+        return None
+
+    months = _parse_months(warranty.get("warranty_duration_months"))
+    end_date = parse_date_lenient(warranty.get("warranty_end_date"))
+    if end_date is None or end_date <= purchase_date:
+        end_date = add_months(purchase_date, months or _DEFAULT_WARRANTY_MONTHS)
+
+    return WarrantyInfo(
+        document_id=document_id,
+        product_name=_truncate(warranty.get("product_name"), _MAX_NAME_LEN) or _DEFAULT_PRODUCT_NAME,
+        purchase_date=purchase_date,
+        warranty_end_date=end_date,
+        warranty_type=_parse_warranty_type(warranty.get("warranty_type")),
+        warranty_duration_months=months or _DEFAULT_WARRANTY_MONTHS,
+        retailer=_truncate(warranty.get("store_name"), _MAX_NAME_LEN),
     )
-    return result.scalar_one_or_none()
+
+
+def _build_review_question(document_id: str, entry) -> ReviewQuestion | None:
+    """ReviewQuestion aus einem Analyse-Eintrag: Freitext (str) oder strukturiert
+    (dict mit question/question_type/field_affected/suggested_answers/
+    explanation/priority). Strukturierte Fragen kann das Review-System
+    automatisch auf das betroffene Feld anwenden."""
+    if isinstance(entry, str):
+        text = entry.strip()
+        return ReviewQuestion(document_id=document_id, question=text) if text else None
+    if not isinstance(entry, dict):
+        return None
+
+    text = str(entry.get("question") or "").strip()
+    if not text:
+        return None
+    suggested = entry.get("suggested_answers")
+    if isinstance(suggested, (list, tuple)):
+        suggested = "|".join(str(s) for s in suggested if s is not None and str(s).strip())
+    try:
+        priority = int(entry.get("priority") or 0)
+    except (TypeError, ValueError):
+        priority = 0
+    return ReviewQuestion(
+        document_id=document_id,
+        question=text,
+        question_type=_truncate(entry.get("question_type"), 20),
+        field_affected=_truncate(entry.get("field_affected"), 100),
+        suggested_answers=suggested or None,
+        explanation=entry.get("explanation") or None,
+        priority=priority,
+    )
+
+
+def build_scope_question(
+    document_id: str,
+    scope: ScopeMatch,
+    analysis: AnalysisResult,
+    filing_scopes: list[dict] | None,
+) -> ReviewQuestion | None:
+    """Rueckfrage zum Ablagebereich — gemeinsam fuer Archivierung und Re-Analyse.
+
+    Gefragt wird bei einem neuen Bereichs-Vorschlag oder bei unsicherer
+    LLM-Zuordnung. M-05 (Re-Review): nur wenn das LLM tatsaechlich einen Bereich
+    vorgeschlagen hat (``filing_scope=None`` heisst Konfidenz 0.0, sonst bekaeme
+    jedes Default-Dokument eine Frage). Hat ein Keyword-Match oder das
+    E-Mail-Konto den Bereich entschieden, ist die LLM-Konfidenz irrelevant.
+
+    Returns:
+        Die (noch nicht hinzugefuegte) Frage oder ``None``.
+    """
+    if not filing_scopes:
+        return None
+    scope_decided = scope.source in ("keyword", "forced")
+    lowconf = bool(
+        not scope_decided
+        and analysis.filing_scope
+        and analysis.filing_scope_confidence < SCOPE_CONFIDENCE_THRESHOLD
+    )
+    suggestion = scope.new_scope_suggestion
+    if not (suggestion or lowconf):
+        return None
+    scope_names = [s["name"] for s in filing_scopes]
+    if suggestion:
+        # Neuen Vorschlag als erste Option mit "NEU: " Prefix
+        return ReviewQuestion(
+            document_id=document_id,
+            question=f"Die KI schlägt einen neuen Ablagebereich '{suggestion}' vor. Soll dieser erstellt werden?",
+            question_type="classification",
+            field_affected="filing_scope",
+            suggested_answers="|".join([f"NEU: {suggestion}"] + scope_names),
+            explanation=f"Das Dokument passt zu keinem bestehenden Ablagebereich. Vorschlag: '{suggestion}'",
+            priority=8,
+        )
+    return ReviewQuestion(
+        document_id=document_id,
+        question="Zu welchem Ablagebereich gehört dieses Dokument?",
+        question_type="classification",
+        field_affected="filing_scope",
+        suggested_answers="|".join(scope_names),
+        priority=5,
+    )
 
 
 async def archive_document(
@@ -211,41 +450,57 @@ async def archive_document(
     session: AsyncSession,
     thumbnail_path: str | None = None,
     filing_scopes: list[dict] | None = None,
+    forced_scope_id: str | None = None,
+    created_files: list[Path] | None = None,
 ) -> Document:
-    """Archiviert ein Dokument: Datei verschieben, DB-Eintrag erstellen.
+    """Archiviert ein Dokument: DB-Eintrag erstellen, Datei ins Archiv kopieren.
+
+    Die Datei wird erst kopiert, nachdem alle DB-Eintraege erfolgreich geflusht
+    sind. Die angelegten Kopien werden an ``created_files`` angehaengt, damit
+    der Aufrufer sie entfernen kann, falls sein Commit scheitert.
+
+    Args:
+        forced_scope_id: Ablagebereich, der Keyword-/LLM-Zuordnung uebersteuert
+            (Ablagebereich des E-Mail-Kontos).
 
     Returns:
         Das erstellte Document-Objekt.
 
     Raises:
-        ValueError: Bei Duplikat (gleicher SHA-256 Hash).
+        DuplicateDocumentError: Aktives Dokument mit gleichem SHA-256 existiert.
+        ArchiveDataError: Daten liessen sich nicht speichern (nicht wiederholbar).
     """
-    # Hash berechnen + Duplikatcheck
+    # Hash berechnen + Duplikatcheck (geloeschte Dokumente zaehlen nicht)
     file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
-    existing = await session.execute(
-        select(Document).where(Document.file_hash == file_hash)
-    )
-    if existing.scalar_one_or_none():
-        raise ValueError(f"Duplikat erkannt: Datei mit Hash {file_hash[:12]}... existiert bereits")
+    existing = await find_active_duplicate(file_hash, session)
+    if existing is not None:
+        raise DuplicateDocumentError(existing.id, existing.title)
 
     # Analyse-Daten extrahieren
     analysis = analysis_result or AnalysisResult()
     doc_type = _parse_document_type(analysis.document_type)
-    doc_date = _parse_document_date(analysis.document_date)
+    doc_date = parse_date_lenient(analysis.document_date)
+    unparsed_date = (
+        analysis.document_date.strip()
+        if doc_date is None and isinstance(analysis.document_date, str) and analysis.document_date.strip()
+        else None
+    )
+    if unparsed_date:
+        logger.warning("Dokumentdatum nicht lesbar: %r", unparsed_date)
     tax_category = _parse_tax_category(analysis.tax_category)
 
     # Filing Scope bestimmen
-    scope_id = None
-    scope_slug = None
-    new_scope_suggestion = None
     ocr_text = ocr_result.full_text if ocr_result else None
+    scope = ScopeMatch(None, None, None, None)
     if filing_scopes:
-        scope_id, scope_slug, new_scope_suggestion = _match_filing_scope(analysis, filing_scopes, ocr_text=ocr_text)
+        scope = _match_filing_scope(
+            analysis, filing_scopes, ocr_text=ocr_text, forced_scope_id=forced_scope_id,
+        )
 
-    # Archiv-Pfad bestimmen (Datei wird erst nach DB-Flush verschoben)
+    # Archiv-Pfad bestimmen (Datei wird erst nach dem DB-Flush kopiert)
     archive_path = _build_archive_path(
         settings.ARCHIVE_DIR, doc_type.value, doc_date, stored_filename,
-        scope_slug=scope_slug,
+        scope_slug=scope.scope_slug,
     )
 
     # Export-Verzeichnis vorab ermitteln (benoetigt DB-Session)
@@ -273,7 +528,7 @@ async def archive_document(
         title=analysis.title or original_filename,
         document_date=doc_date,
         amount=coerce_decimal_amount(analysis.amount),
-        currency=analysis.currency or "EUR",
+        currency=normalize_currency(analysis.currency) or DEFAULT_CURRENCY,
         issuer=analysis.sender,
         recipient=analysis.recipient,
         reference_number=analysis.reference_number,
@@ -283,35 +538,27 @@ async def archive_document(
         tax_relevant=analysis.tax_relevant,
         tax_year=analysis.tax_year,
         tax_category=tax_category,
-        filing_scope_id=scope_id,
+        filing_scope_id=scope.scope_id,
         status=DocumentStatus.ACTIVE,
         review_status=review_status,
         ai_confidence=analysis.confidence,
         scanned_at=datetime.now(timezone.utc),
     )
-    session.add(document)
+    # Steuerrelevant ohne Jahr (LLM liefert keins) -> Jahr ableiten, sonst taucht
+    # der Beleg in keiner Steuer-Abfrage auf (die alle auf tax_year filtern).
+    ensure_tax_year(document)
+    # Insert im Savepoint: eine Constraint-Verletzung (paralleles Duplikat) rollt
+    # nur diesen Insert zurueck — die vom Aufrufer gehaltenen Objekte (Job) bleiben
+    # gueltig, statt durch ein Session-Rollback zu expiren.
     try:
-        await session.flush()
-    except IntegrityError:
-        await session.rollback()
-        raise ValueError(f"Duplikat erkannt: Datei mit Hash {file_hash[:12]}... existiert bereits")
-
-    # T17: shutil.copy2 in to_thread, damit grosse PDFs (50 MB) den Event-
-    # Loop nicht blockieren. Bei langsamer Disk macht das 0.5-1s pro Datei aus.
-    await asyncio.to_thread(shutil.copy2, str(file_path), str(archive_path))
-    logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
-
-    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
-    if export_dir:
-        try:
-            export_path = _build_archive_path(
-                export_dir, doc_type.value, doc_date, stored_filename,
-                scope_slug=scope_slug,
-            )
-            await asyncio.to_thread(shutil.copy2, str(archive_path), str(export_path))
-            logger.info("Export-Kopie erstellt: %s", export_path)
-        except Exception:
-            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
+        async with session.begin_nested():
+            session.add(document)
+            await session.flush()
+    except IntegrityError as exc:
+        existing = await find_active_duplicate(file_hash, session)
+        if existing is not None:
+            raise DuplicateDocumentError(existing.id, existing.title) from exc
+        raise ArchiveDataError(f"Dokument konnte nicht gespeichert werden: {exc.orig}") from exc
 
     # Tags erstellen (via junction table to avoid lazy-load issues)
     if analysis.tags:
@@ -320,63 +567,33 @@ async def archive_document(
             session.add(DocumentTag(document_id=document.id, tag_id=tag.id))
 
     # Garantie-Info erstellen
-    warranty = analysis.warranty_info
-    if warranty and isinstance(warranty, dict) and warranty.get("has_warranty"):
-        purchase_date = _parse_document_date(warranty.get("purchase_date"))
-        warranty_end = _parse_document_date(warranty.get("warranty_end_date"))
-        if purchase_date and warranty_end:
-            warranty_info = WarrantyInfo(
-                document_id=document.id,
-                product_name=warranty.get("product_name", "Unbekanntes Produkt"),
-                purchase_date=purchase_date,
-                warranty_end_date=warranty_end,
-                warranty_type=WarrantyType.LEGAL,
-                warranty_duration_months=warranty.get("warranty_duration_months", 24),
-                retailer=warranty.get("store_name"),
-            )
-            session.add(warranty_info)
+    warranty_info = _build_warranty_info(analysis.warranty_info, document.id, doc_date)
+    if warranty_info is not None:
+        session.add(warranty_info)
 
-    # Review-Fragen erstellen
-    if analysis.review_questions:
-        for question_text in analysis.review_questions:
-            question = ReviewQuestion(
-                document_id=document.id,
-                question=question_text,
-            )
+    # Review-Fragen erstellen (Freitext oder strukturiert)
+    for entry in analysis.review_questions or []:
+        question = _build_review_question(document.id, entry)
+        if question is not None:
             session.add(question)
 
+    # Nicht lesbares Datum: nachfragen statt still unter dem aktuellen Monat ablegen
+    if unparsed_date:
+        session.add(ReviewQuestion(
+            document_id=document.id,
+            question="Welches Datum hat dieses Dokument?",
+            question_type="extraction",
+            field_affected="document_date",
+            explanation=f"Die KI hat das Datum „{unparsed_date}“ erkannt, es konnte aber nicht gelesen werden.",
+            priority=7,
+        ))
+        document.review_status = ReviewStatus.NEEDS_REVIEW
+
     # Review-Frage bei unsicherer Scope-Zuordnung oder neuem Scope-Vorschlag.
-    # M-05 (Re-Review): nur fragen wenn das LLM tatsaechlich einen Scope
-    # vorgeschlagen hat (filing_scope gesetzt). Wenn das LLM `filing_scope=None`
-    # liefert (keine Vermutung), war confidence=0.0 — kein falsch-positives
-    # Review-Question fuer jedes Default-Scope-Dokument.
-    has_lowconf_scope = analysis.filing_scope and analysis.filing_scope_confidence < 0.7
-    if filing_scopes and (new_scope_suggestion or has_lowconf_scope):
-        scope_names = [s["name"] for s in filing_scopes]
-        if new_scope_suggestion:
-            # Neuen Vorschlag als erste Option mit "NEU: " Prefix
-            suggested = [f"NEU: {new_scope_suggestion}"] + scope_names
-            scope_question = ReviewQuestion(
-                document_id=document.id,
-                question=f"Die KI schlaegt einen neuen Ablagebereich '{new_scope_suggestion}' vor. Soll dieser erstellt werden?",
-                question_type="classification",
-                field_affected="filing_scope",
-                suggested_answers="|".join(suggested),
-                explanation=f"Das Dokument passt zu keinem bestehenden Ablagebereich. Vorschlag: '{new_scope_suggestion}'",
-                priority=8,
-            )
-        else:
-            scope_question = ReviewQuestion(
-                document_id=document.id,
-                question="Zu welchem Ablagebereich gehoert dieses Dokument?",
-                question_type="classification",
-                field_affected="filing_scope",
-                suggested_answers="|".join(scope_names),
-                priority=5,
-            )
+    scope_question = build_scope_question(document.id, scope, analysis, filing_scopes)
+    if scope_question is not None:
         session.add(scope_question)
-        if not analysis.needs_review:
-            document.review_status = ReviewStatus.NEEDS_REVIEW
+        document.review_status = ReviewStatus.NEEDS_REVIEW
 
     # AuditLog
     audit = AuditLog(
@@ -389,34 +606,53 @@ async def archive_document(
     )
     session.add(audit)
 
-    await session.flush()
+    try:
+        await session.flush()
+    except (IntegrityError, DataError) as exc:
+        raise ArchiveDataError(f"Dokument konnte nicht gespeichert werden: {exc.orig}") from exc
+
+    # Dateien erst jetzt kopieren — alle DB-Eintraege sind geflusht, ein
+    # Datenfehler hinterlaesst also keine verwaiste Kopie mehr.
+    # T17: copy2 in to_thread, damit grosse PDFs (50 MB) den Event-Loop nicht
+    # blockieren.
+    try:
+        await asyncio.to_thread(_copy_file, file_path, archive_path)
+    except Exception:
+        remove_created_files([archive_path])
+        raise
+    if created_files is not None:
+        created_files.append(archive_path)
+    logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
+
+    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
+    if export_dir:
+        export_path = _build_archive_path(
+            export_dir, doc_type.value, doc_date, stored_filename,
+            scope_slug=scope.scope_slug,
+        )
+        try:
+            await asyncio.to_thread(_copy_file, archive_path, export_path)
+            if created_files is not None:
+                created_files.append(export_path)
+            logger.info("Export-Kopie erstellt: %s", export_path)
+        except Exception:
+            remove_created_files([export_path])
+            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
 
     # FTS-Index aktualisieren (in Savepoint, damit Fehler die Session nicht korrumpieren).
-    # B3-Fix: `nested = None` vor begin_nested, damit ein Fehler im begin_nested()-Aufruf
-    # selbst nicht zu UnboundLocalError im except-Zweig fuehrt.
-    nested = None
+    # Werte inkl. Tags kommen aus der DB (reindex_document_fts) — identisch zu
+    # spaeteren Re-Indexierungen bei Bearbeitung/Tag-Aenderung.
     try:
-        nested = await session.begin_nested()
-        tag_names = " ".join(analysis.tags) if analysis.tags else ""
-        await index_document(
-            session=session,
-            doc_id=document.id,
-            title=document.title,
-            ocr_text=document.ocr_text,
-            issuer=document.issuer,
-            summary=document.summary,
-            tags=tag_names,
-        )
-        await nested.commit()
+        async with session.begin_nested():
+            await reindex_document_fts(session, document.id)
     except Exception:
-        if nested is not None:
-            await nested.rollback()
         logger.warning("FTS-Indexierung fehlgeschlagen fuer %s", document.id, exc_info=True)
 
-    # B3-Fix: Vektorisierung lauft nicht mehr in der DB-Transaction.
-    # Der Caller (queue_worker_service) ruft vectorize_document() NACH dem Commit
-    # auf — damit haelt ein langsamer ChromaDB-Call keine SQLite-WAL-Locks und ein
-    # Vektorisierungs-Fehler korrumpiert nicht die archive-Transaction.
+    # B3-Fix: Vektorisierung laeuft nicht in der DB-Transaction. Der Caller
+    # (queue_worker_service) ruft vectorize_document() NACH dem Commit auf —
+    # sonst hielte ein langsamer ChromaDB-Call die SQLite-Schreibsperre der
+    # offenen Transaktion, und ein Vektorisierungs-Fehler korrumpierte die
+    # archive-Transaction.
 
     logger.info(
         "Dokument archiviert: %s (Typ: %s, Konfidenz: %.0f%%)",

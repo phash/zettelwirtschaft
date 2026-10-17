@@ -4,9 +4,10 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Enum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -21,7 +22,7 @@ class ChatMessage(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    role: Mapped[str] = mapped_column(
+    role: Mapped[MessageRole] = mapped_column(
         Enum(MessageRole, native_enum=False), nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -35,5 +36,5 @@ class ChatMessage(Base):
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False, index=True
     )

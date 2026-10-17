@@ -1,9 +1,7 @@
 import logging
 import shutil
-import time
 
-import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,36 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.core.rate_limit import limiter
 from app.database import get_db
-from fastapi import Request
+from app.services.ollama_client import ollama_health
 
 router = APIRouter()
 logger = logging.getLogger("zettelwirtschaft.health")
-
-
-# M-2 (Re-Review): Ollama-Subcheck mit TTL-Cache. Docker-Healthcheck feuert
-# alle 30s pro Container + Frontend-Polling — jeder Probe ohne Cache wuerde
-# Ollama mit HTTP-Calls beschaeftigen. 5s-TTL ist deutlich kuerzer als
-# Ollama-Failure-Window, schont das Backend trotzdem.
-_ollama_cache: tuple[float, str, str | None] | None = None  # (timestamp, status, message)
-_OLLAMA_TTL = 5.0
-
-
-async def _ollama_status(settings: Settings) -> tuple[str, str | None]:
-    global _ollama_cache
-    now = time.monotonic()
-    if _ollama_cache is not None and (now - _ollama_cache[0]) < _OLLAMA_TTL:
-        return _ollama_cache[1], _ollama_cache[2]
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-            if resp.status_code == 200:
-                status, msg = "ok", None
-            else:
-                status, msg = "warning", f"Ollama antwortet mit Status {resp.status_code}"
-    except Exception:
-        status, msg = "warning", "Ollama nicht erreichbar"
-    _ollama_cache = (now, status, msg)
-    return status, msg
 
 
 class ComponentStatus(BaseModel):
@@ -60,13 +32,19 @@ class HealthResponse(BaseModel):
 @limiter.exempt
 async def health_check(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    response: Response,
+    db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> HealthResponse:
-    """H-03: vom slowapi-Default-Limit ausgenommen. docker-compose-Healthchecks
+    """H-03: vom globalen Rate-Limit ausgenommen. docker-compose-Healthchecks
     feuern alle 30s pro Container, plus Frontend-Polling — wuerde sonst
     bei knapp mehreren Clients das 200/min-Limit zerschiessen und einen
-    unhealthy-Restart-Loop ausloesen."""
+    unhealthy-Restart-Loop ausloesen.
+
+    HTTP 503 bei Gesamtstatus "error" (Datenbank/Speicher), damit Docker-
+    Healthcheck und ``curl -sf`` in start.bat/update.bat den Ausfall sehen.
+    Warnungen (z.B. Ollama/Modell fehlt) bleiben HTTP 200.
+    """
     components: dict[str, ComponentStatus] = {}
 
     # API - immer OK wenn erreichbar
@@ -75,6 +53,11 @@ async def health_check(
     # Datenbank
     try:
         await db.execute(text("SELECT 1"))
+        # AVAIL-03: Transaktion sofort beenden -> Pool-Verbindung geht zurueck,
+        # BEVOR unten auf Ollama gewartet wird (bis zu 5 s Netz-I/O). Sonst
+        # hielte jeder parallele, unauthentifizierte Health-Aufruf eine der
+        # 15 Pool-Verbindungen und blockierte UI, Queue-Worker und Tasks.
+        await db.rollback()
         components["database"] = ComponentStatus(status="ok")
     except Exception:
         # S-LOW5: /api/health ist unauthentifiziert — keine internen
@@ -96,17 +79,20 @@ async def health_check(
                 status="ok",
                 message=f"{free_gb:.1f} GB frei",
             )
-    except Exception as e:
-        components["storage"] = ComponentStatus(status="error", message=str(e))
+    except Exception:
+        # S-LOW5: keine Pfade/Exception-Texte nach aussen.
+        logger.exception("Health-Check: Speicherort nicht verfuegbar")
+        components["storage"] = ComponentStatus(status="error", message="Speicherort nicht verfügbar")
 
-    # Ollama (M-2: TTL-Cache, siehe _ollama_status)
-    ollama_status, ollama_msg = await _ollama_status(settings)
-    components["ollama"] = ComponentStatus(status=ollama_status, message=ollama_msg)
+    # Ollama (gemeinsam mit /api/system/health, TTL-Cache in ollama_client)
+    ollama = await ollama_health(settings)
+    components["ollama"] = ComponentStatus(status=ollama.status, message=ollama.message)
 
     # Gesamtstatus
     statuses = [c.status for c in components.values()]
     if "error" in statuses:
         overall = "error"
+        response.status_code = 503
     elif "warning" in statuses:
         overall = "warning"
     else:

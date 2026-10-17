@@ -7,6 +7,7 @@ import SystemHealth from '../components/settings/SystemHealth.vue'
 import UpdateCheck from '../components/settings/UpdateCheck.vue'
 import MaintenanceActions from '../components/settings/MaintenanceActions.vue'
 import EmailSettings from '../components/settings/EmailSettings.vue'
+import { copyToClipboard } from '../utils/clipboard'
 
 // H-FE-4: Kindkomponenten laden selbst (onMounted in jeder Komponente).
 // Vorher: SettingsView via Refs + defineExpose — fragil bei Hot-Reload und
@@ -23,8 +24,9 @@ function onHealthLoaded(health) {
   }
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => notify.success('Kopiert.'))
+async function copyText(text) {
+  if (await copyToClipboard(text)) notify.success('Kopiert.')
+  else notify.error('Kopieren nicht möglich — bitte den Text manuell markieren.')
 }
 </script>
 
@@ -32,7 +34,8 @@ function copyText(text) {
   <div class="space-y-6">
     <h1 class="text-2xl font-bold text-gray-900">System</h1>
 
-    <!-- Neustart-Banner -->
+    <!-- Neustart-Banner (nur Docker: Host-Ordner werden per Bind-Mount beim
+         Start eingebunden; FolderSettings meldet restart-required nur dort) -->
     <div v-if="restartRequired" class="rounded-lg border border-amber-300 bg-amber-50 p-4 flex items-start gap-3">
       <span class="text-amber-500 text-xl flex-shrink-0">!</span>
       <div>
@@ -52,10 +55,7 @@ function copyText(text) {
     </div>
 
     <!-- Ordner-Konfiguration -->
-    <FolderSettings
-      :install-path="installPath"
-      @restart-required="restartRequired = true"
-    />
+    <FolderSettings @restart-required="restartRequired = true" />
 
     <!-- Ablagebereiche -->
     <FilingScopeManager />

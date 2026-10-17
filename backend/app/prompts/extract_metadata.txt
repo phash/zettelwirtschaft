@@ -16,7 +16,4 @@ Antworte ausschliesslich mit einem JSON-Objekt:
   "summary": "Kurze Zusammenfassung in 1-2 Saetzen"
 }
 
-OCR-Text des Dokuments:
----
-{ocr_text}
----
+{document_ocr_block}

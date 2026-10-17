@@ -4,22 +4,33 @@ import json
 import logging
 
 from app.config import Settings
+from app.core.prompt_safety import neutralize_prompt_tags
 from app.services.llm_service import call_llm, load_prompt_template
 
 logger = logging.getLogger(__name__)
 
+# Einzige Stelle, an der der Body fuer den Prompt gekuerzt wird.
+_BODY_SNIPPET_CHARS = 1000
+
+# JSON-Schema-constrained Generation (Ollama >= 0.5): erzwingt ein echtes
+# Boolean statt "false"-Strings o.ae.
+_RELEVANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "relevant": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+    "required": ["relevant", "reason"],
+}
+
 
 def _sanitize_email_field(text: str) -> str:
-    """F-11 (Re-Review): Entschaerft die <email_data>-Delimiter-Tags damit
-    ein Absender/Betreff mit `</email_data>...neue Anweisung...<email_data>`
+    """F-11 / INJ-06: Entschaerft die <email_data>-Delimiter-Tags (auch
+    Gross-/Kleinschreibung und Leerzeichen-Varianten), damit ein
+    Absender/Betreff mit `</email_data>...neue Anweisung...<email_data>`
     nicht aus dem Wrap ausbrechen kann.
     """
-    if not text:
-        return ""
-    return (
-        text.replace("<email_data>", "&lt;email_data&gt;")
-        .replace("</email_data>", "&lt;/email_data&gt;")
-    )
+    return neutralize_prompt_tags(text, "email_data")
 
 
 async def check_email_relevance(
@@ -39,22 +50,27 @@ async def check_email_relevance(
     prompt = template.format(
         sender=_sanitize_email_field(sender) or "unbekannt",
         subject=_sanitize_email_field(subject) or "(kein Betreff)",
-        body_snippet=_sanitize_email_field((body_snippet or "")[:1000]),
+        body_snippet=_sanitize_email_field((body_snippet or "")[:_BODY_SNIPPET_CHARS]),
         attachment_names=_sanitize_email_field(
             ", ".join(attachment_names) if attachment_names else "keine"
         ),
     )
 
     try:
-        response = await call_llm(prompt, settings)
+        response = await call_llm(prompt, settings, schema=_RELEVANCE_SCHEMA)
         if not response:
             logger.warning("LLM-Antwort leer bei Relevanzpruefung")
             return {"relevant": True, "reason": "LLM-Fehler, Fallback: als relevant markiert"}
 
         data = json.loads(response)
+        relevant = data.get("relevant") if isinstance(data, dict) else None
+        if not isinstance(relevant, bool):
+            # bool("false") waere True — nur echte Booleans akzeptieren.
+            logger.warning("LLM-Relevanz ohne gueltiges Boolean: %r", relevant)
+            return {"relevant": True, "reason": "Ungültige LLM-Antwort, Fallback: als relevant markiert"}
         return {
-            "relevant": bool(data.get("relevant", True)),
-            "reason": str(data.get("reason", "")),
+            "relevant": relevant,
+            "reason": str(data.get("reason") or ""),
         }
     except json.JSONDecodeError:
         logger.warning("LLM-Antwort kein gueltiges JSON: %s", response[:200] if response else "")

@@ -1,7 +1,5 @@
 """Tests fuer erweitertes Rueckfrage-System API."""
 
-import uuid
-
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +8,7 @@ from app.models.document import Document, DocumentStatus, DocumentType, ReviewSt
 from app.models.filing_scope import FilingScope
 from app.models.review_question import ReviewQuestion
 from app.models.correction_mapping import CorrectionMapping
+from tests.factories import make_document
 
 
 async def _create_scope(db: AsyncSession, **overrides) -> FilingScope:
@@ -27,29 +26,13 @@ async def _create_scope(db: AsyncSession, **overrides) -> FilingScope:
 
 
 async def _create_doc(db: AsyncSession, scope: FilingScope, **overrides) -> Document:
-    """Erstellt ein Test-Dokument mit Pflichtfeldern."""
+    """Erstellt ein pruefbeduerftiges Test-Dokument im Ablagebereich ``scope``."""
     defaults = dict(
-        original_filename="test.pdf",
-        stored_filename="abc_test.pdf",
-        file_path="/archive/2024/03/RECHNUNG/abc_test.pdf",
-        file_type="pdf",
-        file_size_bytes=1024,
-        file_hash=f"hash_{uuid.uuid4().hex[:12]}",
-        document_type=DocumentType.RECHNUNG,
-        title="Testrechnung",
-        issuer="Test GmbH",
-        ocr_text="OCR Text der Testrechnung",
-        ocr_confidence=0.9,
         ai_confidence=0.5,
-        status=DocumentStatus.ACTIVE,
         review_status=ReviewStatus.NEEDS_REVIEW,
         filing_scope_id=scope.id,
     )
-    defaults.update(overrides)
-    doc = Document(**defaults)
-    db.add(doc)
-    await db.flush()
-    return doc
+    return await make_document(db, **{**defaults, **overrides})
 
 
 async def _create_question(
@@ -218,7 +201,7 @@ class TestAnswerFieldUpdateAmount:
         assert detail.json()["confident_fields"]["amount"] == 250.75
 
     async def test_answer_amount_invalid_text(self, client, db_session: AsyncSession):
-        """'abc' soll nicht crashen (ValueError wird gefangen)."""
+        """'abc' wird mit 422 abgelehnt, Betrag + Frage bleiben unveraendert."""
         scope = await _create_scope(db_session)
         doc = await _create_doc(db_session, scope, amount=100.0)
         q = await _create_question(
@@ -232,10 +215,12 @@ class TestAnswerFieldUpdateAmount:
             f"/api/review/questions/{q.id}/answer",
             json={"answer": "abc"},
         )
-        assert resp.status_code == 200
-        # Betrag sollte unveraendert bleiben
+        assert resp.status_code == 422
+        assert "Betrag" in resp.json()["detail"]
+        # Betrag sollte unveraendert bleiben, Frage offen
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["confident_fields"]["amount"] == 100.0
+        assert detail.json()["questions"][0]["is_answered"] is False
 
 
 @pytest.mark.asyncio
@@ -283,7 +268,7 @@ class TestAnswerFieldUpdateDocumentDate:
         assert detail.json()["confident_fields"]["document_date"] == "2024-01-15"
 
     async def test_answer_date_invalid(self, client, db_session: AsyncSession):
-        """Ungueltiges Datum soll nicht crashen."""
+        """Ungueltiges Datum wird mit 422 abgelehnt."""
         scope = await _create_scope(db_session)
         doc = await _create_doc(db_session, scope)
         q = await _create_question(
@@ -297,7 +282,7 @@ class TestAnswerFieldUpdateDocumentDate:
             f"/api/review/questions/{q.id}/answer",
             json={"answer": "kein datum"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
         # document_date bleibt None
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["confident_fields"]["document_date"] is None
@@ -330,7 +315,7 @@ class TestAnswerFieldUpdateDocumentType:
         assert detail.json()["document_type"] == "RECHNUNG"
 
     async def test_answer_type_invalid(self, client, db_session: AsyncSession):
-        """'INVALID_TYPE' soll nicht crashen, Typ bleibt unveraendert."""
+        """'INVALID_TYPE' wird mit 422 abgelehnt, Typ bleibt unveraendert."""
         scope = await _create_scope(db_session)
         doc = await _create_doc(
             db_session, scope, document_type=DocumentType.SONSTIGES
@@ -346,7 +331,7 @@ class TestAnswerFieldUpdateDocumentType:
             f"/api/review/questions/{q.id}/answer",
             json={"answer": "INVALID_TYPE"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["document_type"] == "SONSTIGES"
@@ -381,7 +366,8 @@ class TestAnswerFieldUpdateTaxRelevant:
     async def test_answer_tax_relevant_nein(self, client, db_session: AsyncSession):
         """'nein' soll tax_relevant=False setzen (nicht in ja/yes/true/1)."""
         scope = await _create_scope(db_session)
-        doc = await _create_doc(db_session, scope)
+        # Start bei True — sonst wuerde ein wirkungsloser 'nein'-Zweig nicht auffallen
+        doc = await _create_doc(db_session, scope, tax_relevant=True)
         q = await _create_question(
             db_session, doc,
             question="Ist das Dokument steuerrelevant?",
@@ -465,6 +451,8 @@ class TestAnswerFieldUpdateFilingScope:
 
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["confident_fields"]["filing_scope"] == "Geschaeftlich"
+        doc_resp = await client.get(f"/api/documents/{doc.id}")
+        assert doc_resp.json()["filing_scope_id"] == scope2.id
 
     async def test_answer_new_scope(self, client, db_session: AsyncSession):
         """'NEU: Praxis' soll neuen Ablagebereich erstellen und zuweisen."""
@@ -512,8 +500,8 @@ class TestAnswerFieldUpdateFilingScope:
         assert new_scope.slug == "verein"
         assert new_scope.is_default is False
 
-    async def test_answer_nonexistent_scope_ignored(self, client, db_session: AsyncSession):
-        """Nicht existierender Scope-Name (ohne NEU:) soll keine Aenderung bewirken."""
+    async def test_answer_nonexistent_scope_rejected(self, client, db_session: AsyncSession):
+        """Nicht existierender Scope-Name (ohne NEU:) -> 422, keine Aenderung."""
         scope = await _create_scope(db_session)
         doc = await _create_doc(db_session, scope)
         q = await _create_question(
@@ -527,7 +515,7 @@ class TestAnswerFieldUpdateFilingScope:
             f"/api/review/questions/{q.id}/answer",
             json={"answer": "GibtEsNicht"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
         # Scope bleibt beim Original
         detail = await client.get(f"/api/review/documents/{doc.id}")
@@ -607,6 +595,7 @@ class TestReviewWorkflow:
         assert data["summary"] == "Zusammenfassung"
         assert len(data["questions"]) == 2
         # Hoechste Prioritaet zuerst
+        assert [q["id"] for q in data["questions"]] == [q2.id, q1.id]
         assert data["questions"][0]["priority"] == 5
         assert data["questions"][1]["priority"] == 1
 
@@ -689,24 +678,35 @@ class TestReviewWorkflow:
         pending = await client.get("/api/review/pending")
         assert pending.json()["total"] == 0
 
-    async def test_skip_sets_ok(self, client, db_session: AsyncSession):
-        """POST /review/documents/{id}/skip soll review_status auf OK setzen."""
+    async def test_accept_sets_reviewed(self, client, db_session: AsyncSession):
+        """POST /review/documents/{id}/accept ('So übernehmen') -> REVIEWED.
+
+        Ersetzt das alte /skip, das Dokumente still als OK markierte."""
         scope = await _create_scope(db_session)
         doc = await _create_doc(db_session, scope)
         await db_session.commit()
 
-        resp = await client.post(f"/api/review/documents/{doc.id}/skip")
+        resp = await client.post(f"/api/review/documents/{doc.id}/accept")
         assert resp.status_code == 200
-        assert resp.json()["ok"] is True
+        assert resp.json() == {"ok": True, "review_status": "REVIEWED"}
 
         # Dokument sollte nicht mehr in pending erscheinen
         pending = await client.get("/api/review/pending")
         assert pending.json()["total"] == 0
 
-    async def test_skip_not_found(self, client):
-        """POST /review/documents/{id}/skip mit ungueltigem ID soll 404 geben."""
-        resp = await client.post("/api/review/documents/nonexistent/skip")
+    async def test_accept_not_found(self, client):
+        """POST /review/documents/{id}/accept mit ungueltigem ID soll 404 geben."""
+        resp = await client.post("/api/review/documents/nonexistent/accept")
         assert resp.status_code == 404
+
+    async def test_skip_endpoint_removed(self, client, db_session: AsyncSession):
+        """'Später' ist rein clientseitig — es gibt kein Status-aenderndes /skip mehr."""
+        scope = await _create_scope(db_session)
+        doc = await _create_doc(db_session, scope)
+        await db_session.commit()
+
+        resp = await client.post(f"/api/review/documents/{doc.id}/skip")
+        assert resp.status_code in (404, 405)
 
 
 @pytest.mark.asyncio
@@ -753,8 +753,8 @@ class TestReviewStatsWithData:
         resp = await client.get("/api/review/stats")
         data = resp.json()
         assert data["open_documents"] == 0
-        # Offene Fragen werden trotzdem gezaehlt (kein Status-Filter auf ReviewQuestion)
-        assert data["open_questions"] == 1
+        # Fragen geloeschter Dokumente zaehlen nicht mehr
+        assert data["open_questions"] == 0
 
 
 # =========================================================================
@@ -1055,6 +1055,7 @@ class TestNewScopeDeduplication:
         )
         scopes = result.scalars().all()
         assert len(scopes) == 1
+        assert scopes[0].id == praxis.id
 
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["confident_fields"]["filing_scope"] == "Praxis"

@@ -1,7 +1,9 @@
 # Zettelwirtschaft - Native-Konfiguration (Windows)
-# Kopiere diese Datei nach %LOCALAPPDATA%\Zettelwirtschaft\config.toml
-# oder dem im Setup gewaehlten Pfad. Das Backend liest ZETTELWIRTSCHAFT_CONFIG
-# als Pfad zur aktuellen Datei (vom Installer im Service-ENV gesetzt).
+# Das Setup schreibt die echte Datei nach <Datenordner>\config.toml
+# (Default: %USERPROFILE%\Documents\Zettelwirtschaft\config.toml; der Pfad steht
+# in HKLM\SOFTWARE\Zettelwirtschaft -> ConfigPath). Diese Datei ist nur eine
+# kommentierte Vorlage. Das Backend liest ZETTELWIRTSCHAFT_CONFIG als Pfad zur
+# aktuellen Datei (vom Installer im Service-ENV gesetzt).
 #
 # Aenderungen werden nach Service-Neustart wirksam.
 
@@ -14,9 +16,11 @@ SERVER_PORT = 8080
 
 # ---- HTTPS (optional, fuer Smartphone-Scan im LAN) ----
 # Die Kamera-API und der PWA-Service-Worker verlangen einen Secure Context
-# (HTTPS oder localhost). Zertifikat erzeugen:
-#   <install>\bin\python.exe ssl\generate-self-signed-cert.py
-# Dann beide Pfade setzen (leer = HTTP):
+# (HTTPS oder localhost). Das Native-Bundle enthaelt keinen Zertifikats-
+# Generator; cert.pem + key.pem z.B. auf einem Rechner mit Python erzeugen:
+#   python ssl\generate-self-signed-cert.py <LAN-IP> <Zielordner>
+# (Skript aus dem Quellcode-Repository, braucht das Paket "cryptography").
+# Dann beide Pfade setzen (leer = HTTP) und den Dienst neu starten:
 # SERVER_SSL_CERTFILE = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/cert.pem"
 # SERVER_SSL_KEYFILE  = "C:/Users/<USER>/Documents/Zettelwirtschaft/ssl/key.pem"
 
@@ -29,12 +33,32 @@ ARCHIVE_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/archive"
 THUMBNAIL_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/thumbnails"
 WATCH_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/watch"
 EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-Sync.
+# Netzwerkpfade (\\server\freigabe) als Watch-/Export-Ordner in der Web-UI erlauben.
+# Standard aus: der Dienst laeuft als LocalSystem und meldet das Maschinenkonto beim
+# angegebenen Server an. Nur mit einer vertrauenswuerdigen Freigabe einschalten.
+# ALLOW_NETWORK_FOLDERS = false
 
 # ---- KI / Ollama ----
 OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)
-OLLAMA_MODEL = "qwen2.5:7b-instruct"
+# Default gemma4:e2b-it-qat (4,3 GB, CPU-tauglich); NVIDIA-GPU mit >= 10 GB VRAM:
+# gemma4:12b-it-qat. Bisheriger Default (bis v1.5): qwen2.5:7b-instruct.
+# Benoetigt Ollama >= 0.30.3 (getestet mit 0.40.5).
+OLLAMA_MODEL = "gemma4:e2b-it-qat"
+# Fehlende Modelle (OLLAMA_MODEL, EMBEDDING_MODEL) laedt das Backend beim Start selbst
+# aus der Ollama-Registry (einzige automatische Internet-Verbindung: Modellname + IP).
+# Abschalten mit OLLAMA_AUTO_PULL = false (dann `ollama pull <modell>` von Hand).
+OLLAMA_AUTO_PULL = true
 OLLAMA_TIMEOUT = 300
 OLLAMA_MAX_RETRIES = 2
+# OLLAMA_ANALYSIS_TIMEOUT = 120   # Timeout (s) der JSON-Dokumentanalyse
+# OLLAMA_NUM_CTX = 8192           # Kontextfenster
+# OLLAMA_NUM_PREDICT = 1024       # max. Antwort-Tokens der Analyse
+# OLLAMA_KEEP_ALIVE = "30m"       # Modell nach einem Aufruf so lange geladen halten
+# OLLAMA_THINK = false            # nur fuer Modelle mit "thinking"-Faehigkeit
+
+# ---- E-Mail-Import ----
+# IMAP_TIMEOUT = 30               # Socket-Timeout (s)
+# EMAIL_MAX_PER_RUN = 25          # max. E-Mails pro Abruf, Rest beim naechsten Lauf
 
 # ---- OCR ----
 OCR_LANGUAGES = "deu+eng"
@@ -47,6 +71,10 @@ ALLOWED_FILE_TYPES = "pdf,jpg,jpeg,png,tiff,bmp"
 
 # ---- Logging ----
 LOG_LEVEL = "INFO"
+
+# ---- Zeitzone ----
+# Fuer CRON-Zeitplaene der E-Mail-Konten (Ortszeit statt UTC).
+TIMEZONE = "Europe/Berlin"
 
 # ---- PIN-Schutz ----
 # In der Native-Version aktiviert der Installer den PIN per Default und
@@ -61,7 +89,10 @@ PIN_SESSION_TIMEOUT_MINUTES = 1440
 # kein separater Service mehr.
 CHROMADB_MODE = "embedded"
 CHROMADB_PATH = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/chromadb"
-EMBEDDING_MODEL = "bge-m3"
+# Default qwen3-embedding:4b; bei weniger als 12 GB RAM qwen3-embedding:0.6b.
+# Bisheriger Default (bis v1.5): bge-m3. Ein Wechsel baut den Vektor-Index beim
+# naechsten Start automatisch neu auf (eigene Collection pro Modell).
+EMBEDDING_MODEL = "qwen3-embedding:4b"
 
 RAG_CHUNK_SIZE = 800
 RAG_CHUNK_OVERLAP = 150

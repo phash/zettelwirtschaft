@@ -19,7 +19,7 @@ async def list_notifications(
     unread_only: bool = False,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Liste aller Benachrichtigungen."""
     stmt = select(Notification).order_by(Notification.created_at.desc())
@@ -31,7 +31,7 @@ async def list_notifications(
 
 
 @router.get("/notifications/count", response_model=NotificationCount)
-async def notification_count(session: AsyncSession = Depends(get_db)):
+async def notification_count(session: AsyncSession = Depends(get_db, scope="function")):
     """Anzahl ungelesener Benachrichtigungen."""
     stmt = select(func.count()).select_from(Notification).where(Notification.is_read.is_(False))
     result = await session.execute(stmt)
@@ -41,7 +41,7 @@ async def notification_count(session: AsyncSession = Depends(get_db)):
 @router.post("/notifications/{notification_id}/read")
 async def mark_read(
     notification_id: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Benachrichtigung als gelesen markieren."""
     result = await session.execute(
@@ -55,7 +55,7 @@ async def mark_read(
 
 
 @router.post("/notifications/read-all")
-async def mark_all_read(session: AsyncSession = Depends(get_db)):
+async def mark_all_read(session: AsyncSession = Depends(get_db, scope="function")):
     """Alle Benachrichtigungen als gelesen markieren."""
     await session.execute(
         update(Notification).where(Notification.is_read.is_(False)).values(is_read=True)

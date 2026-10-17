@@ -1,9 +1,10 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Enum, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -26,8 +27,8 @@ class ProcessedEmail(Base):
     message_id: Mapped[str] = mapped_column(String(1000), nullable=False)
     subject: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     sender: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    status: Mapped[str] = mapped_column(
+    received_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    status: Mapped[EmailStatus] = mapped_column(
         Enum(EmailStatus, native_enum=False), nullable=False
     )
     relevance_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -36,5 +37,5 @@ class ProcessedEmail(Base):
         String(36), ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )

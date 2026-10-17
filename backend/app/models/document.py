@@ -1,24 +1,25 @@
 import enum
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
     Date,
-    DateTime,
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
-    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.db_types import UTCDateTime
 from app.database import Base
 
 
@@ -64,6 +65,17 @@ class TaxCategory(str, enum.Enum):
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        # Datei-Hash nur unter aktiven Dokumenten eindeutig: ein geloeschtes
+        # Dokument (Soft-Delete) blockiert den erneuten Import derselben Datei
+        # nicht. Der Partial Index dient zugleich dem Duplikat-Lookup.
+        Index(
+            "ux_documents_file_hash_active",
+            "file_hash",
+            unique=True,
+            sqlite_where=text("status != 'DELETED'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -74,7 +86,7 @@ class Document(Base):
     thumbnail_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     file_type: Mapped[str] = mapped_column(String(10), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    file_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # KI-extrahierte Metadaten
     document_type: Mapped[str] = mapped_column(
@@ -127,12 +139,12 @@ class Document(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
-    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scanned_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     # Relationships
     tags: Mapped[list["Tag"]] = relationship(
@@ -151,15 +163,18 @@ class Tag(Base):
     __tablename__ = "tags"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_auto_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )
 
+    # Wird nie geladen (Tag-Zuweisung laeuft ueber DocumentTag). lazy="raise"
+    # statt "noload" (in SQLAlchemy 2.1 deprecated): Zugriff wirft, statt still
+    # eine leere Liste zu liefern.
     documents: Mapped[list["Document"]] = relationship(
-        secondary="document_tags", back_populates="tags", lazy="noload"
+        secondary="document_tags", back_populates="tags", lazy="raise"
     )
 
 

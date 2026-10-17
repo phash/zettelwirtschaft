@@ -9,9 +9,9 @@ ausdruecklich aktiviert werden.
 
 import logging
 import time
-from pathlib import Path
-
 import httpx
+
+from app.core.version import read_app_version
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +24,8 @@ _cache: dict = {"url": None, "at": 0.0, "data": None}
 
 
 def read_local_version() -> str:
-    """Installierte Version aus VERSION bzw. data/.version (analog main._read_version)."""
-    for path in (Path("VERSION"), Path("data/.version")):
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        except (FileNotFoundError, OSError):
-            continue
-    return "unknown"
+    """Installierte Version (gemeinsame Quelle: ``app.core.version``)."""
+    return read_app_version()
 
 
 def parse_version(value: str | None) -> tuple[int, ...] | None:
@@ -110,23 +103,48 @@ async def check_for_update(
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(manifest_url, headers={"Accept": "application/json"})
             resp.raise_for_status()
-            manifest = resp.json()
-        latest = str(manifest.get("latest_version") or manifest.get("version") or "").strip()
-        if not latest:
-            result["error"] = "Manifest ohne Versionsangabe."
-            return result
-        result["latest_version"] = latest
-        result["release_url"] = manifest.get("release_url")
-        result["published_at"] = manifest.get("published_at")
-        result["notes"] = manifest.get("notes")
-        result["update_available"] = is_newer(current, latest)
-        _cache["url"] = manifest_url
-        _cache["at"] = now
-        _cache["data"] = dict(result)
     except Exception as exc:  # graceful: Update-Pruefung darf nie das System stoeren
         logger.warning("Update-Pruefung fehlgeschlagen: %s", exc)
         result["error"] = "Update-Server nicht erreichbar."
+        return result
+
+    try:
+        manifest = resp.json()
+    except ValueError:
+        manifest = None
+    if not isinstance(manifest, dict):
+        logger.warning("Update-Manifest ist kein JSON-Objekt (%s)", manifest_url)
+        result["error"] = "Update-Manifest hat ein ungültiges Format."
+        return result
+    latest = _optional_str(manifest.get("latest_version")) or _optional_str(manifest.get("version"))
+    if not latest:
+        result["error"] = "Manifest ohne Versionsangabe."
+        return result
+    result["latest_version"] = latest
+    # Nur normalisierte Werte (str | None) uebernehmen und cachen — ein int oder
+    # eine Liste liesse sonst die Response-Validierung im Endpoint scheitern
+    # (HTTP 500, und das 6 h lang aus dem Cache).
+    result["release_url"] = _optional_str(manifest.get("release_url"))
+    result["published_at"] = _optional_str(manifest.get("published_at"))
+    result["notes"] = _optional_str(manifest.get("notes"))
+    result["update_available"] = is_newer(current, latest)
+    _cache["url"] = manifest_url
+    _cache["at"] = now
+    _cache["data"] = dict(result)
     return result
+
+
+def _optional_str(value) -> str | None:
+    """Manifest-Feld als getrimmter String; Zahlen werden umgewandelt, alles
+    andere (Listen, Objekte, bool) ignoriert."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
 
 
 def _reset_cache() -> None:

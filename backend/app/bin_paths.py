@@ -16,31 +16,37 @@ im Geschwisterordner `bin/` neben dem `backend/`-Bundle:
 Dieser Modul-Import muss SEHR FRUEH erfolgen (vor pdf2image / pytesseract),
 damit die Pfade bekannt sind.
 
-Im Dev-Modus (nicht frozen): Modul ist ein No-Op und gibt der System-PATH
-Vorrang. So bleibt die Docker-Variante unbeeinflusst.
+Ausserhalb des Bundles (Dev/Docker) greift nur ein ``<repo>/bin/`` mit
+``tesseract.exe`` (lokaler Test des Bundles auf Windows); sonst ist das Modul
+ein No-Op und der System-PATH gilt. Im Docker-Image waere ``<repo>`` = ``/``
+und ``/bin`` existiert immer — deshalb zaehlt ein Ordner nur mit tesseract.exe.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
+
+from app.core.install_dir import native_install_dir
 
 logger = logging.getLogger("zettelwirtschaft.bin_paths")
 
 
+def _is_bundle_bin_dir(candidate: Path) -> bool:
+    return (candidate / "tesseract.exe").is_file()
+
+
 def _find_bin_dir() -> Path | None:
-    """Ermittelt das `bin/`-Verzeichnis neben dem Bundle."""
-    if getattr(sys, "frozen", False):
-        # PyInstaller-Onedir: sys.executable liegt unter <install>/backend/zettelwirtschaft-backend.exe
-        exe_dir = Path(sys.executable).resolve().parent
-        candidate = exe_dir.parent / "bin"
-        if candidate.exists():
+    """Ermittelt das gebundelte `bin/`-Verzeichnis (nur mit tesseract.exe)."""
+    install_dir = native_install_dir()
+    if install_dir is not None:
+        candidate = install_dir / "bin"
+        if _is_bundle_bin_dir(candidate):
             return candidate
     # Dev-Mode: schaue ob <repo>/bin/ existiert (z.B. fuer lokale Tests des Bundles)
     repo_bin = Path(__file__).resolve().parents[2] / "bin"
-    if repo_bin.exists():
+    if _is_bundle_bin_dir(repo_bin):
         return repo_bin
     return None
 

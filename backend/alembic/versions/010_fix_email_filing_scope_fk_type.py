@@ -16,6 +16,9 @@ depends_on = None
 
 def upgrade() -> None:
     # SQLite unterstuetzt kein ALTER COLUMN, daher Tabelle neu erstellen
+    # (DROP + RENAME). Das ist nur sicher, weil alembic/env.py die FK-Pruefung
+    # fuer Migrationen abschaltet — sonst loescht der DROP per CASCADE alle
+    # processed_emails und nullt processing_jobs.email_account_id.
     with op.batch_alter_table("email_accounts") as batch_op:
         batch_op.alter_column(
             "filing_scope_id",
