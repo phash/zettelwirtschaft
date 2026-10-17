@@ -46,7 +46,7 @@ class TestChatPersistence:
     async def test_embedding_outage_end_to_end(self, client):
         """Echter RAG-Pfad: Embedding-Ausfall -> 503 mit Grund, kein Verlaufseintrag."""
         failing = AsyncMock(side_effect=OllamaError(OllamaErrorKind.MODEL_MISSING, "not found", "bge-m3"))
-        with patch("app.services.rag_service.embed_batch", failing):
+        with patch("app.services.rag_service.embed_query", failing):
             resp = await client.post("/api/chat", json={"question": "Was kostet die Versicherung?"})
         assert resp.status_code == 503
         assert "bge-m3" in resp.json()["detail"] and "nicht installiert" in resp.json()["detail"]

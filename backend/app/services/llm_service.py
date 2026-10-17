@@ -170,11 +170,14 @@ async def _chat(
     if response_format:
         payload["format"] = response_format
 
-    # "think" nur an Modelle senden, die es koennen — andere lehnen das Feld
-    # ab (bzw. aeltere Ollama-Versionen kennen es nicht). Hybrid-Modelle
-    # "denken" ohne think=false tausende Tokens lang.
+    # "think" an Modelle senden, die es koennen — andere lehnen das Feld ab
+    # (bzw. aeltere Ollama-Versionen kennen es nicht). Hybrid-Modelle wie
+    # gemma4 "denken" ohne think=false standardmaessig tausende Tokens lang.
+    # Sind die Capabilities unbekannt (/api/show gerade nicht erreichbar),
+    # wird think trotzdem gesendet: eine Ablehnung faengt der Retry unten ab,
+    # ein stillschweigend denkendes Modell dagegen sprengt jedes Timeout.
     capabilities = await model_capabilities(settings, model)
-    if capabilities and "thinking" in capabilities:
+    if capabilities is None or "thinking" in capabilities:
         payload["think"] = settings.OLLAMA_THINK
 
     label = "Schema" if isinstance(response_format, dict) else ("JSON" if response_format else "Text")

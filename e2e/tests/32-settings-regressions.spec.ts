@@ -277,10 +277,10 @@ test.describe('Settings regressions', () => {
           database: { status: 'ok' },
           ollama: {
             status: 'warning',
-            message: 'Modell qwen2.5:7b-instruct nicht installiert',
+            message: 'Modell gemma4:e2b-it-qat nicht installiert',
             configured_models: [
-              { name: 'qwen2.5:7b-instruct', purpose: 'llm', available: false, downloading: false },
-              { name: 'bge-m3', purpose: 'embedding', available: true, downloading: false },
+              { name: 'gemma4:e2b-it-qat', purpose: 'llm', available: false, downloading: false },
+              { name: 'qwen3-embedding:4b', purpose: 'embedding', available: true, downloading: false },
             ],
             // Altes Feld einer frueheren Backend-Version: wird nicht mehr gelistet.
             models: Array.from({ length: 26 }, (_, i) => `modell-${i}:latest`),
@@ -294,12 +294,44 @@ test.describe('Settings regressions', () => {
     await expect(page.getByTestId('component-database')).toContainText('Datenbank');
     await expect(page.getByTestId('component-chromadb')).toContainText('Vektor-Datenbank');
     const models = page.getByTestId('configured-models');
-    await expect(models).toContainText('qwen2.5:7b-instruct');
+    await expect(models).toContainText('gemma4:e2b-it-qat');
     await expect(models).toContainText('fehlt');
-    await expect(models).toContainText('bge-m3');
+    await expect(models).toContainText('qwen3-embedding:4b');
     await expect(page.getByText('modell-3:latest')).toHaveCount(0);
     await expect(page.getByText('vunknown')).toHaveCount(0);
     await expect(page.getByTestId('app-version')).toHaveCount(0);
+  });
+
+  test('health: outdated Ollama shows warning with version and minimum', async ({ page }) => {
+    await setupSettings(page, {
+      health: {
+        ...MOCK_SYSTEM_HEALTH,
+        status: 'warning',
+        components: {
+          ...MOCK_SYSTEM_HEALTH.components,
+          ollama: {
+            ...MOCK_SYSTEM_HEALTH.components.ollama,
+            status: 'warning',
+            message: 'Ollama 0.12.6 ist älter als 0.30.3 — bitte aktualisieren',
+            version: '0.12.6',
+            min_version: '0.30.3',
+          },
+        },
+      },
+    });
+    await page.goto('/einstellungen');
+
+    const ollama = page.getByTestId('component-ollama');
+    await expect(ollama).toContainText('Ollama 0.12.6 ist älter als 0.30.3 — bitte aktualisieren');
+    await expect(page.getByTestId('ollama-version')).toContainText('0.12.6');
+    await expect(page.getByTestId('ollama-version')).toContainText('mindestens 0.30.3');
+  });
+
+  test('health: current Ollama version is listed without warning', async ({ page }) => {
+    await setupSettings(page, { health: { ...MOCK_SYSTEM_HEALTH } });
+    await page.goto('/einstellungen');
+    await expect(page.getByTestId('ollama-version')).toContainText('0.40.5');
+    await expect(page.getByTestId('component-ollama')).not.toContainText('bitte aktualisieren');
   });
 
   test('health is polled every 60 s, not every 10 s', async ({ page }) => {

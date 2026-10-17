@@ -44,6 +44,9 @@ export interface SystemHealthComponent extends ComponentStatus {
   missing?: string[];
   last_calls?: Record<string, { at: IsoDateTime; ok: boolean; model: string; error_kind: string | null; error: string | null }>;
   vectors?: number;
+  /** Ollama-Version laut /api/version (null = nicht ermittelbar) und Mindestversion. */
+  version?: string | null;
+  min_version?: string;
 }
 export interface SystemHealthResponse {
   status: ComponentState;

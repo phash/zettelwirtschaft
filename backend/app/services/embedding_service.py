@@ -12,6 +12,48 @@ logger = logging.getLogger("zettelwirtschaft.embedding")
 EMBED_BATCH_SIZE = 32
 
 
+# Modellfamilien (Namensanfang, ohne Tag), deren SUCHANFRAGEN mit einer
+# Aufgabenbeschreibung eingebettet werden muessen (asymmetrisches Retrieval).
+# Dokument-Chunks bleiben ohne Prefix. qwen3-embedding (alle Groessen):
+# Benchmark mit 70 Haushaltsbelegen R@1 100 % mit, 95,8 % ohne Prefix.
+# bge-m3, nomic-embed-text u.a.: kein Prefix.
+QWEN3_EMBEDDING_QUERY_PREFIX = (
+    "Instruct: Given a question about a personal household document, "
+    "retrieve the document passages that answer the question\nQuery:"
+)
+_QUERY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("qwen3-embedding", QWEN3_EMBEDDING_QUERY_PREFIX),
+)
+
+
+def _model_family(model: str) -> str:
+    """Modellname ohne Registry-/Namespace-Pfad und ohne Tag, kleingeschrieben.
+
+    "qwen3-embedding:4b" -> "qwen3-embedding",
+    "registry.local/library/qwen3-embedding:0.6b" -> "qwen3-embedding".
+    """
+    last_segment = (model or "").strip().rsplit("/", 1)[-1]
+    return last_segment.split(":", 1)[0].lower()
+
+
+def query_prefix(model: str) -> str:
+    """Instruct-Prefix fuer Suchanfragen an ``model`` ("" = keiner).
+
+    Einzige Stelle der Regel; gilt nur fuer Anfragen, nie fuer Dokumente.
+    """
+    family = _model_family(model)
+    for prefix_family, prefix in _QUERY_PREFIXES:
+        if family.startswith(prefix_family):
+            return prefix
+    return ""
+
+
+def format_query(text: str, model: str) -> str:
+    """Suchanfrage so, wie sie ``model`` eingebettet bekommen muss."""
+    prefix = query_prefix(model)
+    return f"{prefix}{text}" if prefix else text
+
+
 async def embed_batch(texts: list[str], settings: Settings) -> list[list[float]]:
     """Vektoren fuer alle ``texts`` (in Batches), gleiche Reihenfolge und Anzahl.
 
@@ -68,3 +110,16 @@ async def embed_text(text: str, settings: Settings) -> list[float] | None:
     """Embedding-Vektor fuer einen einzelnen Text, ``None`` bei Fehler."""
     result = await embed_texts([text], settings)
     return result[0] if result else None
+
+
+async def embed_query(text: str, settings: Settings) -> list[float]:
+    """Vektor fuer eine SUCHANFRAGE (RAG/Chat-Retrieval).
+
+    Setzt bei Modellen, die das verlangen (qwen3-embedding*), den Instruct-
+    Prefix vor die Anfrage (``query_prefix``). Dokumente werden weiterhin mit
+    ``embed_batch`` ohne Prefix eingebettet.
+
+    Raises:
+        OllamaError: wie ``embed_batch``.
+    """
+    return (await embed_batch([format_query(text, settings.EMBEDDING_MODEL)], settings))[0]

@@ -129,6 +129,16 @@ docker compose pull 2>nul
 :: Schritt 4: Neu bauen und starten
 :: =============================================
 echo  [4/5] Starte Services neu...
+:: Bisherige Modelle festschreiben (v1.6 hat neue Modell-Defaults): fehlt
+:: OLLAMA_MODEL/EMBEDDING_MODEL in der .env, lief die Installation mit dem
+:: alten Default. VOR "docker compose up" - der Container liest die .env nur
+:: beim Erstellen. Gleiche Regel wie install-gui.ps1 (scripts\model-tiers.ps1).
+if exist .env if exist scripts\model-tiers.ps1 (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; . '.\scripts\model-tiers.ps1'; $v=''; if (Test-Path 'data\.version') { $v=(Get-Content 'data\.version' -Raw).Trim() }; foreach ($k in @(Add-ZwLegacyModelDefaults -EnvPath '.env' -InstalledVersion $v)) { Write-Output ('        ' + $k + ' mit bisherigem Standard in .env eingetragen.') }"
+    if !ERRORLEVEL! NEQ 0 (
+        echo  [WARNUNG] Modell-Eintraege in der .env konnten nicht geprueft werden.
+    )
+)
 :: Host-Ordner/GPU/HTTPS-Konfiguration wie in start.bat vorbereiten
 if exist generate-mounts.ps1 (
     powershell -NoProfile -ExecutionPolicy Bypass -File generate-mounts.ps1

@@ -206,6 +206,11 @@ onUnmounted(() => {
           <p v-else-if="comp.missing?.length" class="ml-5 text-xs text-red-600">
             Fehlt: <code class="font-mono">{{ comp.missing.join(', ') }}</code>
           </p>
+          <!-- Ollama-Version (Warnung bei zu alter Version steht in der Statusmeldung) -->
+          <p v-if="name === 'ollama' && comp.version" class="ml-5 text-xs text-gray-500" data-testid="ollama-version">
+            Ollama-Version <code class="font-mono text-gray-600">{{ comp.version }}</code>
+            <span v-if="comp.min_version" class="text-gray-400">(mindestens {{ comp.min_version }})</span>
+          </p>
           <!-- ChromaDB Fehler-Hilfe -->
           <div v-if="name === 'chromadb' && comp.status !== 'ok'" class="ml-5 rounded-lg bg-red-50 border border-red-100 p-3 text-xs text-red-700 space-y-2">
             <p class="font-medium">Die Vektor-Datenbank ist nicht erreichbar. Der KI-Assistent ist dadurch deaktiviert.</p>

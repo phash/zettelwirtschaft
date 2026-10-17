@@ -4,6 +4,8 @@
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
+# Modell-Stufen (gemeinsam mit install-gui.ps1 und dem Native-Setup)
+. (Join-Path $ProjectDir "scripts\model-tiers.ps1")
 
 # --- Hilfsfunktionen ---
 
@@ -212,17 +214,32 @@ if ($enableWatch -eq "j") {
     Write-OK "Watch-Ordner: $watchDir"
 }
 
-# LLM-Modell basierend auf RAM
-if ($totalRAM -gt 16) {
-    $defaultModel = "qwen2.5:7b-instruct"
-    Write-Info "RAM > 16 GB: Empfehle qwen2.5:7b-instruct (bessere JSON-Treue + deutsche Belege)."
+# KI-Modelle passend zur Hardware (scripts\model-tiers.ps1). Eine bestehende
+# .env wird gleich neu geschrieben — ihre Modelle bleiben dann der Vorschlag,
+# sonst wuerde eine Neuinstallation still das Modell wechseln (neues
+# Suchmodell = kompletter Neuaufbau des Vektor-Index).
+$tier = Get-ZwModelTier -RamGB $totalRAM -VramGB (Get-ZwNvidiaVramGB)
+$existingModels = Get-ZwInstalledModels -EnvPath (Join-Path $ProjectDir ".env")
+if ($existingModels) {
+    $defaultModel = $existingModels.LlmModel
+    $defaultEmbedding = $existingModels.EmbeddingModel
+    Write-Info "Bestehende Konfiguration: Analysemodell $defaultModel, Suchmodell $defaultEmbedding bleiben der Vorschlag."
+    Write-Info "Empfehlung für diesen Rechner wäre: $($tier.LlmModel) / $($tier.EmbeddingModel)."
 } else {
-    $defaultModel = "llama3.2"
-    Write-Info "RAM <= 16 GB: Empfehle llama3.2 (ressourcenschonend, fallback fuer 8 GB)."
+    $defaultModel = $tier.LlmModel
+    $defaultEmbedding = $tier.EmbeddingModel
+    Write-Info $tier.LlmReason
+    Write-Info $tier.EmbeddingReason
 }
+Write-Info "Analysemodelle: $($ZwLlmChoices -join ', ') ($ZwLegacyLlmModel = bisheriger Standard)."
 $modelInput = Read-Host "  LLM-Modell (Standard: $defaultModel)"
-if ([string]::IsNullOrWhiteSpace($modelInput)) { $model = $defaultModel } else { $model = $modelInput }
+if ([string]::IsNullOrWhiteSpace($modelInput)) { $model = $defaultModel } else { $model = $modelInput.Trim() }
 Write-OK "LLM-Modell: $model"
+Write-Info "Suchmodelle: $($ZwEmbeddingChoices -join ', '). Unter $ZwLeanRamBelowGB GB RAM empfiehlt sich $ZwEmbeddingLeanModel."
+$embeddingInput = Read-Host "  Embedding-Modell für die Suche (Standard: $defaultEmbedding)"
+if ([string]::IsNullOrWhiteSpace($embeddingInput)) { $embeddingModel = $defaultEmbedding } else { $embeddingModel = $embeddingInput.Trim() }
+Write-OK "Embedding-Modell: $embeddingModel"
+Write-Info "Benötigt Ollama ab Version $ZwOllamaMinVersion (das mitgelieferte Docker-Image ist $ZwOllamaTestedVersion)."
 
 # PIN-Schutz (B1: Default ist jetzt "ja" — Heim-LAN ist nicht implizit sicher)
 $pinEnabled = $false
@@ -316,8 +333,8 @@ OCR_LANGUAGES=deu+eng
 # Logging
 LOG_LEVEL=INFO
 
-# Embedding-Modell (multilingual, gut fuer deutsche Belege)
-EMBEDDING_MODEL=bge-m3
+# Embedding-Modell fuer Suche/KI-Assistent (Wechsel = Neuaufbau des Vektor-Index)
+EMBEDDING_MODEL=$embeddingModel
 
 # E-Mail-Verschluesselung (Fernet-Schluessel — automatisch generiert,
 # nicht mehr aendern, sonst werden gespeicherte IMAP-Passwoerter unbrauchbar)
@@ -410,18 +427,22 @@ if ($healthy) {
     Write-Warn "Backend antwortet noch nicht. Es startet moeglicherweise noch im Hintergrund."
 }
 
-Write-Host ""
-Write-Info "Lade LLM-Modell '$model' herunter (kann 2-5 Minuten dauern)..."
-Write-Info "Modellgroesse: ca. 2-4 GB"
-Write-Host ""
+# Beide Modelle per exaktem Tag laden (Suchmodell zuerst, es ist kleiner).
+# Das Backend wuerde fehlende Modelle beim Start auch selbst laden; hier sieht
+# der Benutzer den Fortschritt.
+foreach ($pullModel in @($embeddingModel, $model) | Select-Object -Unique) {
+    Write-Host ""
+    Write-Info "Lade KI-Modell '$pullModel' herunter (je nach Modell 0,6-7 GB, kann einige Minuten dauern)..."
+    Write-Host ""
 
-cmd /c "docker compose exec ollama ollama pull $model 2>&1" | ForEach-Object { Write-Info $_ }
+    cmd /c "docker compose exec ollama ollama pull $pullModel 2>&1" | ForEach-Object { Write-Info $_ }
 
-if ($LASTEXITCODE -eq 0) {
-    Write-OK "LLM-Modell '$model' ist bereit."
-} else {
-    Write-Warn "LLM-Modell konnte nicht geladen werden. Versuche es spaeter mit:"
-    Write-Info "docker compose exec ollama ollama pull $model"
+    if ($LASTEXITCODE -eq 0) {
+        Write-OK "KI-Modell '$pullModel' ist bereit."
+    } else {
+        Write-Warn "KI-Modell '$pullModel' konnte nicht geladen werden. Später erneut versuchen mit:"
+        Write-Info "docker compose exec ollama ollama pull $pullModel"
+    }
 }
 
 Write-Host ""

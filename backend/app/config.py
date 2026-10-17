@@ -88,7 +88,12 @@ class Settings(BaseSettings):
     FRONTEND_DIST_DIR: str = ""
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
+    # Default laut 70-Dokumente-Benchmark: gemma4:e2b-it-qat (Kernfelder 84,7 %,
+    # 4,3 GB, CPU ~40 s/Dokument). Die Installer schlagen bei NVIDIA-GPU mit
+    # >= 10 GB VRAM gemma4:12b-it-qat vor (90 %, 7,2 GB). gemma4 "denkt"
+    # ohne think=false — siehe OLLAMA_THINK. Bestehende Installationen haben
+    # den Wert explizit in .env/config.toml (bisheriger Default qwen2.5:7b-instruct).
+    OLLAMA_MODEL: str = "gemma4:e2b-it-qat"
     OLLAMA_TIMEOUT: int = 300
     OLLAMA_MAX_RETRIES: int = 2
     # Lese-Timeout (Sekunden) fuer einen JSON-Analyse-Aufruf (Dokumentanalyse,
@@ -103,8 +108,10 @@ class Settings(BaseSettings):
     OLLAMA_NUM_PREDICT: int = 1024
     # Wie lange Ollama das Modell nach einem Aufruf im RAM haelt.
     OLLAMA_KEEP_ALIVE: str = "30m"
-    # "Thinking" bei Hybrid-Modellen (qwen3 u.a.). Aus = schnelle Antworten;
-    # wird nur an Modelle gesendet, die laut /api/show "thinking" koennen.
+    # "Thinking" bei Hybrid-Modellen (gemma4, qwen3 u.a. — gemma4 denkt ohne
+    # think=false standardmaessig). Aus = schnelle Antworten; wird an Modelle
+    # gesendet, die laut /api/show "thinking" koennen oder deren Capabilities
+    # unbekannt sind (lehnt Ollama das Feld ab, wird ohne wiederholt).
     OLLAMA_THINK: bool = False
 
     OCR_LANGUAGES: str = "deu+eng"
@@ -140,7 +147,13 @@ class Settings(BaseSettings):
     # Bei CHROMADB_MODE=embedded: Pfad fuer PersistentClient (Default: <DATA_DIR>/chromadb).
     # Leer = Auto-Default unter ARCHIVE_DIR/.. (data/chromadb).
     CHROMADB_PATH: str = ""
-    EMBEDDING_MODEL: str = "bge-m3"
+    # Default laut Benchmark: qwen3-embedding:4b (R@1 100 % vs. bge-m3 95,8 %,
+    # 2560 dim, 2,5 GB); bei < 12 GB RAM schlagen die Installer
+    # qwen3-embedding:0.6b vor. Fragen bekommen bei qwen3-embedding* einen
+    # Instruct-Prefix (embedding_service.embed_query), Dokumente nicht.
+    # Wechsel = neue Collection (documents_<modell>) -> automatische Neu-
+    # Vektorisierung beim Start (vectorize_service.run_initial_vectorize).
+    EMBEDDING_MODEL: str = "qwen3-embedding:4b"
     RAG_CHUNK_SIZE: int = 800
     RAG_CHUNK_OVERLAP: int = 150
     RAG_TOP_K: int = 5

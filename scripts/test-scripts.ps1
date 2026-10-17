@@ -228,6 +228,96 @@ Invoke-Test 'New-NativeConfig.ps1 (5.1): gueltige TOML ohne BOM, Umlaut-Pfad, Fe
 
     $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', (Join-Path $Temp 'native\bad.toml'), '-DataDir', 'D:\x')
     Assert-True ($r.Code -ne 0 -and -not (Test-Path (Join-Path $Temp 'native\bad.toml'))) 'PIN-Schutz ohne PIN wurde nicht abgelehnt'
+
+    # Ohne Modell-Parameter: Hardware-Stufe aus model-tiers.ps1 (Wert haengt
+    # vom Testrechner ab, muss aber eine der angebotenen Stufen sein).
+    Assert-True ($d2.OLLAMA_MODEL -in @('gemma4:e2b-it-qat', 'gemma4:12b-it-qat')) "OLLAMA_MODEL nach Stufe: $($d2.OLLAMA_MODEL)"
+    Assert-True ($d2.EMBEDDING_MODEL -in @('qwen3-embedding:4b', 'qwen3-embedding:0.6b')) "EMBEDDING_MODEL nach Stufe: $($d2.EMBEDDING_MODEL)"
+    $cfg3 = Join-Path $Temp 'native\explicit.toml'
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg3, '-DataDir', 'D:\Daten', '-DisablePin', '-OllamaModel', 'qwen2.5:7b-instruct', '-EmbeddingModel', 'bge-m3')
+    Assert-True ($r.Code -eq 0) "explizite Modelle: Exit $($r.Code): $($r.Output)"
+    $d3 = Read-Toml $cfg3
+    Assert-True ($d3.OLLAMA_MODEL -eq 'qwen2.5:7b-instruct' -and $d3.EMBEDDING_MODEL -eq 'bge-m3') "explizite Modelle ueberschrieben: $($d3.OLLAMA_MODEL) / $($d3.EMBEDDING_MODEL)"
+}
+
+Invoke-Test 'model-tiers.ps1 (5.1): Stufen nach RAM/VRAM, nvidia-smi-Parsing, Bestands-.env' {
+    $probe = Join-Path $Temp 'tiers-probe.ps1'
+    $envDir = Join-Path $Temp "tiers\$umlautDir"
+    New-Item -ItemType Directory -Force -Path $envDir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $envDir 'old.env'), "FRONTEND_PORT=8080`r`n# EMBEDDING_MODEL=nomic-embed-text`r`nOLLAMA_MODEL=llama3.2`r`n")
+    [System.IO.File]::WriteAllText((Join-Path $envDir 'new.env'), "OLLAMA_MODEL=`"gemma4:12b-it-qat`"`r`nEMBEDDING_MODEL=qwen3-embedding:0.6b`r`nEMBEDDING_MODEL=qwen3-embedding:4b`r`n")
+    $tiersPath = Join-Path $RepoRoot 'scripts\model-tiers.ps1'
+    [System.IO.File]::WriteAllText($probe, @"
+. '$($tiersPath -replace "'", "''")'
+`$cases = @(
+    @{ ram = 32; vram = 12;    llm = 'gemma4:12b-it-qat'; emb = 'qwen3-embedding:4b' },
+    @{ ram = 32; vram = 10;    llm = 'gemma4:12b-it-qat'; emb = 'qwen3-embedding:4b' },
+    @{ ram = 16; vram = 8;     llm = 'gemma4:e2b-it-qat'; emb = 'qwen3-embedding:4b' },
+    @{ ram = 16; vram = `$null; llm = 'gemma4:e2b-it-qat'; emb = 'qwen3-embedding:4b' },
+    @{ ram = 12; vram = `$null; llm = 'gemma4:e2b-it-qat'; emb = 'qwen3-embedding:4b' },
+    @{ ram = 8;  vram = `$null; llm = 'gemma4:e2b-it-qat'; emb = 'qwen3-embedding:0.6b' },
+    @{ ram = 8;  vram = 24;    llm = 'gemma4:12b-it-qat'; emb = 'qwen3-embedding:0.6b' },
+    @{ ram = 0;  vram = `$null; llm = 'gemma4:e2b-it-qat'; emb = 'qwen3-embedding:0.6b' }
+)
+foreach (`$c in `$cases) {
+    `$t = Get-ZwModelTier -RamGB `$c.ram -VramGB `$c.vram
+    if (`$t.LlmModel -ne `$c.llm -or `$t.EmbeddingModel -ne `$c.emb -or -not `$t.LlmReason -or -not `$t.EmbeddingReason) {
+        Write-Output "FAIL ram=`$(`$c.ram) vram=`$(`$c.vram): `$(`$t.LlmModel) / `$(`$t.EmbeddingModel)"
+    }
+}
+if ((ConvertFrom-ZwNvidiaSmiMemory @('10240', ' 24576 ', 'N/A')) -ne 24) { Write-Output 'FAIL smi max' }
+if ((ConvertFrom-ZwNvidiaSmiMemory @('8192')) -ne 8) { Write-Output 'FAIL smi 8 GB' }
+if (`$null -ne (ConvertFrom-ZwNvidiaSmiMemory @())) { Write-Output 'FAIL smi leer' }
+`$old = Get-ZwInstalledModels -EnvPath '$((Join-Path $envDir 'old.env') -replace "'", "''")'
+if (`$old.LlmModel -ne 'llama3.2' -or `$old.EmbeddingModel -ne 'bge-m3' -or `$old.EmbeddingExplicit) { Write-Output "FAIL alt: `$(`$old.LlmModel) / `$(`$old.EmbeddingModel)" }
+`$new = Get-ZwInstalledModels -EnvPath '$((Join-Path $envDir 'new.env') -replace "'", "''")'
+if (`$new.LlmModel -ne 'gemma4:12b-it-qat' -or `$new.EmbeddingModel -ne 'qwen3-embedding:4b') { Write-Output "FAIL neu: `$(`$new.LlmModel) / `$(`$new.EmbeddingModel)" }
+if (`$null -ne (Get-ZwInstalledModels -EnvPath '$((Join-Path $envDir 'fehlt.env') -replace "'", "''")')) { Write-Output 'FAIL ohne .env' }
+if (`$ZwLlmChoices[0] -ne 'gemma4:e2b-it-qat' -or `$ZwEmbeddingChoices -notcontains 'qwen3-embedding:0.6b') { Write-Output 'FAIL Auswahllisten' }
+Write-Output 'DONE'
+"@, (New-Object System.Text.UTF8Encoding($true)))
+    $r = Invoke-WinPS $probe @()
+    Assert-True ($r.Code -eq 0 -and $r.Output -match 'DONE' -and $r.Output -notmatch 'FAIL') "Ausgabe: $($r.Output)"
+}
+
+Invoke-Test 'update.bat + Add-ZwLegacyModelDefaults (5.1): bisherige Modelle vor dem Container-Start festschreiben' {
+    # Gleiche Zeile wie in update.bat (dort vor "docker compose up"), in einem
+    # Temp-Installationsordner ausgefuehrt - kein Docker noetig.
+    $dir = Join-Path $Temp "update-models\$umlautDir"
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir 'scripts'), (Join-Path $dir 'data') | Out-Null
+    Copy-Item (Join-Path $RepoRoot 'scripts\model-tiers.ps1') (Join-Path $dir 'scripts')
+    $line = (Get-Content (Join-Path $RepoRoot 'update.bat') | Where-Object { $_ -match 'Add-ZwLegacyModelDefaults' } | Select-Object -First 1)
+    Assert-True ([bool]$line) 'update.bat ruft Add-ZwLegacyModelDefaults nicht auf'
+    $bat = Join-Path $dir 'run.bat'
+    [System.IO.File]::WriteAllText($bat, "@echo off`r`nsetlocal enabledelayedexpansion`r`ncd /d `"%~dp0`"`r`n$($line.Trim())`r`nexit /b !ERRORLEVEL!`r`n", [System.Text.Encoding]::ASCII)
+    $envPath = Join-Path $dir '.env'
+    $versionPath = Join-Path $dir 'data\.version'
+
+    # v1.5-Installation: OLLAMA_MODEL explizit, EMBEDDING_MODEL nur auskommentiert.
+    [System.IO.File]::WriteAllText($envPath, "FRONTEND_PORT=8080`r`nOLLAMA_MODEL=llama3.2`r`n# EMBEDDING_MODEL=nomic-embed-text")
+    [System.IO.File]::WriteAllText($versionPath, "1.5.0`r`n")
+    $o = & cmd /c "`"$bat`"" 2>&1
+    Assert-True ($LASTEXITCODE -eq 0) "Exit $($LASTEXITCODE): $o"
+    $text = [System.IO.File]::ReadAllText($envPath)
+    Assert-True ($text -match '(?m)^EMBEDDING_MODEL=bge-m3\r$') "EMBEDDING_MODEL nicht festgeschrieben:`n$text"
+    Assert-True (([regex]::Matches($text, '(?m)^OLLAMA_MODEL=')).Count -eq 1 -and $text -match '(?m)^OLLAMA_MODEL=llama3\.2\r$') "OLLAMA_MODEL veraendert:`n$text"
+    Assert-True (-not ($text -replace "`r`n", '' -match "`n")) 'Zeilenenden gemischt (CRLF erwartet)'
+    Assert-True ("$o" -match 'EMBEDDING_MODEL') "Ausgabe ohne Hinweis: $o"
+    # Zweiter Lauf: nichts doppelt.
+    $null = & cmd /c "`"$bat`"" 2>&1
+    Assert-True ([System.IO.File]::ReadAllText($envPath) -eq $text) 'zweiter Lauf hat die .env veraendert'
+
+    # Ab installierter v1.6.0: fehlende Eintraege bleiben fehlend (Benutzerwahl).
+    [System.IO.File]::WriteAllText($envPath, "FRONTEND_PORT=8080`n")
+    [System.IO.File]::WriteAllText($versionPath, '1.6.0')
+    $null = & cmd /c "`"$bat`"" 2>&1
+    Assert-True ([System.IO.File]::ReadAllText($envPath) -eq "FRONTEND_PORT=8080`n") 'v1.6-Installation wurde migriert'
+
+    # Unbekannte Version (Quellcode-Installation ohne data\.version): beide eintragen, LF bleibt LF.
+    Remove-Item $versionPath
+    $null = & cmd /c "`"$bat`"" 2>&1
+    $text = [System.IO.File]::ReadAllText($envPath)
+    Assert-True ($text -match '(?m)^OLLAMA_MODEL=qwen2\.5:7b-instruct$' -and $text -match '(?m)^EMBEDDING_MODEL=bge-m3$' -and $text -notmatch "`r") "ohne Version:`n$text"
 }
 
 Invoke-Test 'Convert-Env-To-Config.ps1 (5.1): .env -> gueltige TOML, Werte uebernommen' {
@@ -242,6 +332,14 @@ Invoke-Test 'Convert-Env-To-Config.ps1 (5.1): .env -> gueltige TOML, Werte ueber
     Assert-True (-not (Test-HasBom $out)) 'config.toml hat eine BOM (Out-File -Encoding utf8 unter 5.1)'
     $d = Read-Toml $out
     Assert-True ($d.SERVER_PORT -eq 8081 -and $d.PIN_CODE -eq '4711' -and $d.OLLAMA_MODEL -eq 'llama3.2' -and $d.EMAIL_ENCRYPTION_KEY -eq $key) 'Werte nicht uebernommen'
+    # Fehlendes EMBEDDING_MODEL: die alte Installation lief mit dem alten Default.
+    Assert-True ($d.EMBEDDING_MODEL -eq 'bge-m3') "EMBEDDING_MODEL ohne Eintrag: $($d.EMBEDDING_MODEL) (erwartet bisheriger Default bge-m3)"
+
+    [System.IO.File]::WriteAllText($envPath, "PIN_ENABLED=false`r`nEMBEDDING_MODEL=qwen3-embedding:4b`r`n")
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\Convert-Env-To-Config.ps1') @('-EnvPath', $envPath, '-OutPath', $out, '-DataDir', (Join-Path $dir 'data'), '-FrontendDistDir', 'C:\ZW\frontend')
+    Assert-True ($r.Code -eq 0) "Exit $($r.Code): $($r.Output)"
+    $d = Read-Toml $out
+    Assert-True ($d.OLLAMA_MODEL -eq 'qwen2.5:7b-instruct' -and $d.EMBEDDING_MODEL -eq 'qwen3-embedding:4b') "Modelle: $($d.OLLAMA_MODEL) / $($d.EMBEDDING_MODEL)"
     Assert-True ($d.ARCHIVE_DIR -eq (($dir -replace '\\', '/') + '/data/archive')) "ARCHIVE_DIR: $($d.ARCHIVE_DIR)"
 
     [System.IO.File]::WriteAllText($envPath, "PIN_ENABLED=true`r`nPIN_CODE=`r`n")
@@ -257,7 +355,7 @@ Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     foreach ($f in 'nssm.exe', 'service-install.bat', 'service-uninstall.bat', 'config.toml.example', 'VERSION', 'update-wizard.bat', 'update-wizard.ps1', 'backup.bat', 'restore-backup.bat', 'restore-backup.ps1') {
         Set-Content (Join-Path $dist $f) 'x'
     }
-    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
+    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
     $outExe = Join-Path $Temp 'nsis\zw-native-test.exe'
     Push-Location $RepoRoot
     try { $o = & $MakeNsis /WX /V2 /DVERSION=0.0.0-test "/DDIST=$dist" "/DOUTFILE=$outExe" setup-native.nsi 2>&1 } finally { Pop-Location }
@@ -320,6 +418,45 @@ Invoke-Test 'Release: Manifest vollstaendig, Setup.exe (Docker) kompiliert aus d
     Push-Location $stage
     try { $o = & $MakeNsis /WX /V2 /DVERSION=0.0.0-test setup.nsi 2>&1 } finally { Pop-Location }
     Assert-True ($LASTEXITCODE -eq 0) "makensis setup.nsi:`n$($o -join "`n")"
+}
+
+# Dot-gesourcte Helfer (z.B. scripts/model-tiers.ps1) muessen in JEDEM Kanal
+# mitkommen, in dem das aufrufende Skript ausgeliefert wird - sonst bricht der
+# Installer beim Kunden mit "nicht gefunden" ab, waehrend alle Repo-Tests gruen sind.
+# Docker: release-manifest.txt (Pfade relativ zum Paket). Native: $bundleScripts in
+# build-native.ps1 (flach in dist/native = Update-ZIP) + File/Delete in setup-native.nsi.
+function Get-DotSourcedScripts([string]$path) {
+    $text = [System.IO.File]::ReadAllText($path)
+    $rx = '(?m)^\s*\.\s+\(Join-Path\s+\$[\w:]+\s+["'']([^"'']+\.ps1)["'']\)'
+    return @([regex]::Matches($text, $rx) | ForEach-Object { $_.Groups[1].Value.Replace('\', '/') })
+}
+
+Invoke-Test 'Auslieferung: dot-gesourcte Helfer sind in Docker-Paket, dist/native und setup-native.nsi' {
+    $manifest = @(Get-Content (Join-Path $RepoRoot 'release-manifest.txt') |
+        Where-Object { $_ -and $_ -notmatch '^\s*#' } | ForEach-Object { $_.Trim() })
+    foreach ($entry in $manifest | Where-Object { $_ -like '*.ps1' }) {
+        $dir = [System.IO.Path]::GetDirectoryName($entry).Replace('\', '/')
+        foreach ($dep in Get-DotSourcedScripts (Join-Path $RepoRoot $entry)) {
+            $target = if ($dir) { "$dir/$dep" } else { $dep }
+            Assert-True ($manifest -contains $target) "$entry dot-sourct $dep, das nicht in release-manifest.txt steht (erwartet: $target)"
+        }
+    }
+
+    $build = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'scripts\build-native.ps1'))
+    $m = [regex]::Match($build, '(?s)\$bundleScripts\s*=\s*@\((.*?)\r?\n\)')
+    Assert-True $m.Success 'build-native.ps1: $bundleScripts-Liste nicht gefunden'
+    $bundle = @([regex]::Matches(($m.Groups[1].Value -replace '(?m)#.*$', ''), '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+    Assert-True ($bundle -contains 'New-NativeConfig.ps1') "bundleScripts unplausibel: $($bundle -join ', ')"
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    foreach ($s in $bundle | Where-Object { $_ -like '*.ps1' }) {
+        foreach ($dep in Get-DotSourcedScripts (Join-Path $RepoRoot "scripts\$s")) {
+            Assert-True ($bundle -contains $dep) "scripts\$s dot-sourct $dep, das nicht in `$bundleScripts (build-native.ps1) steht"
+        }
+    }
+    foreach ($s in $bundle | Where-Object { $_ -like '*.ps1' }) {
+        Assert-True ($nsi.Contains("File `"`${DIST}\$s`"")) "setup-native.nsi installiert $s nicht (File-Zeile fehlt)"
+        Assert-True ($nsi.Contains("Delete `"`$INSTDIR\$s`"")) "setup-native.nsi entfernt $s beim Deinstallieren nicht (Delete-Zeile fehlt)"
+    }
 }
 
 # ---------------------------------------------------------------- Docker-Skripte
@@ -457,6 +594,32 @@ Invoke-Test 'update-wizard.ps1: Step-CopyFiles spiegelt backend/frontend/bin, be
     Set-Content (Join-Path $inst 'backend\keep.pyd') 'x'
     $ok = & ([scriptblock]::Create($code))
     Assert-True ($ok -eq $false -and (Test-Path (Join-Path $inst 'backend\keep.pyd'))) 'Unvollstaendiges Paket wurde trotzdem gespiegelt'
+}
+
+# ---------------------------------------------------------------- GUI-Installer (Update-Pfad)
+Invoke-Test 'install-gui.ps1: Update behaelt Eingangsordner, Config-Migration vertraegt "1.6.0-dev"' {
+    # Nur die beiden Funktionen + Migrationstabelle laden (keine WinForms-GUI).
+    $guiPath = Join-Path $RepoRoot 'install-gui.ps1'
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$t, [ref]$e)
+    $fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in 'Apply-ConfigMigrations', 'Phase-MigrateConfig' }, $true)
+    $table = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:ConfigMigrations' }, $false)
+    Assert-True (@($fns).Count -eq 2 -and @($table).Count -eq 1) 'Funktionen / $script:ConfigMigrations nicht gefunden'
+
+    $proj = Join-Path $Temp 'gui-update'
+    New-Item -ItemType Directory -Force -Path $proj | Out-Null
+    $envPath = Join-Path $proj '.env'
+    [System.IO.File]::WriteAllText($envPath, "FRONTEND_PORT=8080`nWATCH_DIR=./data/watch`n")
+
+    $prelude = 'function Log { }; function Set-StepStatus { }; function Next-Phase { }; $script:progressBar = [pscustomobject]@{ Value = 0 }; $script:Config = @{ WatchEnabled = $false }'
+    $defs = ((@($table) + @($fns)) | ForEach-Object { $_.Extent.Text }) -join "`n"
+    $code = "$prelude`n$defs`n`$script:ProjectDir = '$proj'`nApply-ConfigMigrations -FromVersion '1.6.0-dev' -EnvPath '$envPath'`nPhase-MigrateConfig"
+    & ([scriptblock]::Create($code))
+
+    $after = [System.IO.File]::ReadAllText($envPath)
+    Assert-True ($after -match '(?m)^WATCH_DIR=\./data/watch') "Update hat den Eingangsordner auskommentiert: $after"
+    Assert-True (Test-Path (Join-Path $proj 'data\watch')) 'Eingangsordner wurde nicht angelegt'
+    Assert-True ($after -notmatch 'EXPORT_DIR|CHROMADB_HOST') 'Migrationen aelter als 1.6.0 wurden fuer "1.6.0-dev" erneut angewendet'
 }
 
 # ---------------------------------------------------------------- Ergebnis

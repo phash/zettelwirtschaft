@@ -36,7 +36,6 @@ jobs:
         env:
           DATABASE_URL: "sqlite+aiosqlite:///./test.db"
           OLLAMA_BASE_URL: "http://localhost:11434"
-          OLLAMA_MODEL: "llama3.2"
           UPLOAD_DIR: "./test_uploads"
           ARCHIVE_DIR: "./test_archive"
 

@@ -74,14 +74,14 @@ class TestModelNames:
 class TestProbe:
     async def test_reports_missing_llm_model(self, test_settings):
         test_settings.OLLAMA_MODEL = "gibtsnicht:7b"
-        with patch("app.services.ollama_client._get_client", return_value=_fake_ollama(["bge-m3:latest"])):
+        with patch("app.services.ollama_client._get_client", return_value=_fake_ollama(["qwen3-embedding:4b"])):
             probe = await probe_ollama(test_settings)
         assert probe.reachable
         assert probe.missing == ["gibtsnicht:7b"]
         assert probe.message() == "Modell gibtsnicht:7b nicht installiert"
 
     async def test_all_present(self, test_settings):
-        client = _fake_ollama(["qwen2.5:7b-instruct", "bge-m3:latest"])
+        client = _fake_ollama(["gemma4:e2b-it-qat", "qwen3-embedding:4b"])
         with patch("app.services.ollama_client._get_client", return_value=client):
             probe = await probe_ollama(test_settings)
         assert probe.ok and probe.message() is None
@@ -104,13 +104,13 @@ class TestEnsureConfiguredModels:
         with patch("app.services.ollama_client._get_client", return_value=client):
             results = await ensure_configured_models(test_settings)
 
-        assert results == {"bge-m3": True, "qwen2.5:7b-instruct": True}
+        assert results == {"qwen3-embedding:4b": True, "gemma4:e2b-it-qat": True}
         pulled = [json.loads(body)["model"] for method, path, body in calls if path == "/api/pull"]
-        assert pulled == ["bge-m3", "qwen2.5:7b-instruct"]
+        assert pulled == ["qwen3-embedding:4b", "gemma4:e2b-it-qat"]
 
     async def test_present_models_not_pulled(self, test_settings):
         calls: list = []
-        client = _fake_ollama(["qwen2.5:7b-instruct", "bge-m3:latest"], calls=calls)
+        client = _fake_ollama(["gemma4:e2b-it-qat", "qwen3-embedding:4b"], calls=calls)
         with patch("app.services.ollama_client._get_client", return_value=client):
             results = await ensure_configured_models(test_settings)
         assert all(results.values())
@@ -118,20 +118,20 @@ class TestEnsureConfiguredModels:
 
     async def test_pull_error_reported(self, test_settings):
         client = _fake_ollama(
-            ["bge-m3:latest"],
-            pull_lines={"qwen2.5:7b-instruct": [
+            ["qwen3-embedding:4b"],
+            pull_lines={"gemma4:e2b-it-qat": [
                 {"status": "pulling manifest"},
                 {"error": "pull model manifest: file does not exist"},
             ]},
         )
         with patch("app.services.ollama_client._get_client", return_value=client):
             results = await ensure_configured_models(test_settings)
-        assert results == {"bge-m3": True, "qwen2.5:7b-instruct": False}
+        assert results == {"qwen3-embedding:4b": True, "gemma4:e2b-it-qat": False}
 
     async def test_pull_progress_streamed(self, test_settings, caplog):
         client = _fake_ollama(
-            ["bge-m3:latest"],
-            pull_lines={"qwen2.5:7b-instruct": [
+            ["qwen3-embedding:4b"],
+            pull_lines={"gemma4:e2b-it-qat": [
                 {"status": "pulling abc", "total": 100, "completed": 0},
                 {"status": "pulling abc", "total": 100, "completed": 50},
                 {"status": "success"},
@@ -140,7 +140,7 @@ class TestEnsureConfiguredModels:
         with patch("app.services.ollama_client._get_client", return_value=client):
             with caplog.at_level("INFO", logger="zettelwirtschaft.ollama"):
                 results = await ensure_configured_models(test_settings)
-        assert results["qwen2.5:7b-instruct"] is True
+        assert results["gemma4:e2b-it-qat"] is True
         assert any("50%" in r.getMessage() for r in caplog.records)
 
     async def test_unreachable_ollama_returns_false(self, test_settings):
@@ -149,7 +149,7 @@ class TestEnsureConfiguredModels:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         with patch("app.services.ollama_client._get_client", return_value=client):
             results = await ensure_configured_models(test_settings, wait_seconds=0)
-        assert results == {"bge-m3": False, "qwen2.5:7b-instruct": False}
+        assert results == {"qwen3-embedding:4b": False, "gemma4:e2b-it-qat": False}
 
     async def test_waits_for_late_ollama_then_pulls(self, test_settings):
         """Native-Boot: Ollama startet nach dem Backend-Dienst — der Auto-Pull
@@ -169,5 +169,90 @@ class TestEnsureConfiguredModels:
         with patch("app.services.ollama_client._get_client", return_value=client), \
              patch("app.services.ollama_client.asyncio.sleep", sleep):
             results = await ensure_configured_models(test_settings)
-        assert results == {"bge-m3": True, "qwen2.5:7b-instruct": True}
+        assert results == {"qwen3-embedding:4b": True, "gemma4:e2b-it-qat": True}
         assert sleep.await_count == 2
+
+
+class TestOllamaVersion:
+    @pytest.mark.parametrize("raw,expected", [
+        ("0.40.5", (0, 40, 5)),
+        ("0.40.6-rc0", (0, 40, 6)),
+        ("v0.30.3", (0, 30, 3)),
+        ("0.12", (0, 12, 0)),
+        ("0.0.0", None),  # Entwickler-Build
+        ("", None),
+        (None, None),
+        ("unbekannt", None),
+    ])
+    def test_parse_version(self, raw, expected):
+        assert ollama_client.parse_version(raw) == expected
+
+    def test_version_warning(self):
+        assert ollama_client.version_warning("0.12.6", "0.30.3") == (
+            "Ollama 0.12.6 ist älter als 0.30.3 — bitte aktualisieren"
+        )
+        assert ollama_client.version_warning("0.30.3", "0.30.3") is None
+        assert ollama_client.version_warning("0.40.5", "0.30.3") is None
+        assert ollama_client.version_warning("0.0.0", "0.30.3") is None
+        assert ollama_client.version_warning(None, "0.30.3") is None
+
+    def test_minimum_not_above_tested_version(self):
+        assert ollama_client.parse_version(ollama_client.OLLAMA_MIN_VERSION) <= ollama_client.parse_version(
+            ollama_client.OLLAMA_TESTED_VERSION
+        )
+
+    async def test_get_version(self, test_settings):
+        def handler(request):
+            assert request.url.path == "/api/version"
+            return httpx.Response(200, json={"version": "0.40.5"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            assert await ollama_client.get_ollama_version(test_settings) == "0.40.5"
+
+    async def test_get_version_unavailable(self, test_settings):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404, text="404 page not found")))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            assert await ollama_client.get_ollama_version(test_settings) is None
+
+
+def _versioned_ollama(installed: list[str], version: str | None):
+    tags = _fake_handler(installed)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            if version is None:
+                return httpx.Response(404, text="404 page not found")
+            return httpx.Response(200, json={"version": version})
+        return tags(request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+class TestHealthVersionCheck:
+    async def test_old_version_is_warning_not_error(self, test_settings):
+        installed = [test_settings.OLLAMA_MODEL, test_settings.EMBEDDING_MODEL]
+        with patch("app.services.ollama_client._get_client", return_value=_versioned_ollama(installed, "0.12.6")):
+            health = await ollama_client.ollama_health(test_settings)
+        assert health.status == "warning"
+        assert health.version == "0.12.6"
+        assert health.message == f"Ollama 0.12.6 ist älter als {ollama_client.OLLAMA_MIN_VERSION} — bitte aktualisieren"
+
+    async def test_current_version_ok(self, test_settings):
+        installed = [test_settings.OLLAMA_MODEL, test_settings.EMBEDDING_MODEL]
+        with patch("app.services.ollama_client._get_client", return_value=_versioned_ollama(installed, "0.40.5")):
+            health = await ollama_client.ollama_health(test_settings)
+        assert health.status == "ok" and health.message is None and health.version == "0.40.5"
+
+    async def test_unknown_version_no_warning(self, test_settings):
+        installed = [test_settings.OLLAMA_MODEL, test_settings.EMBEDDING_MODEL]
+        with patch("app.services.ollama_client._get_client", return_value=_versioned_ollama(installed, None)):
+            health = await ollama_client.ollama_health(test_settings)
+        assert health.status == "ok" and health.version is None
+
+    async def test_old_version_combined_with_missing_model(self, test_settings):
+        with patch("app.services.ollama_client._get_client",
+                   return_value=_versioned_ollama([test_settings.EMBEDDING_MODEL], "0.20.0")):
+            health = await ollama_client.ollama_health(test_settings)
+        assert health.status == "warning"
+        assert health.message.startswith("Ollama 0.20.0 ist älter als")
+        assert f"Modell {test_settings.OLLAMA_MODEL} nicht installiert" in health.message

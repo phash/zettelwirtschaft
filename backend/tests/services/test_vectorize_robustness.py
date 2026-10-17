@@ -13,7 +13,7 @@ import pytest
 from app.models.background_task import TaskStatus
 from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, Tag, TaxCategory
 from app.services import vectorize_service
-from app.services.ollama_client import OllamaError, OllamaErrorKind
+from app.services.ollama_client import OllamaError, OllamaErrorKind, OllamaProbe
 from app.services.task_service import get_task, shutdown_tasks, wait_for_task
 from app.services.vectorize_service import (
     VectorizeError,
@@ -40,6 +40,17 @@ def chroma(test_settings):
         yield collection
     client.delete_collection(name)
     vectorize_service.reset_chroma_cache()
+
+
+def _probe_ok(*args, **kwargs):
+    return OllamaProbe(reachable=True, models=["x:latest"], missing=[])
+
+
+@pytest.fixture
+def model_ready():
+    """Embedding-Modell gilt als installiert (run_initial_vectorize wartet sonst)."""
+    with patch("app.services.vectorize_service.probe_ollama", AsyncMock(side_effect=_probe_ok)) as probe:
+        yield probe
 
 
 def _fake_embed(dim: int = 3):
@@ -179,7 +190,7 @@ class TestCollectionCount:
 
 class TestInitialVectorize:
     @pytest.fixture(autouse=True)
-    async def _stop_tasks(self):
+    async def _stop_tasks(self, model_ready):
         yield
         await shutdown_tasks()
 
@@ -227,3 +238,82 @@ class TestInitialVectorize:
         with patch("app.services.vectorize_service.asyncio.to_thread", tracking),              patch("app.services.vectorize_service.get_collection_count", return_value=5) as count:
             await run_initial_vectorize(test_session_factory, test_settings, delay=0)
         assert calls == [count]
+
+
+    async def test_waits_for_embedding_model_before_rebuild(
+        self, test_settings, test_session_factory, model_ready,
+    ):
+        """Modellwechsel: das neue Embedding-Modell wird noch gepullt. Der Rebuild
+        darf erst danach starten — und auch dann, wenn in der Wartezeit ein neues
+        Dokument die Collection gefuellt hat (Altbestand fehlt sonst dauerhaft)."""
+        probes = iter([
+            OllamaProbe(reachable=False, error="Ollama nicht erreichbar"),
+            OllamaProbe(reachable=True, models=[], missing=[test_settings.EMBEDDING_MODEL]),
+            _probe_ok(),
+        ])
+        model_ready.side_effect = lambda *a, **kw: next(probes)
+        counts = iter([0, 7])  # nach der Wartezeit waere die Collection nicht mehr leer
+        with patch("app.services.vectorize_service.get_collection_count", side_effect=lambda s: next(counts)),              patch("app.services.vectorize_service.start_vector_rebuild", AsyncMock(return_value=SimpleNamespace(id="t1"))) as start:
+            assert await run_initial_vectorize(
+                test_session_factory, test_settings, delay=0, model_poll=0,
+            ) == SimpleNamespace(id="t1")
+        assert model_ready.await_count == 3
+        assert model_ready.await_args.kwargs["required"] == [test_settings.EMBEDDING_MODEL]
+        start.assert_awaited_once()
+
+    async def test_filled_collection_does_not_wait_for_model(
+        self, test_settings, test_session_factory, model_ready,
+    ):
+        with patch("app.services.vectorize_service.get_collection_count", return_value=3):
+            assert await run_initial_vectorize(test_session_factory, test_settings, delay=0) is None
+        model_ready.assert_not_awaited()
+
+
+class TestEmbeddingModelSwitch:
+    """Wechsel von EMBEDDING_MODEL auf einer bestehenden Installation: eigene
+    Collection pro Modell -> neue Collection leer -> run_initial_vectorize baut
+    den Index beim Start automatisch neu auf (echter embedded PersistentClient)."""
+
+    @pytest.fixture(autouse=True)
+    async def _stop_tasks(self, model_ready):
+        vectorize_service.reset_chroma_cache()
+        yield
+        await shutdown_tasks()
+        vectorize_service.reset_chroma_cache()
+
+    async def test_switch_revectorizes_into_new_collection(
+        self, test_settings, tmp_path, db_session, test_session_factory,
+    ):
+        test_settings.CHROMADB_MODE = "embedded"
+        test_settings.CHROMADB_PATH = str(tmp_path / "chromadb")
+        test_settings.EMBEDDING_MODEL = "bge-m3"
+        await _make_doc(db_session, doc_id="doc-a", ocr="Stromrechnung der Stadtwerke. " * 5)
+        await _make_doc(db_session, doc_id="doc-b", ocr="Kfz-Versicherung fuer den Golf. " * 5)
+
+        async def run_startup(dim: int):
+            with patch("app.services.vectorize_service.embed_batch", _fake_embed(dim)):
+                task = await run_initial_vectorize(test_session_factory, test_settings, delay=0)
+                if task is not None:
+                    await wait_for_task(task.id, timeout=30)
+            return task
+
+        first = await run_startup(dim=3)
+        assert first is not None
+        old_count = get_collection_count(test_settings)
+        assert old_count and old_count > 0
+        # Neustart mit gleichem Modell: Collection gefuellt -> nichts zu tun.
+        assert await run_startup(dim=3) is None
+
+        # Modellwechsel (andere Dimension, wie bge-m3 1024 -> qwen3-embedding:4b 2560)
+        test_settings.EMBEDDING_MODEL = "qwen3-embedding:4b"
+        second = await run_startup(dim=5)
+        assert second is not None, "Modellwechsel hat keine Neu-Vektorisierung ausgeloest"
+        final = await get_task(test_session_factory, second.id)
+        assert final.status == TaskStatus.SUCCEEDED, final.error
+        assert final.result["total"] == 2 and final.result["failed"] == 0
+        assert get_collection_count(test_settings) == final.result["chunks"]
+
+        # Die alte Collection bleibt liegen (dokumentiert in CLAUDE.md/FAQ).
+        client = vectorize_service._get_chroma_client(test_settings)
+        names = {getattr(c, "name", c) for c in client.list_collections()}
+        assert {"documents_bge-m3", "documents_qwen3-embedding_4b"} <= names

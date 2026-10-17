@@ -126,7 +126,9 @@ $bundleScripts = @(
     "service-install.bat", "service-uninstall.bat",
     "update-wizard.bat", "update-wizard.ps1",
     "backup.bat", "restore-backup.bat", "restore-backup.ps1",
-    "Convert-Env-To-Config.ps1", "New-NativeConfig.ps1", "new-secret.ps1"
+    "Convert-Env-To-Config.ps1", "New-NativeConfig.ps1", "new-secret.ps1",
+    # Von New-NativeConfig/Convert-Env dot-gesourct (Modell-Stufen, Mindestversion).
+    "model-tiers.ps1"
 )
 foreach ($s in $bundleScripts) {
     Copy-Item -Force (Join-Path $RepoRoot "scripts\$s") (Join-Path $DistRoot $s)

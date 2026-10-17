@@ -71,7 +71,7 @@ class TestSystemHealth:
 
         from app.services.ollama_client import OllamaProbe
 
-        installed = [f"{test_settings.EMBEDDING_MODEL}:latest", "qwen2.5:3b"]
+        installed = [test_settings.EMBEDDING_MODEL, "qwen2.5:3b"]
         probe = OllamaProbe(reachable=True, models=installed, missing=[test_settings.OLLAMA_MODEL])
         with patch("app.services.ollama_client.probe_ollama", AsyncMock(return_value=probe)):
             ollama = (await client.get("/api/system/health")).json()["components"]["ollama"]
@@ -85,6 +85,23 @@ class TestSystemHealth:
         assert by_purpose["embedding"]["available"] is True
         assert ollama["missing"] == [test_settings.OLLAMA_MODEL]
         assert "models" not in ollama  # keine komplette Modellliste mehr
+
+    async def test_health_reports_ollama_version_warning(self, client, test_settings):
+        """Zu altes Ollama: Warnung (kein Fehler) + Version/Mindestversion fuer die UI."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.ollama_client import OLLAMA_MIN_VERSION, OllamaProbe
+
+        models = [test_settings.OLLAMA_MODEL, test_settings.EMBEDDING_MODEL]
+        probe = OllamaProbe(reachable=True, models=models, missing=[])
+        with patch("app.services.ollama_client.probe_ollama", AsyncMock(return_value=probe)), \
+             patch("app.services.ollama_client.get_ollama_version", AsyncMock(return_value="0.12.6")):
+            ollama = (await client.get("/api/system/health")).json()["components"]["ollama"]
+
+        assert ollama["status"] == "warning"
+        assert ollama["message"] == f"Ollama 0.12.6 ist älter als {OLLAMA_MIN_VERSION} — bitte aktualisieren"
+        assert ollama["version"] == "0.12.6"
+        assert ollama["min_version"] == OLLAMA_MIN_VERSION
 
     async def test_health_hides_database_exception(self, client, monkeypatch):
         """S-LOW5: keine rohen DB-Exceptions (Pfade/Treiber) in der Antwort."""

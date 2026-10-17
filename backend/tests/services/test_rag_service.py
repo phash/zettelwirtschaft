@@ -40,7 +40,7 @@ class TestAskQuestion:
     @pytest.mark.asyncio
     async def test_embedding_unavailable(self, test_settings, db_session):
         """Embedding-Ausfall ist ein Fehler (503), keine normale Antwort."""
-        with patch("app.services.rag_service.embed_batch", new_callable=AsyncMock) as mock_embed:
+        with patch("app.services.rag_service.embed_query", new_callable=AsyncMock) as mock_embed:
             mock_embed.side_effect = OllamaError(OllamaErrorKind.UNREACHABLE, "ConnectError")
             with pytest.raises(RagServiceUnavailable) as exc:
                 await ask_question("Test?", test_settings, db_session)
@@ -49,8 +49,8 @@ class TestAskQuestion:
 
     @pytest.mark.asyncio
     async def test_no_chunks_found(self, test_settings, db_session):
-        with patch("app.services.rag_service.embed_batch", new_callable=AsyncMock) as mock_embed:
-            mock_embed.return_value = [[0.1, 0.2, 0.3]]
+        with patch("app.services.rag_service.embed_query", new_callable=AsyncMock) as mock_embed:
+            mock_embed.return_value = [0.1, 0.2, 0.3]
             with patch("app.services.rag_service.search_similar_chunks") as mock_search:
                 mock_search.return_value = []
                 result = await ask_question("Test?", test_settings, db_session)
@@ -79,8 +79,8 @@ class TestAskQuestion:
             },
         ]
 
-        with patch("app.services.rag_service.embed_batch", new_callable=AsyncMock) as mock_embed:
-            mock_embed.return_value = [[0.1, 0.2, 0.3]]
+        with patch("app.services.rag_service.embed_query", new_callable=AsyncMock) as mock_embed:
+            mock_embed.return_value = [0.1, 0.2, 0.3]
             with patch("app.services.rag_service.search_similar_chunks") as mock_search:
                 mock_search.return_value = chunks
                 with patch("app.services.rag_service.chat_text", new_callable=AsyncMock) as mock_llm:
@@ -117,8 +117,8 @@ class TestAskQuestion:
                 return [{"id": "doc-scope1_0", "doc_id": "doc-scope1", "text": "Privat text", "distance": 0.1, "metadata": {"filing_scope_id": "scope-privat"}}]
             return [{"id": "doc-scope2_0", "doc_id": "doc-scope2", "text": "Praxis text", "distance": 0.2, "metadata": {"filing_scope_id": "scope-praxis"}}]
 
-        with patch("app.services.rag_service.embed_batch", new_callable=AsyncMock) as mock_embed:
-            mock_embed.return_value = [[0.1, 0.2]]
+        with patch("app.services.rag_service.embed_query", new_callable=AsyncMock) as mock_embed:
+            mock_embed.return_value = [0.1, 0.2]
             with patch("app.services.rag_service.search_similar_chunks", side_effect=fake_search) as mock_search:
                 with patch("app.services.rag_service.chat_text", new_callable=AsyncMock) as mock_llm:
                     mock_llm.return_value = "Antwort basierend auf Privat-Dok."
@@ -141,8 +141,8 @@ class TestAskQuestion:
             {"id": "doc-llm-fail_0", "doc_id": "doc-llm-fail", "text": "Text", "distance": 0.1, "metadata": {}},
         ]
 
-        with patch("app.services.rag_service.embed_batch", new_callable=AsyncMock) as mock_embed:
-            mock_embed.return_value = [[0.1, 0.2]]
+        with patch("app.services.rag_service.embed_query", new_callable=AsyncMock) as mock_embed:
+            mock_embed.return_value = [0.1, 0.2]
             with patch("app.services.rag_service.search_similar_chunks") as mock_search:
                 mock_search.return_value = chunks
                 with patch("app.services.rag_service.chat_text", new_callable=AsyncMock) as mock_llm:

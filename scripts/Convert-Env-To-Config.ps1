@@ -20,6 +20,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "model-tiers.ps1")
 
 if (-not (Test-Path $EnvPath)) {
     throw ".env nicht gefunden: $EnvPath"
@@ -73,8 +74,12 @@ $cfgArgs = @{
     FrontendDistDir = $FrontendDistDir
     Port            = [int]$port
     PinCode         = $pinCode
-    OllamaModel     = (Get-Or "OLLAMA_MODEL" "qwen2.5:7b-instruct")
-    EmbeddingModel  = (Get-Or "EMBEDDING_MODEL" "bge-m3")
+    # Fehlt ein Modell in der alten .env, lief die Docker-Installation mit dem
+    # damaligen Default (bis v1.5) -- der bleibt, sonst wuerde die Migration
+    # still das Analysemodell wechseln bzw. den ganzen Vektor-Index neu bauen.
+    # Bewusst NICHT die neuen Defaults/Hardware-Stufen aus model-tiers.ps1.
+    OllamaModel     = (Get-Or "OLLAMA_MODEL" $ZwLegacyLlmModel)
+    EmbeddingModel  = (Get-Or "EMBEDDING_MODEL" $ZwLegacyEmbeddingModel)
     EmailKey        = $emailKey
     HeaderComment   = "Migriert aus $EnvPath"
 }

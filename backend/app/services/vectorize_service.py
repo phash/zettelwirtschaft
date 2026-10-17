@@ -17,7 +17,7 @@ from app.config import Settings
 from app.core.normalize import enum_value
 from app.models.document import Document, DocumentStatus, DocumentTag, Tag
 from app.services.embedding_service import embed_batch
-from app.services.ollama_client import OllamaError
+from app.services.ollama_client import OllamaError, probe_ollama
 from app.services.task_service import TaskConflictError, TaskContext, TaskError, start_task
 
 logger = logging.getLogger("zettelwirtschaft.vectorize")
@@ -637,12 +637,41 @@ async def start_vector_rebuild(session_factory, settings: Settings):
     )
 
 
+# Abstand zwischen zwei Pruefungen, ob das Embedding-Modell bereitsteht.
+MODEL_WAIT_POLL_SECONDS = 30.0
+
+
+async def wait_for_embedding_model(settings: Settings, poll: float = MODEL_WAIT_POLL_SECONDS) -> None:
+    """Wartet (ohne Obergrenze), bis Ollama erreichbar und EMBEDDING_MODEL installiert ist.
+
+    Nach einem Modellwechsel laedt ``ensure_configured_models`` das neue Modell
+    parallel herunter (Minuten); Native startet Ollama oft erst nach dem
+    Backend. Ein Rebuild in dieser Zeit wuerde jedes Dokument fehlschlagen
+    lassen — und sobald danach ein neues Dokument vektorisiert ist, ist die
+    Collection nicht mehr leer und der Rebuild wuerde nie nachgeholt.
+    Abbruch nur ueber Task-Cancel beim Shutdown.
+    """
+    logged = False
+    while True:
+        probe = await probe_ollama(settings, required=[settings.EMBEDDING_MODEL])
+        if probe.ok:
+            return
+        if not logged:
+            logger.info(
+                "Initiale Vektorisierung wartet auf Embedding-Modell '%s': %s",
+                settings.EMBEDDING_MODEL, probe.message(),
+            )
+            logged = True
+        await asyncio.sleep(poll)
+
+
 async def run_initial_vectorize(
     session_factory,
     settings: Settings,
     *,
     delay: float = 5.0,
     count_attempts: int = 3,
+    model_poll: float = MODEL_WAIT_POLL_SECONDS,
 ):
     """Startup-Hintergrundtask: Index aufbauen, wenn die Collection leer ist.
 
@@ -651,6 +680,11 @@ async def run_initial_vectorize(
       Event-Loop). Ist Chroma nicht erreichbar, wird NICHT vektorisiert —
       sonst wuerde jeder Neustart mit kaputtem Chroma alle Dokumente sinnlos
       durch das Embedding-Modell schicken.
+    - Ist die Collection leer (neue Installation oder neues Embedding-Modell
+      -> neue Collection), wird zuerst auf das Embedding-Modell gewartet
+      (``wait_for_embedding_model``: Auto-Pull laeuft parallel). Danach wird
+      der Count NICHT erneut geprueft — in der Wartezeit archivierte Dokumente
+      fuellen die Collection, die Altbestaende fehlen aber trotzdem.
     - Startet den Rebuild als Hintergrund-Vorgang ``rebuild_vectors`` (in der
       Wartung sichtbar, gleicher Schutz vor parallelem manuellem Rebuild).
 
@@ -673,6 +707,7 @@ async def run_initial_vectorize(
     if count > 0:
         logger.info("ChromaDB enthaelt %d Eintraege, ueberspringe initiale Vektorisierung", count)
         return None
+    await wait_for_embedding_model(settings, poll=model_poll)
     try:
         task = await start_vector_rebuild(session_factory, settings)
     except TaskConflictError:

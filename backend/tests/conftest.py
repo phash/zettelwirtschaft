@@ -46,6 +46,10 @@ def test_settings(tmp_path: Path) -> Settings:
         # 11434, ChromaDB auf 8000): Port 9 (discard) -> sofort "connection
         # refused". Tests, die Ollama/Chroma brauchen, mocken die Aufrufe.
         OLLAMA_BASE_URL="http://127.0.0.1:9",
+        # Modelle = Code-Defaults, unabhaengig von OLLAMA_MODEL/EMBEDDING_MODEL
+        # in der Umgebung (release.yml setzte frueher OLLAMA_MODEL=llama3.2).
+        OLLAMA_MODEL=Settings.model_fields["OLLAMA_MODEL"].default,
+        EMBEDDING_MODEL=Settings.model_fields["EMBEDDING_MODEL"].default,
         CHROMADB_HOST="127.0.0.1",
         CHROMADB_PORT=9,
         LOG_LEVEL="DEBUG",
@@ -240,7 +244,7 @@ def sample_image_with_text(tmp_path: Path) -> Path:
 def mock_ollama_response() -> dict:
     """Simulierte Ollama-Antwort fuer die kombinierte Analyse."""
     return {
-        "model": "llama3.2",
+        "model": "gemma4:e2b-it-qat",
         "message": {
             "role": "assistant",
             "content": json.dumps({

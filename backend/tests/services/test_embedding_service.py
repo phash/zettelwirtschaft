@@ -4,7 +4,16 @@ import pytest
 import httpx
 from unittest.mock import patch, AsyncMock
 
-from app.services.embedding_service import EMBED_BATCH_SIZE, embed_batch, embed_text, embed_texts
+from app.services.embedding_service import (
+    EMBED_BATCH_SIZE,
+    QWEN3_EMBEDDING_QUERY_PREFIX,
+    embed_batch,
+    embed_query,
+    embed_text,
+    embed_texts,
+    format_query,
+    query_prefix,
+)
 from app.services.ollama_client import OllamaError, OllamaErrorKind
 
 
@@ -144,4 +153,66 @@ class TestEmbedBatch:
         with patch("app.services.ollama_client._get_client", return_value=client):
             with pytest.raises(OllamaError) as exc:
                 await embed_batch(["a"], test_settings)
+        assert exc.value.kind == OllamaErrorKind.MODEL_MISSING
+
+
+class TestQueryPrefix:
+    """qwen3-embedding* braucht den Instruct-Prefix NUR fuer Anfragen."""
+
+    @pytest.mark.parametrize("model", [
+        "qwen3-embedding:4b",
+        "qwen3-embedding:0.6b",
+        "qwen3-embedding:8b",
+        "qwen3-embedding",
+        "Qwen3-Embedding:4B",
+        "registry.local:5000/library/qwen3-embedding:4b",
+    ])
+    def test_qwen3_embedding_family_gets_prefix(self, model):
+        assert query_prefix(model) == QWEN3_EMBEDDING_QUERY_PREFIX
+
+    @pytest.mark.parametrize("model", ["bge-m3", "bge-m3:latest", "nomic-embed-text", "embeddinggemma:latest", "qwen3:4b", ""])
+    def test_other_models_get_no_prefix(self, model):
+        assert query_prefix(model) == ""
+        assert format_query("Wie hoch war die Stromrechnung?", model) == "Wie hoch war die Stromrechnung?"
+
+    def test_prefix_text_matches_benchmark(self):
+        assert format_query("Wann laeuft die Garantie ab?", "qwen3-embedding:4b") == (
+            "Instruct: Given a question about a personal household document, retrieve the "
+            "document passages that answer the question\nQuery:Wann laeuft die Garantie ab?"
+        )
+
+    @pytest.mark.asyncio
+    async def test_embed_query_sends_prefixed_query(self, test_settings):
+        test_settings.EMBEDDING_MODEL = "qwen3-embedding:4b"
+        client = _client(_make_response(200, {"embeddings": [[0.5, 0.5]]}))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            vector = await embed_query("Stromrechnung 2025?", test_settings)
+        assert vector == [0.5, 0.5]
+        payload = client.post.call_args.kwargs["json"]
+        assert payload["model"] == "qwen3-embedding:4b"
+        assert payload["input"] == [QWEN3_EMBEDDING_QUERY_PREFIX + "Stromrechnung 2025?"]
+
+    @pytest.mark.asyncio
+    async def test_embed_query_without_prefix_for_bge_m3(self, test_settings):
+        test_settings.EMBEDDING_MODEL = "bge-m3"
+        client = _client(_make_response(200, {"embeddings": [[0.1]]}))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            await embed_query("Stromrechnung 2025?", test_settings)
+        assert client.post.call_args.kwargs["json"]["input"] == ["Stromrechnung 2025?"]
+
+    @pytest.mark.asyncio
+    async def test_documents_are_never_prefixed(self, test_settings):
+        """Dokument-Chunks (embed_batch, Vektorisierung) bleiben ohne Prefix."""
+        test_settings.EMBEDDING_MODEL = "qwen3-embedding:4b"
+        client = _client(_make_response(200, {"embeddings": [[0.1], [0.2]]}))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            await embed_batch(["Chunk eins.", "Chunk zwei."], test_settings)
+        assert client.post.call_args.kwargs["json"]["input"] == ["Chunk eins.", "Chunk zwei."]
+
+    @pytest.mark.asyncio
+    async def test_embed_query_raises_on_failure(self, test_settings):
+        client = _client(_make_response(404, {"error": 'model "qwen3-embedding:4b" not found'}))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            with pytest.raises(OllamaError) as exc:
+                await embed_query("x", test_settings)
         assert exc.value.kind == OllamaErrorKind.MODEL_MISSING

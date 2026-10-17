@@ -103,3 +103,23 @@ class TestEmailSettings:
     def test_invalid_timezone_falls_back_to_utc_without_tzdata(self):
         """Fallback darf nicht selbst ZoneInfo (= tzdata) brauchen."""
         assert Settings(TIMEZONE="Mars/Olympus").local_tz is timezone.utc
+
+
+class TestModelDefaults:
+    """Defaults aus dem 70-Dokumente-Benchmark (v1.6). Bestehende Installationen
+    haben die Modelle explizit in .env/config.toml und wechseln nicht."""
+
+    def test_llm_default(self):
+        assert Settings.model_fields["OLLAMA_MODEL"].default == "gemma4:e2b-it-qat"
+
+    def test_embedding_default(self):
+        assert Settings.model_fields["EMBEDDING_MODEL"].default == "qwen3-embedding:4b"
+
+    def test_think_disabled_by_default(self):
+        assert Settings.model_fields["OLLAMA_THINK"].default is False
+
+    def test_explicit_values_win(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+        monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3")
+        s = Settings(_env_file=None)
+        assert (s.OLLAMA_MODEL, s.EMBEDDING_MODEL) == ("qwen2.5:7b-instruct", "bge-m3")

@@ -13,6 +13,7 @@ unterschiedlich) geloest haben:
 - Modell-Checks mit exaktem Tag-Abgleich (``probe_ollama``) und Auto-Pull
   (``ensure_configured_models``) fuer OLLAMA_MODEL und EMBEDDING_MODEL;
 - Capability-Cache (``/api/show``) fuer den ``think``-Parameter;
+- Versionspruefung (``/api/version``) gegen ``OLLAMA_MIN_VERSION``;
 - das Ergebnis des letzten LLM- und Embedding-Aufrufs fuer den System-Health.
 """
 
@@ -333,6 +334,67 @@ async def probe_ollama(settings: Settings, required: list[str] | None = None) ->
 
 
 # ---------------------------------------------------------------------------
+# Ollama-Version
+# ---------------------------------------------------------------------------
+
+# Mindestversion fuer die Default-Modelle. gemma4 gibt es ab Ollama 0.20.0,
+# gemma4:12b ab 0.30.3 (GitHub-Release-Notes v0.20.0 / v0.30.3); fuer die
+# QAT-Tags (gemma4:*-it-qat) und qwen3-embedding nennt keine Release-Note eine
+# Version. Getestet (70-Dokumente-Benchmark + Live-Smoke) mit 0.40.5 — das
+# ist auch die im docker-compose.yml gepinnte Version.
+# Gleicher Wert in scripts/model-tiers.ps1 und setup-native.nsi
+# (tests/test_docs_consistency.py prueft das).
+OLLAMA_MIN_VERSION = "0.30.3"
+OLLAMA_TESTED_VERSION = "0.40.5"
+
+
+def parse_version(version: str | None) -> tuple[int, int, int] | None:
+    """ "0.40.5" -> (0, 40, 5); "0.40.6-rc0" -> (0, 40, 6); sonst ``None``.
+
+    Entwickler-Builds melden "0.0.0" — das ist keine echte Version, ``None``.
+    """
+    if not version:
+        return None
+    core = version.strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return None
+    numbers = tuple(int(p) for p in parts) + (0,) * (3 - len(parts))
+    if numbers == (0, 0, 0):
+        return None
+    return numbers  # type: ignore[return-value]
+
+
+def version_warning(version: str | None, minimum: str = OLLAMA_MIN_VERSION) -> str | None:
+    """Deutsche Warnung, wenn ``version`` aelter als ``minimum`` ist.
+
+    Unbekannte/unlesbare Versionen ergeben keine Warnung (kein Fehlalarm bei
+    Entwickler-Builds oder Ollama-Varianten ohne /api/version).
+    """
+    current, required = parse_version(version), parse_version(minimum)
+    if current is None or required is None or current >= required:
+        return None
+    return f"Ollama {version} ist älter als {minimum} — bitte aktualisieren"
+
+
+async def get_ollama_version(settings: Settings) -> str | None:
+    """Version laut /api/version, ``None`` wenn nicht ermittelbar."""
+    client = _get_client()
+    try:
+        response = await client.get(
+            f"{settings.OLLAMA_BASE_URL}/api/version",
+            timeout=httpx.Timeout(_PROBE_TIMEOUT),
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return str(version) if version else None
+
+
+# ---------------------------------------------------------------------------
 # Gemeinsamer Gesundheitszustand fuer /api/health und /api/system/health.
 # M-2 (Re-Review): TTL-Cache — Docker-Healthcheck (alle 30 s) + Frontend-Polling
 # wuerden Ollama sonst mit /api/tags-Aufrufen beschaeftigen.
@@ -346,6 +408,7 @@ class OllamaHealth:
     status: str  # "ok" | "warning" — nie "error": ohne KI laeuft die App weiter
     message: str | None
     probe: OllamaProbe
+    version: str | None = None
 
     def configured_models(self, settings: Settings) -> list[dict]:
         """Benoetigte Modelle mit Verfuegbarkeit (exakter Tag) fuer die UI."""
@@ -370,8 +433,9 @@ async def ollama_health(settings: Settings) -> OllamaHealth:
 
     Ein Ollama, dessen Modell bei jedem Aufruf mit 500 abbricht, beantwortet
     /api/tags weiterhin — deshalb zaehlt auch das Ergebnis des letzten
-    Aufrufs. Alle Probleme sind "warning": ein Container-Neustart hilft nicht,
-    Dokumente landen bis dahin mit klarer Rueckfrage in der Pruefung.
+    Aufrufs. Eine zu alte Ollama-Version (``OLLAMA_MIN_VERSION``) wird
+    zusaetzlich gemeldet. Alle Probleme sind "warning": ein Container-Neustart
+    hilft nicht, Dokumente landen bis dahin mit klarer Rueckfrage in der Pruefung.
     """
     global _health_cache
     now = time.monotonic()
@@ -379,12 +443,18 @@ async def ollama_health(settings: Settings) -> OllamaHealth:
         return _health_cache[1]
 
     probe = await probe_ollama(settings)
+    version = await get_ollama_version(settings) if probe.reachable else None
     message = probe.message()
     if message is None:
         last_llm = _last_outcomes.get("llm")
         if last_llm and not last_llm.ok and last_llm.model == settings.OLLAMA_MODEL:
             message = f"Letzter KI-Aufruf fehlgeschlagen: {last_llm.error}"
-    health = OllamaHealth(status="ok" if message is None else "warning", message=message, probe=probe)
+    outdated = version_warning(version)
+    if outdated:
+        message = f"{outdated}; {message}" if message else outdated
+    health = OllamaHealth(
+        status="ok" if message is None else "warning", message=message, probe=probe, version=version,
+    )
     _health_cache = (now, health)
     return health
 

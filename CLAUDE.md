@@ -113,9 +113,12 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
    Alternativ: leerer Ordner → Backend re-indexiert beim ersten Start (~ 30s pro 1000 Docs).
 6. **Service installieren** (Admin): `scripts/service-install.bat <install-dir> <config> <log-dir>`.
 7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder neu ziehen lassen: das Backend
-   pullt fehlende Modelle beim Start automatisch. Manuell: `ollama pull bge-m3` +
-   `ollama pull <OLLAMA_MODEL>` — **exakt** der Tag aus `config.toml` (`qwen2.5:7b` ist ein
-   anderer Tag als `qwen2.5:7b-instruct`).
+   pullt fehlende Modelle beim Start automatisch. Manuell: `ollama pull <EMBEDDING_MODEL>` +
+   `ollama pull <OLLAMA_MODEL>` — **exakt** die Tags aus `config.toml` (`gemma4:12b` ist ein
+   anderer Tag als `gemma4:12b-it-qat`). `Convert-Env-To-Config.ps1` uebernimmt die Modelle der
+   alten `.env`; fehlt dort ein Eintrag, lief die Installation mit dem alten Default — der
+   Konverter setzt dann bewusst `qwen2.5:7b-instruct` / `bge-m3` (nicht die neuen Defaults).
+   Ollama muss **>= 0.30.3** sein (gemma4/qwen3-embedding; getestet 0.40.5).
 
 **Update / Backup / Restore** (Native, ab v1.4):
 
@@ -162,8 +165,15 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
   (Decompression-Bomb-Limit zentral in `app/core/image_safety.py:open_image`)
   - Pre-Processing: Auto-Upscale 2x bei kleinen Bildern, MedianFilter Denoising,
     aggressives Autocontrast (cutoff=2)
-- **KI-Analyse:** Ollama mit genau einem Modell `OLLAMA_MODEL` (Default qwen2.5:7b-instruct;
-  die Installer schlagen bei wenig RAM `llama3.2` vor — es gibt KEIN Laufzeit-Fallback-Modell)
+- **KI-Analyse:** Ollama (>= 0.30.3, getestet/Docker-Pin 0.40.5) mit genau einem Modell
+  `OLLAMA_MODEL` (Default `gemma4:e2b-it-qat`, 4,3 GB, CPU ~40 s/Dok.; die Installer schlagen bei
+  NVIDIA-GPU mit >= 10 GB VRAM `gemma4:12b-it-qat` vor — es gibt KEIN Laufzeit-Fallback-Modell).
+  gemma4 "denkt" ohne `think:false` — `llm_service._chat` sendet `think` (=`OLLAMA_THINK`, Default
+  false) an alle Modelle mit `thinking`-Capability bzw. unbekannten Capabilities.
+  Hardware-Stufen der Installer: EINE Quelle `scripts/model-tiers.ps1` (dot-gesourct von
+  install.ps1, install-gui.ps1, New-NativeConfig.ps1, Convert-Env-To-Config.ps1; ausgeliefert
+  ueber release-manifest.txt bzw. build-native.ps1 + setup-native.nsi). VRAM per `nvidia-smi`
+  (`Win32_VideoController.AdapterRAM` endet bei 4 GB), unbekannt -> e2b.
   - JSON-Schema-constrained Generation (Ollama 0.5+)
   - Few-Shot aus CorrectionMappings
   - Optional: LLM-Reranker + Verifier-Pass (config-flags)
@@ -186,7 +196,10 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
     - Ollama separat installiert (offizieller Installer = Tray-App, kein Dienst; siehe Native-Service-Ops)
     - Konfiguration in `config.toml` statt `.env` (Pfad via `ZETTELWIRTSCHAFT_CONFIG`)
 - **Smartphone:** PWA (Progressive Web App, vite-plugin-pwa 2.x)
-- **Vektor-Suche:** ChromaDB 1.5.x + Ollama bge-m3-Embeddings + Hybrid Search FTS5+Vector mit RRF
+- **Vektor-Suche:** ChromaDB 1.5.x + Ollama-Embeddings (Default `qwen3-embedding:4b`, 2560 dim;
+  bei < 12 GB RAM schlagen die Installer `qwen3-embedding:0.6b` vor) + Hybrid Search FTS5+Vector
+  mit RRF. qwen3-embedding* braucht fuer ANFRAGEN einen Instruct-Prefix (Dokumente nicht):
+  einzige Stelle `embedding_service.query_prefix`/`embed_query` (RAG-Retrieval).
 - **Rate-Limiting:** globale FastAPI-Dependency `core/rate_limit.global_rate_limit` auf Basis
   von `limits` (200/min pro IP; die fruehere slowapi-Middleware griff ab FastAPI 0.143 nicht mehr).
   X-Real-IP nur im Docker-Betrieb und nur von `TRUSTED_PROXIES` (Default `172.16.0.0/12`;
@@ -373,7 +386,9 @@ zettelwirtschaft/
 - **Update mit Backup:** `update.bat` erstellt lokale Sicherheitskopie der DB + .env vor jedem Update. Bricht ab wenn DB-Backup fehlschlaegt.
 - **RAG-Pipeline:** Dokumente werden bei Archivierung vektorisiert (Chunking mit Satzgrenzen-Erkennung, Metadaten-Chunks). Vektorisierungsfehler blockieren Archivierung nicht (graceful degradation). Retrieval per Cosine-Similarity aus ChromaDB.
 - **call_llm_text():** Freitext-LLM-Antworten ohne JSON-Format (fuer RAG-Antwortgenerierung).
-- **ChromaDB als Vektor-Store:** Docker: separater Service; Native: embedded. EINE Collection pro Embedding-Modell (`documents_<modell>`, z.B. `documents_bge-m3`), Ablagebereich als Metadata-Filter (`filing_scope_id`). Ein Modellwechsel braucht einen Neuaufbau des Vektor-Index (System-Wartung).
+- **ChromaDB als Vektor-Store:** Docker: separater Service; Native: embedded. EINE Collection pro Embedding-Modell (`documents_<modell>`, z.B. `documents_qwen3-embedding_4b`), Ablagebereich als Metadata-Filter (`filing_scope_id`). Modellwechsel: neue Collection ist leer -> `run_initial_vectorize` baut den Index beim naechsten Start automatisch neu auf (Hintergrund-Vorgang `rebuild_vectors`, Test `TestEmbeddingModelSwitch`) — erst wenn das Embedding-Modell installiert ist (`wait_for_embedding_model`: der Auto-Pull laeuft parallel; ohne Warten schluege jedes Dokument fehl und ein danach archiviertes Dokument machte die Collection nicht-leer -> Altbestand fehlte dauerhaft). Die Collection des alten Modells bleibt liegen (Speicherplatz, kein Fehler) — es gibt keine Auto-Bereinigung. Achtung beim Zurueckwechseln: die alte Collection ist nicht leer -> KEIN Auto-Rebuild, zwischenzeitlich archivierte Dokumente fehlen darin -> Vektor-Index in der Wartung neu aufbauen.
+- **Modell-Defaults vs. Bestandsinstallationen (v1.6):** Neue Defaults gelten nur fuer Neuinstallationen. Native-`config.toml` und Installer-`.env` (seit 2026-05) enthalten die Modelle explizit. Docker-`.env` von vor 2026-05 hatten kein `EMBEDDING_MODEL` -> `Add-ZwLegacyModelDefaults` (`scripts/model-tiers.ps1`) traegt fehlende `OLLAMA_MODEL`/`EMBEDDING_MODEL` mit den alten Defaults ein, aufgerufen von `install-gui.ps1` (Update, Phase-Backup) und `update.bat` — jeweils VOR `docker compose up` (env_file wird nur beim Erstellen des Containers gelesen), nur bei installierter Version < 1.6.0 bzw. unbekannter Version (`data/.version`). `install.ps1` schlaegt bei vorhandener `.env` deren Modelle vor. Nicht abgedeckt: reines `git pull` + `docker compose up` ohne `update.bat`.
+- **Ollama-Versionscheck:** `ollama_client.ollama_health` fragt `/api/version` ab; aelter als `OLLAMA_MIN_VERSION` (0.30.3) -> Health-`warning` "Ollama <v> ist älter als <min> — bitte aktualisieren" (nie `error`), Version + Mindestversion im System-Health (`components.ollama.version/min_version`). Dev-Builds ("0.0.0") und fehlende Version -> keine Warnung. Gleicher Wert in `scripts/model-tiers.ps1` und `setup-native.nsi` (Test `test_ollama_min_version_is_consistent`). Quelle: GitHub-Release-Notes (gemma4 ab v0.20.0, gemma4:12b ab v0.30.3); fuer die QAT-Tags und qwen3-embedding nennt keine Release-Note eine Version.
 - **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. Importiert werden bewusst nur UNGELESENE Mails (`UNSEEN`) — so steht es auch in den E-Mail-Einstellungen der UI. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter, ausgewertet in der lokalen Zeitzone `TIMEZONE`, Default `Europe/Berlin`, `tzdata` fuer Windows), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
 - **Watch-Ordner:** Originale werden nur im app-verwalteten Standard-Watch-Ordner nach der Verarbeitung geloescht. Bei einem vom Benutzer gewaehlten Ordner werden sie in den Unterordner `verarbeitet` verschoben (wird angelegt) — Benutzerdateien werden nie geloescht. Abgelehnte Dateien landen in `<watch_dir>/rejected`; Temp-/Systemdateien (`.tmp`, `.part`, `.crdownload`, `~$…`, versteckte) werden ignoriert.
 - **Lang laufende Vorgaenge** (Re-Analyse `reanalyze`, manueller E-Mail-Abruf `email_fetch`, Backup `backup`, Vektor-Index-Rebuild `rebuild_vectors` — auch die initiale Vektorisierung beim Start): HTTP 202 + `TaskResponse`, Status per `GET /api/tasks/{id}`; Frontend pollt ueber `useBackgroundTask`. Pro (kind, key) hoechstens ein aktiver Task (409 mit dem laufenden Task). `work()` oeffnet eigene kurze Sessions — nie eine Schreib-Transaktion ueber OCR/LLM/IMAP halten.
@@ -457,8 +472,9 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
        erst nach DB-Commit aus Upload-Ordner loeschen (rollback-sicher)
      - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
      - FTS5-Index aktualisieren
-     - Vektorisierung mit bge-m3 (1024 dim) -> ChromaDB-Collection
-       documents_bge-m3, filing_scope_id als Metadata
+     - Vektorisierung mit EMBEDDING_MODEL (Default qwen3-embedding:4b, 2560 dim,
+       ohne Prefix) -> ChromaDB-Collection documents_<modell>,
+       filing_scope_id als Metadata
   -> Status: COMPLETED | NEEDS_REVIEW (+ review_questions) | FAILED
 ```
 
@@ -466,7 +482,8 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
 
 ```
 User-Frage
-  -> embed_text (bge-m3) + parallel _fts_top_doc_ids (FTS5 mit Scope-Filter)
+  -> embed_query (EMBEDDING_MODEL; qwen3-embedding* mit Instruct-Prefix)
+     + parallel _fts_top_doc_ids (FTS5 mit Scope-Filter)
   -> Vector-Search (ChromaDB top_k * 3, filing_scope_id-Where-Filter serverseitig)
   -> Reciprocal Rank Fusion (_apply_rrf): score = 1/(k+vec_rank) + 1/(k+fts_rank)
   -> Optional LLM-Reranker (RAG_USE_RERANKER=true): zweiter Pass mit
@@ -574,7 +591,7 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   Migration 013 FK+Indexes, Decimal-Umstellung).
 - **PIN-Schutz**: Default-PIN beim Install (auto-generierter 6-stelliger Code),
   UI-Banner via `pin_warning`-Flag wenn deaktiviert, Cookie `Secure`+`SameSite=strict`
-- LLM-Pipeline: bge-m3, JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
+- LLM-Pipeline: gemma4 + qwen3-embedding (v1.6, vorher qwen2.5 + bge-m3), JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
   optional Reranker + Verifier
 - Lib-Stand (Frontend/E2E aktualisiert in v1.6.0): Vite 8.3, vite-plugin-pwa 2.0,
   Vue 3.5.44, Pinia 4.1, vue-router 5.4, Tailwind 4.3.3, axios 1.20, Playwright 1.64,
@@ -696,8 +713,8 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 
 | Variable | Default | Effekt |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | LLM fuer Analyse + Rerank + Verifier (exakter Tag, kein Fallback-Modell; fehlt es: Auto-Pull beim Start, Health meldet es als fehlend) |
-| `EMBEDDING_MODEL` | `bge-m3` | Multilingual, 1024 dim. ChromaDB-Collection ist modell-abhaengig |
+| `OLLAMA_MODEL` | `gemma4:e2b-it-qat` | LLM fuer Analyse + Rerank + Verifier (exakter Tag, kein Fallback-Modell; fehlt es: Auto-Pull beim Start, Health meldet es als fehlend). GPU-Stufe `gemma4:12b-it-qat`, bisheriger Default `qwen2.5:7b-instruct` |
+| `EMBEDDING_MODEL` | `qwen3-embedding:4b` | 2560 dim, Anfragen mit Instruct-Prefix. Lean-Stufe (< 12 GB RAM) `qwen3-embedding:0.6b`, bisheriger Default `bge-m3` (1024 dim). Collection pro Modell, Wechsel = automatischer Neuaufbau beim Start |
 | `RAG_USE_RERANKER` | `false` | LLM-Score-Reranker zwischen Hybrid-Retrieval und Antwort |
 | `LLM_USE_VERIFIER` | `false` | Zweiter LLM-Pass validiert Erst-Pass-Felder bei niedriger Konfidenz |
 | `LLM_VERIFIER_THRESHOLD` | `0.5` | Confidence-Schwelle (`<=`) ab der der Verifier feuert |

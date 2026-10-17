@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.core.normalize import enum_value
 from app.models.document import Document, DocumentStatus
-from app.services.embedding_service import embed_batch
+from app.services.embedding_service import embed_query
 from app.services.llm_service import call_llm, chat_text, fill_prompt, load_prompt_template
 from app.services.ollama_client import OllamaError
 from app.services.search_service import fts_prefix_term, fts_tokens
@@ -267,7 +267,7 @@ async def ask_question(
     """
     # 1. Frage embedden
     try:
-        query_embedding = (await embed_batch([question], settings))[0]
+        query_embedding = await embed_query(question, settings)
     except OllamaError as e:
         raise RagServiceUnavailable(f"{e.user_message} {_RETRY_HINT}") from e
 

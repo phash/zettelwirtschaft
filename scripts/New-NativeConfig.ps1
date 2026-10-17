@@ -17,6 +17,9 @@
 #   .\New-NativeConfig.ps1 -OutPath "C:\Users\Max\Documents\Zettelwirtschaft\config.toml" `
 #       -DataDir "C:\Users\Max\Documents\Zettelwirtschaft" -FrontendDistDir "C:\Program Files\Zettelwirtschaft\frontend" `
 #       -PinCode 123456
+# Ohne -OllamaModel/-EmbeddingModel waehlt model-tiers.ps1 die Modelle passend
+# zur Hardware (NVIDIA-GPU >= 10 GB VRAM -> gemma4:12b-it-qat, < 12 GB RAM ->
+# qwen3-embedding:0.6b); das Native-Setup hat keine eigene Modellauswahl.
 # Exit 0 = geschrieben, 1 = Fehler (Meldung auf stderr).
 
 param(
@@ -28,8 +31,9 @@ param(
     # PIN-Schutz ist Default; nur mit -DisablePin wird PIN_ENABLED = false.
     [switch]$DisablePin,
     [string]$PinCode = "",
-    [string]$OllamaModel = "qwen2.5:7b-instruct",
-    [string]$EmbeddingModel = "bge-m3",
+    # Leer = nach Hardware-Stufe (model-tiers.ps1).
+    [string]$OllamaModel = "",
+    [string]$EmbeddingModel = "",
     # Leer = neuen Fernet-Key erzeugen.
     [string]$EmailKey = "",
     # Zusaetzliche Kommentarzeile im Kopf (z.B. Herkunft bei einer Migration).
@@ -39,6 +43,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PinEnabled = -not $DisablePin
+. (Join-Path $PSScriptRoot 'model-tiers.ps1')
 
 function ConvertTo-TomlString([string]$value) {
     # TOML Basic String: Backslash und Anfuehrungszeichen escapen,
@@ -62,6 +67,11 @@ try {
     }
     if ($EmailKey -notmatch '^[A-Za-z0-9_-]{43}=$') {
         throw "EMAIL_ENCRYPTION_KEY hat kein gueltiges Fernet-Format (44 Zeichen URL-safe Base64)."
+    }
+    if (-not $OllamaModel -or -not $EmbeddingModel) {
+        $tier = Get-ZwHardwareModelTier
+        if (-not $OllamaModel) { $OllamaModel = $tier.LlmModel; Write-Output "[INFO] $($tier.LlmReason)" }
+        if (-not $EmbeddingModel) { $EmbeddingModel = $tier.EmbeddingModel; Write-Output "[INFO] $($tier.EmbeddingReason)" }
     }
 
     $data = $DataDir.Replace('\', '/').TrimEnd('/') + '/data'
@@ -89,6 +99,8 @@ try {
         "FRONTEND_DIST_DIR = $frontendValue",
         "",
         "OLLAMA_BASE_URL = `"http://localhost:11434`"",
+        "# Analysemodell (exakter Ollama-Tag); fehlende Modelle laedt der Dienst beim Start.",
+        "# Benoetigt Ollama >= $ZwOllamaMinVersion (getestet mit $ZwOllamaTestedVersion).",
         "OLLAMA_MODEL = $(ConvertTo-TomlString $OllamaModel)",
         "OLLAMA_TIMEOUT = 300",
         "OLLAMA_MAX_RETRIES = 2",
@@ -102,6 +114,7 @@ try {
         "# Native: ChromaDB embedded im Backend-Prozess, kein separater Dienst.",
         "CHROMADB_MODE = `"embedded`"",
         "CHROMADB_PATH = $(ConvertTo-TomlPath "$data/chromadb")",
+        "# Suchmodell. Ein Wechsel baut den Vektor-Index beim naechsten Start neu auf.",
         "EMBEDDING_MODEL = $(ConvertTo-TomlString $EmbeddingModel)",
         "",
         "# Schluessel fuer gespeicherte E-Mail-Passwoerter. NICHT aendern, sonst",

@@ -124,7 +124,7 @@ class TestAskQuestionPipeline:
         vec_chunks = [{"id": "d-vec_chunk_0", "doc_id": "d-vec", "text": "Text mit {question} drin", "distance": 0.1, "metadata": {}}]
         fts_chunk = [{"id": "d-fts_chunk_1", "doc_id": "d-fts", "text": "RE-2024-0815 Betrag 12,00", "distance": 0.9, "metadata": {}}]
         llm = AsyncMock(return_value="Antwort [Dok. 1]")
-        with patch("app.services.rag_service.embed_batch", AsyncMock(return_value=[[0.1]])), \
+        with patch("app.services.rag_service.embed_query", AsyncMock(return_value=[0.1])), \
              patch("app.services.rag_service.search_similar_chunks", return_value=vec_chunks), \
              patch("app.services.rag_service.best_chunks_for_documents", return_value=fts_chunk) as best, \
              patch("app.services.rag_service.chat_text", llm):
@@ -143,7 +143,7 @@ class TestAskQuestionPipeline:
     async def test_fts_limit_follows_top_k(self, test_settings, db_session):
         test_settings.RAG_TOP_K = 7
         fts = AsyncMock(return_value=[])
-        with patch("app.services.rag_service.embed_batch", AsyncMock(return_value=[[0.1]])), \
+        with patch("app.services.rag_service.embed_query", AsyncMock(return_value=[0.1])), \
              patch("app.services.rag_service.search_similar_chunks", return_value=[]), \
              patch("app.services.rag_service._fts_top_doc_ids", fts):
             result = await ask_question("Versicherung?", test_settings, db_session)
@@ -159,7 +159,7 @@ class TestAskQuestionPipeline:
             {"id": "d1_chunk_0", "doc_id": "d1", "text": "eins", "distance": 0.1, "metadata": {}},
             {"id": "d2_chunk_0", "doc_id": "d2", "text": "zwei", "distance": 0.2, "metadata": {}},
         ]
-        with patch("app.services.rag_service.embed_batch", AsyncMock(return_value=[[0.1]])), \
+        with patch("app.services.rag_service.embed_query", AsyncMock(return_value=[0.1])), \
              patch("app.services.rag_service.search_similar_chunks", return_value=chunks), \
              patch("app.services.rag_service._fts_top_doc_ids", AsyncMock(return_value=[])), \
              patch("app.services.rag_service.call_llm", AsyncMock(return_value='{"scores": [1, 9]}')), \

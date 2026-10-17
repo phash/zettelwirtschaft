@@ -325,6 +325,24 @@ class TestThinkParameter:
         assert "think" in _chat_payload(client, 1)
         assert "think" not in _chat_payload(client, 2)
 
+    async def test_gemma4_gets_think_false(self, test_settings, mock_ollama_response):
+        """gemma4 denkt ohne think=false standardmaessig — /api/show meldet 'thinking'."""
+        test_settings.OLLAMA_MODEL = "gemma4:e2b-it-qat"
+        show = httpx.Response(200, json={"capabilities": ["completion", "vision", "audio", "tools", "thinking"]},
+                              request=httpx.Request("POST", "http://x/api/show"))
+        client = _client_with(show, _make_response(200, mock_ollama_response))
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            await call_llm("a", test_settings)
+        assert _chat_payload(client, 1)["think"] is False
+
+    async def test_think_sent_when_capabilities_unknown(self, test_settings, mock_ollama_response):
+        """/api/show nicht erreichbar -> think=false trotzdem senden (Ablehnung faengt der Retry ab)."""
+        with patch("app.services.llm_service.model_capabilities", new=AsyncMock(return_value=None)):
+            client = _client_with(_make_response(200, mock_ollama_response))
+            with patch("app.services.ollama_client._get_client", return_value=client):
+                await call_llm("a", test_settings)
+        assert _chat_payload(client)["think"] is False
+
     async def test_think_setting_true_is_forwarded(self, test_settings, mock_ollama_response):
         test_settings.OLLAMA_THINK = True
         with patch("app.services.llm_service.model_capabilities", new=AsyncMock(return_value=frozenset({"thinking"}))):
@@ -369,7 +387,7 @@ class TestCallLlmText:
     async def test_call_llm_text_success(self, test_settings: Settings):
         """Erfolgreicher Freitext-LLM-Aufruf gibt Antwort zurueck."""
         client = _client_with(_make_response(200, {
-            "model": "llama3.2",
+            "model": "gemma4:e2b-it-qat",
             "message": {
                 "role": "assistant",
                 "content": "Das Dokument ist eine Rechnung der Firma Muster GmbH ueber 119 EUR.",

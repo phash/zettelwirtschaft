@@ -26,7 +26,7 @@ from app.services.backup_service import (
     get_system_info,
     list_backups,
 )
-from app.services.ollama_client import get_last_outcomes, ollama_health
+from app.services.ollama_client import OLLAMA_MIN_VERSION, get_last_outcomes, ollama_health
 from app.services.settings_service import get_db_setting, set_db_setting
 from app.services.task_service import TaskContext, TaskError, start_task
 
@@ -367,6 +367,8 @@ async def system_health(
         "configured_models": ollama.configured_models(settings),
         "missing": ollama.probe.missing,
         "last_calls": get_last_outcomes(),
+        "version": ollama.version,
+        "min_version": OLLAMA_MIN_VERSION,
     }
 
     # ChromaDB (H1: Native/embedded hat keinen HTTP-Service — sonst meldet der

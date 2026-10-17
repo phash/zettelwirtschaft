@@ -43,6 +43,11 @@ Unicode True
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Zettelwirtschaft"
 !define SERVICE_NAME "ZettelwirtschaftBackend"
 !define OLLAMA_DOWNLOAD_URL "https://ollama.com/download"
+; Mindestversion fuer die Default-Modelle (gemma4, qwen3-embedding); gleicher
+; Wert wie OLLAMA_MIN_VERSION in backend/app/services/ollama_client.py und
+; scripts/model-tiers.ps1 (test_docs_consistency.py prueft das).
+!define OLLAMA_MIN_VERSION "0.30.3"
+!define OLLAMA_TESTED_VERSION "0.40.5"
 
 ; --- General ---
 Name "Zettelwirtschaft ${VERSION}"
@@ -58,7 +63,7 @@ BrandingText "Zettelwirtschaft ${VERSION} Native"
 ; --- MUI ---
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "Zettelwirtschaft ${VERSION}"
-!define MUI_WELCOMEPAGE_TEXT "Willkommen.$\r$\n$\r$\nDieses Setup installiert Zettelwirtschaft als Windows-Dienst. Docker wird nicht benötigt.$\r$\n$\r$\nFür die KI-Analyse braucht Zettelwirtschaft zusätzlich Ollama (lokaler KI-Server). Ollama wird NICHT mitinstalliert, sondern separat von ${OLLAMA_DOWNLOAD_URL} heruntergeladen. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach dem Start selbst; bis dahin landen neue Dokumente zur Prüfung.$\r$\n$\r$\nKlicke 'Weiter', um zu beginnen."
+!define MUI_WELCOMEPAGE_TEXT "Willkommen.$\r$\n$\r$\nDieses Setup installiert Zettelwirtschaft als Windows-Dienst. Docker wird nicht benötigt.$\r$\n$\r$\nFür die KI-Analyse braucht Zettelwirtschaft zusätzlich Ollama (lokaler KI-Server) ab Version ${OLLAMA_MIN_VERSION} (getestet mit ${OLLAMA_TESTED_VERSION}). Ollama wird NICHT mitinstalliert, sondern separat von ${OLLAMA_DOWNLOAD_URL} heruntergeladen; eine ältere Ollama-Version bitte vorher aktualisieren. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach dem Start selbst; bis dahin landen neue Dokumente zur Prüfung.$\r$\n$\r$\nKlicke 'Weiter', um zu beginnen."
 
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Programmordner wählen. Programmdateien werden hier abgelegt; die Nutzerdaten kommen in einen separaten Ordner (im nächsten Schritt)."
 
@@ -314,6 +319,7 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\VERSION"
     File "${DIST}\Convert-Env-To-Config.ps1"
     File "${DIST}\New-NativeConfig.ps1"
+    File "${DIST}\model-tiers.ps1"
     File "${DIST}\new-secret.ps1"
     File "${DIST}\update-wizard.bat"
     File "${DIST}\update-wizard.ps1"
@@ -404,7 +410,7 @@ Section "Zettelwirtschaft" SecMain
     Call DetectOllama
     Pop $R0
     ${If} $R0 != "1"
-        MessageBox MB_YESNO|MB_ICONINFORMATION "Ollama (lokaler KI-Server) wurde auf diesem Rechner nicht gefunden.$\r$\n$\r$\nOhne Ollama werden Dokumente zwar archiviert, aber nicht automatisch analysiert. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach der Ollama-Installation selbst herunter.$\r$\n$\r$\nDownload-Seite von Ollama jetzt öffnen?" /SD IDNO IDNO ollama_done
+        MessageBox MB_YESNO|MB_ICONINFORMATION "Ollama (lokaler KI-Server) wurde auf diesem Rechner nicht gefunden.$\r$\n$\r$\nOhne Ollama werden Dokumente zwar archiviert, aber nicht automatisch analysiert. Benötigt wird Ollama ab Version ${OLLAMA_MIN_VERSION}. Die KI-Modelle (mehrere GB) lädt Zettelwirtschaft nach der Ollama-Installation selbst herunter.$\r$\n$\r$\nDownload-Seite von Ollama jetzt öffnen?" /SD IDNO IDNO ollama_done
         ExecShell "open" "${OLLAMA_DOWNLOAD_URL}"
         ollama_done:
     ${EndIf}
@@ -486,6 +492,7 @@ Section "Uninstall"
     Delete "$INSTDIR\VERSION"
     Delete "$INSTDIR\Convert-Env-To-Config.ps1"
     Delete "$INSTDIR\New-NativeConfig.ps1"
+    Delete "$INSTDIR\model-tiers.ps1"
     Delete "$INSTDIR\new-secret.ps1"
     Delete "$INSTDIR\update-wizard.bat"
     Delete "$INSTDIR\update-wizard.ps1"

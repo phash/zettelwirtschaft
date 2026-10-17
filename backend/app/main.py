@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
     await prune_finished_tasks(async_session_factory)
 
     # LLM- und Embedding-Modell im Hintergrund sicherstellen (exakter Tag-Abgleich,
-    # fehlende Modelle werden gepullt) — ein Pull (bge-m3 ~1.2 GB, LLM mehrere GB)
+    # fehlende Modelle werden gepullt) — ein Pull (Embedding 0,6-2,5 GB, LLM 4-7 GB)
     # kann Minuten dauern und darf den HTTP-Server nicht blockieren. Bis dahin
     # landen Dokumente mit klarer Rueckfrage ("Modell nicht installiert") in der
     # Pruefung; der Health-Check meldet "wird heruntergeladen".

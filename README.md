@@ -40,9 +40,12 @@ das System unter `http://<rechnername>:8080` erreichbar.
    und erlaubt den Port in der Windows-Firewall (Profil „Privat").
 4. **Ollama wird nicht mitinstalliert.** Setup prüft, ob Ollama vorhanden ist, und
    verlinkt sonst die Download-Seite ([ollama.com/download](https://ollama.com/download)).
-   Ollama selbst installieren — danach lädt Zettelwirtschaft die benötigten Modelle
-   (LLM `OLLAMA_MODEL` und Embedding `bge-m3`, zusammen mehrere GB) beim Start
-   automatisch herunter. Bis dahin landen neue Dokumente zur Prüfung; der
+   Benötigt wird **Ollama ab 0.30.3** (getestet mit 0.40.5) — ältere Versionen kennen
+   die Default-Modelle nicht; der System-Status warnt dann. Ollama selbst installieren —
+   danach lädt Zettelwirtschaft die benötigten Modelle (zusammen ca. 5–10 GB) beim Start
+   automatisch herunter. Das Setup wählt sie passend zur Hardware: Analyse
+   `gemma4:e2b-it-qat`, mit NVIDIA-GPU ab 10 GB Grafikspeicher `gemma4:12b-it-qat`;
+   Suche `qwen3-embedding:4b`, bei weniger als 12 GB RAM `qwen3-embedding:0.6b`. Bis dahin landen neue Dokumente zur Prüfung; der
    System-Status in den Einstellungen zeigt fehlende Modelle bzw. den laufenden Download an.
 
 Der Dienst heißt `ZettelwirtschaftBackend` und startet automatisch beim Systemstart.
@@ -59,7 +62,8 @@ Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md
 
 1. [Docker Desktop](https://www.docker.com/products/docker-desktop/) installieren und starten
 2. Release-Archiv entpacken
-3. `install.bat` doppelklicken — Wizard prueft Docker, konfiguriert Ports und LLM-Modell.
+3. `install.bat` doppelklicken — Wizard prueft Docker, konfiguriert Ports und KI-Modelle
+   (Vorschlag nach Hardware wie beim Native-Setup; bei einem Update bleiben die bisherigen Modelle).
 
 > **Hinweis:** Windows zeigt beim ersten Start moeglicherweise eine SmartScreen-Warnung ("Der Computer wurde durch Windows geschuetzt"), da der Installer nicht digital signiert ist. Das ist bei Open-Source-Software normal. Zum Fortfahren: **"Weitere Informationen"** klicken → **"Trotzdem ausfuehren"**. Der vollstaendige Quellcode ist [auf GitHub](https://github.com/phash/zettelwirtschaft) einsehbar.
 
@@ -94,8 +98,8 @@ Details: [`planung/native-windows-konzept.md`](planung/native-windows-konzept.md
    (`OLLAMA_MODEL`, `EMBEDDING_MODEL`) automatisch in den Ollama-Container. Wer den
    Download vorab anstoßen will (exakt derselbe Tag wie in `.env`):
    ```bash
-   docker compose exec ollama ollama pull qwen2.5:7b-instruct
-   docker compose exec ollama ollama pull bge-m3
+   docker compose exec ollama ollama pull gemma4:e2b-it-qat
+   docker compose exec ollama ollama pull qwen3-embedding:4b
    ```
 
 5. Im Browser öffnen:
@@ -113,10 +117,10 @@ Die Konfiguration erfolgt über die `.env`-Datei. Wichtige Einstellungen:
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `FRONTEND_PORT` | `8080` | Port für die Web-Oberfläche |
-| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | LLM-Modell für die Analyse (exakter Ollama-Tag; der Installer schlägt bei wenig RAM `llama3.2` vor) |
+| `OLLAMA_MODEL` | `gemma4:e2b-it-qat` | LLM-Modell für die Analyse (exakter Ollama-Tag; die Installer schlagen bei NVIDIA-GPU ab 10 GB VRAM `gemma4:12b-it-qat` vor; bisheriger Default `qwen2.5:7b-instruct`) |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama-Server URL |
 | `OCR_LANGUAGES` | `deu+eng` | OCR-Sprachen |
-| `EMBEDDING_MODEL` | `bge-m3` | Embedding-Modell für RAG-Vektorisierung (Wechsel erfordert Neuaufbau des Vektor-Index) |
+| `EMBEDDING_MODEL` | `qwen3-embedding:4b` | Embedding-Modell für RAG-Vektorisierung (bei < 12 GB RAM `qwen3-embedding:0.6b`; bisheriger Default `bge-m3`). Ein Wechsel baut den Vektor-Index beim nächsten Start automatisch neu auf |
 | `RAG_TOP_K` | `5` | Anzahl der relevantesten Textpassagen für RAG-Antworten |
 | `TIMEZONE` | `Europe/Berlin` | Zeitzone, in der Cron-Zeitpläne der E-Mail-Konten ausgewertet werden |
 
@@ -170,7 +174,7 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Backend:** Python 3.13 / FastAPI
 - **Datenbank:** SQLite (SQLAlchemy + Alembic)
 - **OCR:** Tesseract + pdfplumber
-- **KI:** Ollama mit lokalem LLM (Default `qwen2.5:7b-instruct`) + Embeddings (`bge-m3`)
+- **KI:** Ollama ≥ 0.30.3 mit lokalem LLM (Default `gemma4:e2b-it-qat`) + Embeddings (`qwen3-embedding:4b`)
 - **Vektor-Suche:** ChromaDB (Hybrid-Suche mit FTS5 für den KI-Assistenten)
 - **Frontend:** Vue.js 3 + TailwindCSS (PWA)
 - **Deployment:** Native Windows-Dienst (Setup.exe) oder Docker Compose
