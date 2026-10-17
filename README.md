@@ -183,6 +183,16 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.6.0
+- **Neue KI-Standardmodelle (Benchmark über 70 Dokumente, 13 LLMs, 6 Embedding-Modelle):** Analyse mit `gemma4:e2b-it-qat` (Kernfelder 84,7 % statt 54 % mit `qwen2.5:7b` beim bisherigen Schema; auf CPU ca. 40 s statt 60–110 s pro Dokument), bei NVIDIA-GPU ab 10 GB VRAM `gemma4:12b-it-qat` (90 %). Suche mit `qwen3-embedding:4b` (Trefferquote R@1 100 %), unter 12 GB RAM `qwen3-embedding:0.6b`. Die Installer wählen die Stufe anhand von RAM und Grafikspeicher. **Bestehende Installationen behalten ihre Modelle.** Wechsel des Suchmodells baut den Index automatisch neu auf, sobald das Modell geladen ist. Das Analyse-Schema verlangt jetzt alle Felder — das allein hebt die Genauigkeit aller Modelle deutlich. Ollama ≥ 0.30.3 (getestet 0.40.5), die Systemprüfung warnt bei älteren Versionen.
+- **Hintergrund-Vorgänge:** Neu-Analyse, E-Mail-Abruf, Voll-Backup und Vektor-Neuaufbau laufen im Hintergrund mit Fortschrittsanzeige und überstehen das Schließen der Seite.
+- **Review:** „Später" ändert den Status nicht mehr, „So übernehmen" übernimmt die Werte ausdrücklich; Neu-Analysen überschreiben keine Nutzerkorrekturen; wiederholte Korrekturen (ab 3×) werden automatisch angewendet.
+- **Code-Review-Härtung (222 Befunde, Blocker bis Low)** u. a. robuste Volltextsuche (Bindestriche, Daten, Beträge), UID-basierter IMAP-Abruf mit sicherem Verschieben, Steuerjahr-Feld, Hinweis auf Nicht-EUR-Belege im Steuerexport, Upload-Link auf das erzeugte Dokument, Upgrade-Modus im Native-Setup.
+- **Security-Audit (40 Befunde):** Schutz gegen DNS-Rebinding (`ALLOWED_HOSTS`) und CSRF, kein Credential-CORS mehr, IMAP-Zertifikatsprüfung, PIN-Sperre mit globalem Fehlversuchsbudget, gehärtete Ordnerpfade (UNC, `\\?\`, Junctions), Security-Header und ACL-Härtung im Native-Modus, Limits gegen PDF-/E-Mail-/Request-Bomben, CSV-Formel-Injection im Steuerexport, keine internen Fehlertexte in der API. `OLLAMA_AUTO_PULL` schaltet den automatischen Modell-Download ab.
+- **Abhängigkeiten:** Python 3.13, FastAPI 0.143, Starlette 1.8, SQLAlchemy 2.1, Pillow 13, Pinia 4, vite-plugin-pwa 2, Playwright 1.64, TypeScript 7, nginx 1.30, Node 24, Ollama-Image 0.40.5.
+- **Verhaltensänderungen:** Zugriff über eigene Domains/Reverse-Proxy braucht einen Eintrag in `ALLOWED_HOSTS`; Netzwerk-Watch-Ordner brauchen `ALLOW_NETWORK_FOLDERS=true`; IMAP-Server mit selbstsigniertem Zertifikat werden abgelehnt; mehr als 3 gleichzeitige Re-Analysen → 429; Backups brechen bei zu wenig Speicher ab; `/docs` nur mit `ENABLE_API_DOCS=true`.
+- Tests: Backend **1270** (1 übersprungen), E2E **551** (Desktop + Mobile), Vitest 41.
+
 ### v1.5.0
 - **In-App-Hilfe & Onboarding:** Geführter Einstieg für neue Nutzer. 5-Schritt-Willkommens-Tour (zeigt sich beim ersten App-Start, schließbar, jederzeit erneut startbar) sowie eine Hilfe-Seite unter `/hilfe` (Schnellstart, 9 Funktions-Karten mit Deep-Links, 12er-FAQ, Datenschutz-Hinweis). „Hilfe" in der Seitenleiste + „?"-Button im Header. Barrierefrei (Dialog-Rolle, Fokus-Management). Tests: +6 E2E.
 - **Code-Review-Härtung (24 Findings bis Low gefixt):**
