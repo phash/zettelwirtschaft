@@ -53,6 +53,11 @@ async def health_check(
     # Datenbank
     try:
         await db.execute(text("SELECT 1"))
+        # AVAIL-03: Transaktion sofort beenden -> Pool-Verbindung geht zurueck,
+        # BEVOR unten auf Ollama gewartet wird (bis zu 5 s Netz-I/O). Sonst
+        # hielte jeder parallele, unauthentifizierte Health-Aufruf eine der
+        # 15 Pool-Verbindungen und blockierte UI, Queue-Worker und Tasks.
+        await db.rollback()
         components["database"] = ComponentStatus(status="ok")
     except Exception:
         # S-LOW5: /api/health ist unauthentifiziert — keine internen

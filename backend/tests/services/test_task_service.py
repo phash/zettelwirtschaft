@@ -104,7 +104,7 @@ class TestStartTask:
         [
             (TaskError("Ollama nicht erreichbar"), "Ollama nicht erreichbar"),
             (HTTPException(status_code=404, detail="Dokument nicht gefunden"), "Dokument nicht gefunden"),
-            (RuntimeError("boom"), "Interner Fehler: RuntimeError: boom"),
+            (RuntimeError("boom"), "Interner Fehler (RuntimeError) — Details im Server-Log."),
         ],
     )
     async def test_failure_is_recorded(self, test_session_factory, exc, expected):
@@ -119,6 +119,20 @@ class TestStartTask:
         assert failed.error == expected
         assert failed.result is None
         assert failed.finished_at is not None
+
+    async def test_internal_error_text_not_exposed(self, test_session_factory):
+        """SEC-DATA-05: Pfade/SQL aus str(exc) duerfen nicht in BackgroundTask.error."""
+        secret_path = r"C:\Users\victim\Documents\Zettelwirtschaft\data\archive\x.pdf"
+
+        async def work(ctx: TaskContext):
+            raise FileNotFoundError(2, "No such file or directory", secret_path)
+
+        task = await start_task(test_session_factory, "demo", work)
+        await wait_for_task(task.id, timeout=5)
+        failed = await get_task(test_session_factory, task.id)
+        assert failed.status == TaskStatus.FAILED
+        assert failed.error == "Interner Fehler (FileNotFoundError) — Details im Server-Log."
+        assert "victim" not in failed.error and "Zettelwirtschaft" not in failed.error
 
     async def test_unserializable_result_fails_cleanly(self, test_session_factory):
         async def work(ctx: TaskContext):

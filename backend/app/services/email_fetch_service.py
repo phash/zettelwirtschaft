@@ -5,7 +5,8 @@ Ablauf pro Abruf (``fetch_emails_for_account``):
 1. **Abholen** (eigene IMAP-Verbindung, Ordner read-only/EXAMINE): ``UID SEARCH
    UNSEEN``, aelteste ``EMAIL_MAX_PER_RUN`` Mails per ``UID FETCH BODY.PEEK[]``
    — PEEK setzt *kein* ``\\Seen``. Bewusste Design-Entscheidung: importiert
-   werden nur ungelesene E-Mails.
+   werden nur ungelesene E-Mails. Vorab ``RFC822.SIZE``: zu grosse Mails werden
+   nicht geladen (FAILED + Hinweis), und pro Lauf gilt ein Byte-Budget (FH-05).
 2. **Verarbeiten** (ohne IMAP-Verbindung): pro Mail eine eigene kurze
    DB-Transaktion (Duplikat-Check, LLM-Relevanz, Jobs, ProcessedEmail). Keine
    Schreib-Transaktion ueber LLM-Aufrufe (SQLite-Writer-Lock).
@@ -24,6 +25,7 @@ import asyncio
 import email
 import email.errors
 import email.utils
+import functools
 import hashlib
 import imaplib
 import logging
@@ -34,7 +36,7 @@ import ssl
 import weakref
 from base64 import b64encode
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from html.parser import HTMLParser
@@ -75,11 +77,40 @@ _DECRYPT_FAILED_MESSAGE = (
     "— bitte Passwort neu eingeben."
 )
 _CONNECTION_HINT = "Host, Port, SSL und Zugangsdaten prüfen."
+TLS_CERT_FAILED_MESSAGE = (
+    "Das Zertifikat des Mailservers ist nicht vertrauenswürdig oder passt nicht "
+    "zum Servernamen — Verbindung aus Sicherheitsgründen abgebrochen, das Passwort "
+    "wurde nicht gesendet. Bitte den offiziellen Servernamen des Anbieters "
+    "eintragen (z.B. imap.gmx.net statt einer IP-Adresse). Selbstsignierte "
+    "Zertifikate (z.B. NAS) werden nicht akzeptiert."
+)
 
 # Untere Grenze fuer einen E-Mail-Text, der ohne Anhang als Dokument taugt.
 _MIN_BODY_DOCUMENT_CHARS = 100
 _MAX_REASON_LEN = 500
 _MAX_MESSAGE_ID_LEN = 1000
+
+# FH-05: Mails werden komplett in den Speicher geladen (imaplib liest Literale
+# vollstaendig). Obergrenze pro Mail: ein Anhang in MAX_UPLOAD_SIZE_MB plus
+# Base64-Overhead (~37 %) und Text/weitere Teile. Pro Lauf werden hoechstens
+# _BATCH_BUDGET_FACTOR solcher Mails gleichzeitig gehalten, der Rest folgt
+# beim naechsten Abruf.
+_MESSAGE_SIZE_FACTOR = 2
+_BATCH_BUDGET_FACTOR = 2
+
+
+def max_message_bytes(settings: Settings) -> int:
+    return settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024 * _MESSAGE_SIZE_FACTOR
+
+
+# AVAIL-02: Obergrenzen beim Parsen fremder Mails. Jeder Anhang wird ein
+# ProcessingJob (OCR + LLM, ~30 s) — eine Mail mit tausenden Mini-PDFs legte die
+# Queue tagelang lahm. Mehr als _MAX_MIME_PARTS Blatt-Teile oder sehr grosse
+# HTML-/Text-Bodies sind kein legitimer Beleg-Fall; der Rest wird ignoriert.
+_MAX_ATTACHMENTS_PER_EMAIL = 20
+_MAX_MIME_PARTS = 1000
+_MAX_HTML_CHARS = 1_000_000
+_MAX_BODY_CHARS = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +138,8 @@ def classify_imap_error(exc: BaseException) -> str:
         return "Server nicht gefunden — Hostname prüfen."
     if isinstance(exc, TimeoutError):
         return "Zeitüberschreitung — Server antwortet nicht (Port/SSL prüfen)."
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return TLS_CERT_FAILED_MESSAGE
     if isinstance(exc, ssl.SSLError):
         return "TLS/SSL-Fehler — Port und SSL-Einstellung prüfen."
     if isinstance(exc, ConnectionRefusedError):
@@ -214,6 +247,10 @@ class _HtmlTextExtractor(HTMLParser):
 
 def _html_to_text(html: str) -> str:
     parser = _HtmlTextExtractor()
+    if len(html) > _MAX_HTML_CHARS:
+        # AVAIL-02: HTMLParser ist reines Python — 28 MB HTML blockierten den
+        # Event-Loop 17 s. Fuer Relevanzpruefung/Dokumenttext reicht der Anfang.
+        html = html[:_MAX_HTML_CHARS]
     try:
         parser.feed(html)
         parser.close()
@@ -248,10 +285,20 @@ def parse_email_message(raw_bytes: bytes) -> dict:
     plain_parts: list[str] = []
     html_parts: list[str] = []
     attachments = []
+    skipped_attachments = 0
+    leaf_parts = 0
+    text_chars = 0
 
     for part in msg.walk():
         if part.is_multipart():
             continue
+        leaf_parts += 1
+        if leaf_parts > _MAX_MIME_PARTS:
+            logger.warning(
+                "E-Mail %s hat mehr als %d MIME-Teile — Rest wird ignoriert",
+                message_id[:200], _MAX_MIME_PARTS,
+            )
+            break
         content_type = part.get_content_type()
         disposition = part.get_content_disposition()  # 'attachment' | 'inline' | None
         filename = part.get_filename()  # Content-Disposition filename ODER Content-Type name
@@ -265,22 +312,28 @@ def parse_email_message(raw_bytes: bytes) -> dict:
                 and part.get_content_maintype() == "image"
             ):
                 continue
+            if len(attachments) >= _MAX_ATTACHMENTS_PER_EMAIL:
+                skipped_attachments += 1  # nicht dekodieren (Speicher/CPU)
+                continue
             name = _decode_header_value(filename) if filename else ""
             attachments.append({
                 "filename": name or _fallback_attachment_name(content_type),
                 "content": part.get_payload(decode=True) or b"",
                 "content_type": content_type,
             })
-        elif content_type in ("text/plain", "text/html"):
+        elif content_type in ("text/plain", "text/html") and text_chars < _MAX_HTML_CHARS + _MAX_BODY_CHARS:
             payload = part.get_payload(decode=True)
             if payload:
                 text = _safe_decode(payload, part.get_content_charset())
+                text_chars += len(text)
                 (plain_parts if content_type == "text/plain" else html_parts).append(text)
 
     if plain_parts:
         body = "\n".join(plain_parts)
     else:
         body = "\n\n".join(_html_to_text(h) for h in html_parts)
+    # Body wird ggf. als Dokumenttext (ocr_text) gespeichert — begrenzen.
+    body = body[:_MAX_BODY_CHARS]
 
     return {
         "message_id": message_id,
@@ -289,6 +342,7 @@ def parse_email_message(raw_bytes: bytes) -> dict:
         "date": date_tuple,
         "body": body,
         "attachments": attachments,
+        "skipped_attachments": skipped_attachments,
     }
 
 
@@ -412,10 +466,45 @@ def _logout(conn: imaplib.IMAP4) -> None:
         logger.debug("IMAP-LOGOUT fehlgeschlagen", exc_info=True)
 
 
+@functools.lru_cache(maxsize=1)
+def imap_ssl_context() -> ssl.SSLContext:
+    """SEC-DATA-01: verifizierender TLS-Kontext fuer IMAPS.
+
+    ``imaplib.IMAP4_SSL`` ohne ``ssl_context`` nutzt
+    ``ssl._create_stdlib_context`` = CERT_NONE ohne Hostname-Pruefung — jeder
+    Angreifer im LAN/WLAN (ARP-Spoofing, Rogue-AP) koennte sich mit einem
+    beliebigen Zertifikat dazwischenschalten und bekaeme das Klartext-Passwort
+    aus ``LOGIN``. Hier werden Zertifikatskette und Hostname geprueft.
+
+    Trust-Store: System-Store (Windows-Zertifikatsspeicher bzw. /etc/ssl im
+    Docker-Image) plus das certifi-Bundle (Abhaengigkeit von httpx, im
+    PyInstaller-Bundle enthalten) — damit verifiziert auch ein Native-Rechner
+    mit unvollstaendigem Windows-Root-Store die grossen Anbieter.
+    """
+    context = ssl.create_default_context()
+    try:
+        import certifi
+
+        context.load_verify_locations(cafile=certifi.where())
+    except (ImportError, OSError, ssl.SSLError):
+        logger.debug("certifi-Bundle nicht geladen — nur System-Trust-Store", exc_info=True)
+    return context
+
+
 def _connect_imap(account, password: str, timeout: float) -> imaplib.IMAP4:
     """Stellt eine IMAP-Verbindung mit Socket-Timeout her und meldet an."""
     if account.use_ssl:
-        conn = imaplib.IMAP4_SSL(account.imap_host, account.imap_port, timeout=timeout)
+        try:
+            conn = imaplib.IMAP4_SSL(
+                account.imap_host, account.imap_port, timeout=timeout,
+                ssl_context=imap_ssl_context(),
+            )
+        except ssl.SSLCertVerificationError as exc:
+            logger.warning(
+                "IMAPS-Zertifikat von %s:%d abgelehnt: %s",
+                account.imap_host, account.imap_port, exc.verify_message or exc,
+            )
+            raise EmailFetchError(TLS_CERT_FAILED_MESSAGE) from None
     else:
         # Cleartext IMAP — Passwort fliesst unverschluesselt durchs LAN.
         # Auf Heim-Routern selten ausnutzbar, aber definitiv unschoen — pro
@@ -467,16 +556,68 @@ class _AccountSnapshot:
 
 
 @dataclass
+class _OversizedMessage:
+    uid: bytes
+    size: int
+    header: bytes  # nur der Header (Message-ID/Betreff/Absender fuer den FAILED-Eintrag)
+
+
+@dataclass
 class _FetchBatch:
     uid_validity: str | None
     messages: list[tuple[bytes, bytes]]  # (uid, raw)
     remaining: int
+    oversized: list[_OversizedMessage] = field(default_factory=list)
+
+
+_FETCH_UID_RE = re.compile(rb"\bUID (\d+)")
+_FETCH_SIZE_RE = re.compile(rb"\bRFC822\.SIZE (\d+)")
+
+
+def _message_sizes(conn: imaplib.IMAP4, uids: list[bytes]) -> dict[int, int]:
+    """RFC822.SIZE je UID (ohne die Mails zu laden). Fehlt eine Angabe, fehlt
+    der Eintrag — die Mail wird dann normal geladen und danach geprueft."""
+    if not uids:
+        return {}
+    typ, data = conn.uid("FETCH", _uid_set(uids), "(RFC822.SIZE)")
+    if not _ok(typ):
+        return {}
+    sizes: dict[int, int] = {}
+    for item in data or []:
+        line = item[0] if isinstance(item, tuple) else item
+        if not isinstance(line, bytes):
+            continue
+        uid_match, size_match = _FETCH_UID_RE.search(line), _FETCH_SIZE_RE.search(line)
+        if uid_match and size_match:
+            sizes[int(uid_match.group(1))] = int(size_match.group(1))
+    return sizes
+
+
+def _fetch_part(conn: imaplib.IMAP4, uid: bytes, spec: str) -> bytes | None:
+    typ, fetched = conn.uid("FETCH", uid, spec)
+    raw = next(
+        (item[1] for item in fetched or [] if isinstance(item, tuple) and len(item) > 1),
+        None,
+    )
+    return raw if _ok(typ) else None
 
 
 def _fetch_raw_emails_sync(
-    account: _AccountSnapshot, password: str, timeout: float, limit: int
+    account: _AccountSnapshot,
+    password: str,
+    timeout: float,
+    limit: int,
+    max_bytes: int | None = None,
+    batch_budget: int | None = None,
 ) -> _FetchBatch:
-    """Holt die aeltesten ``limit`` ungelesenen Mails, ohne Flags zu aendern."""
+    """Holt die aeltesten ``limit`` ungelesenen Mails, ohne Flags zu aendern.
+
+    FH-05: Mails ueber ``max_bytes`` werden nicht geladen, sondern nur ihr
+    Header (``oversized``). Sobald die geladenen Mails zusammen
+    ``batch_budget`` Bytes erreichen, wird der Rest auf den naechsten Lauf
+    verschoben (``remaining``) — sonst laegen bis zu EMAIL_MAX_PER_RUN grosse
+    Mails gleichzeitig im Speicher.
+    """
     conn = _connect_imap(account, password, timeout)
     try:
         _select(conn, account.folder_inbox, readonly=True)
@@ -488,21 +629,48 @@ def _fetch_raw_emails_sync(
         # UIDs steigen mit dem Eingang -> aufsteigend sortiert = aelteste zuerst.
         uids.sort(key=int)
         batch, rest = uids[:limit], uids[limit:]
+        sizes = _message_sizes(conn, batch) if max_bytes else {}
 
-        messages = []
-        for uid in batch:
-            typ, fetched = conn.uid("FETCH", uid, "(BODY.PEEK[])")
-            raw = next(
-                (item[1] for item in fetched or [] if isinstance(item, tuple) and len(item) > 1),
-                None,
-            )
-            if not _ok(typ) or raw is None:
+        messages: list[tuple[bytes, bytes]] = []
+        oversized: list[_OversizedMessage] = []
+        loaded_bytes = 0
+        deferred = 0
+        for index, uid in enumerate(batch):
+            size = sizes.get(int(uid))
+            if max_bytes and size is not None and size > max_bytes:
+                header = _fetch_part(conn, uid, "(BODY.PEEK[HEADER])") or b""
+                oversized.append(_OversizedMessage(uid=uid, size=size, header=header[:64 * 1024]))
+                continue
+            if batch_budget and messages and size is not None and loaded_bytes + size > batch_budget:
+                deferred = len(batch) - index
+                break
+            raw = _fetch_part(conn, uid, "(BODY.PEEK[])")
+            if raw is None:
                 logger.warning("E-Mail UID %r von %s konnte nicht geladen werden", uid, account.name)
                 continue
+            if max_bytes and len(raw) > max_bytes:
+                # Server ohne/mit falscher RFC822.SIZE-Angabe.
+                oversized.append(_OversizedMessage(uid=uid, size=len(raw), header=_header_bytes(raw)))
+                continue
+            loaded_bytes += max(len(raw), size or 0)
             messages.append((uid, raw))
-        return _FetchBatch(uid_validity=uid_validity, messages=messages, remaining=len(rest))
+        return _FetchBatch(
+            uid_validity=uid_validity,
+            messages=messages,
+            remaining=len(rest) + deferred,
+            oversized=oversized,
+        )
     finally:
         _logout(conn)
+
+
+def _header_bytes(raw: bytes) -> bytes:
+    """Header-Teil einer Roh-Mail (bis zur ersten Leerzeile)."""
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        end = raw.find(separator)
+        if end != -1:
+            return raw[: min(end, 64 * 1024)] + separator
+    return raw[: 64 * 1024]
 
 
 def _uid_set(uids: list[bytes]) -> str:
@@ -749,6 +917,12 @@ async def _create_jobs_from_email(
         elif not parsed["attachments"]:
             skip_reasons.append("kein Anhang und zu wenig Text für ein eigenes Dokument")
 
+    skipped = parsed.get("skipped_attachments") or 0
+    if skipped:
+        skip_reasons.append(
+            f"{skipped} weitere Anhänge ignoriert (höchstens {_MAX_ATTACHMENTS_PER_EMAIL} pro E-Mail)"
+        )
+
     return job_ids, skip_reasons
 
 
@@ -793,7 +967,10 @@ async def _process_email(
     written_paths: list[Path] = []
     committed = False
     try:
-        parsed = parse_email_message(raw)
+        # AVAIL-02: MIME-/Base64-/HTML-Parsing ist reines Python und dauerte bei
+        # praeparierten Mails viele Sekunden — nie auf dem Event-Loop (UI,
+        # Health-Check, Queue-Worker und Scheduler stuenden still).
+        parsed = await asyncio.to_thread(parse_email_message, raw)
 
         async with session_factory() as session:
             existing = await session.execute(
@@ -860,14 +1037,15 @@ async def _process_email(
         # Upload-Dateien gehoeren zu keinem Job mehr -> entfernen.
         if not committed:
             _unlink_quietly(written_paths)
-        err_msg = str(e)[:400] or type(e).__name__
-        logger.exception("Fehler bei E-Mail (Konto %s): %s", account_id, err_msg)
+        logger.exception("Fehler bei E-Mail (Konto %s): %s", account_id, str(e)[:400] or type(e).__name__)
         # R-06 (Re-Review): parsed wiederverwenden statt re-parsen. Wenn
         # parse_email_message selbst gecrasht ist, stabilen Surrogat nutzen.
         message_id = parsed["message_id"] if parsed else _surrogate_message_id(raw)
         await _store_failed_record(
             session_factory, account_id, message_id, parsed,
-            f"Verarbeitung fehlgeschlagen: {err_msg}",
+            # SEC-DATA-05: relevance_reason geht per /history an den Client —
+            # kein str(e) (Pfade, SQL), Details nur im Log.
+            f"Verarbeitung fehlgeschlagen ({type(e).__name__}) — Details im Server-Log.",
         )
         return "failed"
     except BaseException:
@@ -876,6 +1054,44 @@ async def _process_email(
         if not committed:
             _unlink_quietly(written_paths)
         raise
+
+
+async def _record_oversized(
+    session_factory: SessionFactory,
+    account_id: int,
+    message: _OversizedMessage,
+    limit_bytes: int,
+) -> None:
+    """FH-05: Zu grosse Mail sichtbar als FAILED verbuchen (+ Hinweis), statt
+    sie zu laden. Sie wird danach wie jede FAILED-Mail abgelegt."""
+    try:
+        parsed = parse_email_message(message.header)
+        message_id = parsed["message_id"]
+    except Exception:
+        parsed, message_id = None, _surrogate_message_id(message.header)
+    size_mb = message.size / (1024 * 1024)
+    reason = (
+        f"E-Mail zu groß ({size_mb:.0f} MB, Grenze {limit_bytes // (1024 * 1024)} MB) "
+        "— nicht importiert. Anhänge bitte manuell hochladen."
+    )
+    async with session_factory() as session:
+        existing = await session.execute(
+            select(ProcessedEmail.id).where(
+                ProcessedEmail.email_account_id == account_id,
+                ProcessedEmail.message_id == message_id,
+            )
+        )
+        if existing.first() is not None:
+            return
+    await _store_failed_record(session_factory, account_id, message_id, parsed, reason)
+    try:
+        async with session_factory() as session:
+            subject = (parsed or {}).get("subject") or "(kein Betreff)"
+            sender = (parsed or {}).get("sender") or "unbekannt"
+            notify_system(session, "E-Mail zu groß", f"„{subject}“ von {sender}: {reason}")
+            await session.commit()
+    except Exception:
+        logger.exception("Hinweis fuer zu grosse E-Mail konnte nicht gespeichert werden")
 
 
 async def fetch_emails_for_account(
@@ -908,9 +1124,10 @@ async def fetch_emails_for_account(
     try:
         password = _decrypt_account_password(snapshot.encrypted_password, settings)
         await _progress(5, "Verbinde mit dem Mailserver …")
+        limit_bytes = max_message_bytes(settings)
         batch = await asyncio.to_thread(
             _fetch_raw_emails_sync, snapshot, password, settings.IMAP_TIMEOUT,
-            settings.EMAIL_MAX_PER_RUN,
+            settings.EMAIL_MAX_PER_RUN, limit_bytes, limit_bytes * _BATCH_BUDGET_FACTOR,
         )
     except Exception as e:
         logger.error("E-Mail-Abruf fuer %s fehlgeschlagen: %r", snapshot.name, e)
@@ -918,9 +1135,9 @@ async def fetch_emails_for_account(
         await _record_account_status(session_factory, account_id, stats["error"])
         return stats
 
-    stats["total"] = len(batch.messages)
+    stats["total"] = len(batch.messages) + len(batch.oversized)
     stats["remaining"] = batch.remaining
-    if not batch.messages:
+    if not batch.messages and not batch.oversized:
         logger.info("Keine neuen E-Mails fuer %s", snapshot.name)
         await _record_account_status(session_factory, account_id, None)
         return stats
@@ -931,6 +1148,15 @@ async def fetch_emails_for_account(
     )
 
     processed_uids: list[bytes] = []
+    for message in batch.oversized:
+        logger.warning(
+            "E-Mail UID %r von %s zu gross (%d Bytes) — nicht geladen",
+            message.uid, snapshot.name, message.size,
+        )
+        await _record_oversized(session_factory, account_id, message, limit_bytes)
+        stats["failed"] += 1
+        processed_uids.append(message.uid)  # wie jede FAILED-Mail ablegen
+
     count = len(batch.messages)
     for index, (uid, raw) in enumerate(batch.messages, start=1):
         await _progress(10 + int(80 * (index - 1) / count), f"E-Mail {index} von {count} wird geprüft …")

@@ -275,12 +275,30 @@ def _entry_name(doc: dict, used_names: set[str]) -> str:
     return name
 
 
+# FH-03 (CSV-/Formel-Injection, OWASP): Titel/Aussteller stammen aus
+# untrusted Dokumenten bzw. der LLM-Extraktion. Excel/LibreOffice werten
+# Zellen mit diesen Anfangszeichen als Formel aus (=HYPERLINK-Exfiltration,
+# DDE) — auch in Anfuehrungszeichen. Ein vorangestelltes ' macht sie zu Text.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+# Von uns selbst formatierte Zahlen (ggf. negativ) bleiben Zahlen.
+_CSV_NUMERIC_FIELDS = frozenset({"Betrag"})
+
+
+def _csv_safe(value):
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _write_csv(fieldnames: list[str], rows: list[dict]) -> bytes:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, delimiter=";", extrasaction="ignore")
     writer.writeheader()
     for row in rows:
-        writer.writerow(row)
+        writer.writerow({
+            key: value if key in _CSV_NUMERIC_FIELDS else _csv_safe(value)
+            for key, value in row.items()
+        })
     return buf.getvalue().encode("utf-8-sig")
 
 

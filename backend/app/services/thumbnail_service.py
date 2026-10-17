@@ -13,6 +13,9 @@ from app.core.image_safety import load_normalized
 
 logger = logging.getLogger("zettelwirtschaft.thumbnail")
 
+# Wall-Clock-Limit (Sekunden) fuer das pdftoppm-Rendering der ersten Seite.
+_PDF_RENDER_TIMEOUT_S = 60
+
 
 def _generate_image_thumbnail(
     source_path: Path,
@@ -39,8 +42,11 @@ def _generate_pdf_thumbnail(
 
     # size=max_size (int) -> pdftoppm -scale-to: rendert direkt in Zielgroesse
     # statt die erste Seite mit 200 dpi voll zu rastern (riesige MediaBox).
+    # timeout: ein haengendes pdftoppm (praepariertes PDF) blockiert sonst den
+    # Queue-Worker unbegrenzt (FH-02).
     images = convert_from_path(
         str(source_path), first_page=1, last_page=1, size=max_size,
+        timeout=_PDF_RENDER_TIMEOUT_S,
     )
     if not images:
         raise ValueError("Keine Seiten in der PDF gefunden")

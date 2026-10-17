@@ -65,6 +65,15 @@ const scheduleOptions = computed(() => [
   { value: 'IDLE', label: 'Automatisch', desc: `Alle ${idleMinutes.value} Minuten` },
 ])
 
+function credentialTargetChanged(data) {
+  const acc = props.account
+  if (!acc) return false
+  return data.imap_host !== (acc.imap_host || '')
+    || data.imap_port !== acc.imap_port
+    || data.use_ssl !== (acc.use_ssl ?? true)
+    || data.username !== (acc.username || '')
+}
+
 // Pflichtfelder clientseitig pruefen — sonst kommt der 422 des Backends erst
 // nach dem Absenden und nennt nur Feldnamen.
 function validate(data) {
@@ -73,6 +82,11 @@ function validate(data) {
   if (!data.imap_host.trim()) e.imap_host = 'Bitte den IMAP-Server eingeben.'
   if (!data.username.trim()) e.username = 'Bitte den Benutzernamen eingeben.'
   if (!isEdit.value && !data.password) e.password = 'Bitte das Passwort eingeben.'
+  // SEC-DATA-02: das gespeicherte Passwort gilt nur fuer diesen Server/Benutzer
+  // (Backend antwortet sonst mit 422).
+  if (isEdit.value && !data.password && credentialTargetChanged(data)) {
+    e.password = 'Bei Änderung von Server, Port, SSL oder Benutzername bitte das Passwort erneut eingeben.'
+  }
   if (!Number.isInteger(data.imap_port) || data.imap_port < 1 || data.imap_port > 65535) {
     e.imap_port = 'Port muss zwischen 1 und 65535 liegen.'
   }

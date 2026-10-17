@@ -1,4 +1,6 @@
 import asyncio
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -197,3 +199,66 @@ class TestStartupScan:
 
 async def _processed_exists(watch_dir: Path, name: str) -> bool:
     return (watch_dir / PROCESSED_DIRNAME / name).exists()
+
+
+def _make_dir_link(link: Path, target: Path) -> None:
+    """Junction (Windows, braucht keine Rechte) bzw. Symlink (POSIX)."""
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+class TestJunctionHardening:
+    """FH-04: Der Dienst (LocalSystem) darf keinen Junctions/Symlinks in
+    verarbeitet/ bzw. rejected/ folgen und keine verlinkten Dateien importieren."""
+
+    @pytest.mark.parametrize("dirname", [PROCESSED_DIRNAME, REJECTED_DIRNAME])
+    def test_move_does_not_follow_junction(self, tmp_path: Path, custom_dir: Path, dirname: str):
+        elsewhere = tmp_path / "Systemordner"
+        elsewhere.mkdir()
+        _make_dir_link(custom_dir / dirname, elsewhere)
+        original = custom_dir / "scan.pdf"
+        original.write_bytes(b"%PDF-1.4 angreifer")
+
+        assert wf._move_into(original, custom_dir, dirname) is None
+
+        assert list(elsewhere.iterdir()) == []
+        assert original.exists()  # bleibt liegen statt ausserhalb zu landen
+
+    async def test_import_with_junction_keeps_original(
+        self, test_settings: Settings, test_session_factory, tmp_path: Path, custom_dir: Path, sample_pdf: Path,
+    ):
+        elsewhere = tmp_path / "Systemordner"
+        elsewhere.mkdir()
+        _make_dir_link(custom_dir / PROCESSED_DIRNAME, elsewhere)
+        (custom_dir / "a.pdf").write_bytes(sample_pdf.read_bytes())
+
+        await _scan_existing_files(test_session_factory, test_settings, custom_dir)
+
+        assert list(elsewhere.iterdir()) == []
+        assert (custom_dir / "a.pdf").exists()
+
+    def test_regular_subfolder_still_works(self, custom_dir: Path):
+        original = custom_dir / "scan.pdf"
+        original.write_bytes(b"x")
+        dest = wf._move_into(original, custom_dir, PROCESSED_DIRNAME)
+        assert dest == custom_dir / PROCESSED_DIRNAME / "scan.pdf" and dest.exists()
+
+    async def test_linked_source_file_is_ignored(
+        self, test_settings: Settings, test_session_factory, tmp_path: Path, custom_dir: Path, sample_pdf: Path,
+    ):
+        secret = tmp_path / "fremd" / "geheim.pdf"
+        secret.parent.mkdir()
+        secret.write_bytes(sample_pdf.read_bytes())
+        link = custom_dir / "geheim.pdf"
+        try:
+            os.symlink(secret, link)
+        except OSError:
+            pytest.skip("Symlinks brauchen unter Windows Developer-Mode/Adminrechte")
+
+        await _scan_existing_files(test_session_factory, test_settings, custom_dir)
+        assert await _job_count(test_session_factory) == 0
+        await wf._import_file(link, secret.stat().st_size, custom_dir, test_session_factory, test_settings)
+        assert await _job_count(test_session_factory) == 0
+        assert secret.exists()

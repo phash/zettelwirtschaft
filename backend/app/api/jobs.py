@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models.processing_job import JOB_ERROR_DUPLICATE, JobStatus, ProcessingJob
 from app.schemas.processing_job import JobListItem, PaginatedJobsResponse
 from app.services.queue_worker_service import is_queue_paused, pause_queue, resume_queue
+from app.services.upload_service import remove_upload_copy
 
 logger = logging.getLogger(__name__)
 
@@ -124,18 +125,14 @@ async def dismiss_job(
     if job.status != JobStatus.FAILED:
         raise HTTPException(400, "Nur fehlgeschlagene Jobs können entfernt werden")
 
-    upload_file = Path(job.file_path).resolve()
+    upload_file = job.file_path
     await db.delete(job)
     # Datei erst nach dem Commit loeschen — scheitert er, bleibt der Job samt
     # Datei bestehen (copy+delete-Disziplin wie im archive_service).
     await db.commit()
 
     # Nur die eigene Upload-Kopie loeschen — nie eine Datei ausserhalb von UPLOAD_DIR.
-    if upload_file.is_relative_to(Path(settings.UPLOAD_DIR).resolve()):
-        try:
-            upload_file.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Upload-Datei von Job %s konnte nicht entfernt werden", job_id, exc_info=True)
+    remove_upload_copy(upload_file, settings)
 
     logger.info("Fehlgeschlagener Job %s entfernt", job_id)
     return Response(status_code=204)

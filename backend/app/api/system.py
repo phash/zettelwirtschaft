@@ -3,7 +3,11 @@
 import asyncio
 import json
 import logging
+import os
+import socket
 import time
+from contextlib import contextmanager
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
@@ -21,7 +25,9 @@ from app.database import SQLITE_BUSY_TIMEOUT_MS, get_db, get_session_factory
 from app.models.document import Document, DocumentStatus
 from app.schemas.background_task import TaskResponse
 from app.services.backup_service import (
+    BackupSpaceError,
     backup_dir,
+    cleanup_old_backups,
     create_backup,
     get_system_info,
     list_backups,
@@ -77,15 +83,90 @@ def _write_host_mounts(settings: Settings, watch_host: str, export_host: str) ->
 
 
 _FORBIDDEN_PATH_PREFIXES = (
-    # Windows (case-insensitive Vergleich; lower() weiter unten)
+    # Windows (case-insensitive Vergleich; lower() weiter unten). Fester
+    # Fallback fuer Docker-Host-Pfade — lokal kommen die echten Orte aus den
+    # Umgebungsvariablen dazu (_forbidden_prefixes).
     "c:\\windows", "c:/windows",
     "c:\\program files", "c:/program files",
+    # Eigener Eintrag: "c:/program files (x86)" beginnt NICHT mit "c:/program files/".
+    "c:\\program files (x86)", "c:/program files (x86)",
     "c:\\programdata", "c:/programdata",
+    "c:\\$recycle.bin", "c:\\system volume information",
     # Linux/macOS System-Verzeichnisse
     "/etc", "/proc", "/sys", "/root", "/boot", "/dev",
     "/var/log", "/var/run", "/var/lib/docker",
     "/usr/bin", "/usr/sbin", "/sbin", "/bin",
 )
+
+# Windows-Systemorte, falls Windows nicht auf C: liegt bzw. umgeleitet ist.
+_SYSTEM_DIR_ENV_VARS = (
+    "SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData",
+)
+
+# FH-01: Win32-Geraete-/Langpfad-Praefixe. Python behaelt "\\?\" in resolve()
+# bei — damit liefen frueher alle String-Pruefungen ins Leere
+# ("\\?\C:\Windows\System32" wurde akzeptiert).
+_DEVICE_PREFIXES = ("\\\\?\\", "\\\\.\\", "//?/", "//./")
+
+
+def _forbidden_prefixes() -> list[str]:
+    prefixes = list(_FORBIDDEN_PATH_PREFIXES)
+    if os.name == "nt":
+        prefixes += [v for v in (os.environ.get(name) for name in _SYSTEM_DIR_ENV_VARS) if v]
+    return prefixes
+
+
+def _strip_device_prefix(path_str: str) -> str:
+    r"""``\\?\C:\x`` -> ``C:\x``, ``\\?\UNC\srv\share`` -> ``\\srv\share``."""
+    head = path_str[:8].replace("/", "\\").upper()
+    if head == "\\\\?\\UNC\\":
+        return "\\\\" + path_str[8:]
+    if path_str.startswith(_DEVICE_PREFIXES):
+        return path_str[4:]
+    return path_str
+
+
+def _is_network_path(path_str: str) -> bool:
+    """UNC-Pfad (``\\server\freigabe``) — nach Entfernen eines Geraete-Praefixes."""
+    return _strip_device_prefix(path_str).startswith(("\\\\", "//"))
+
+
+@lru_cache(maxsize=1)
+def _local_host_names() -> frozenset[str]:
+    """Namen/Adressen, unter denen dieser Rechner sich selbst per SMB erreicht."""
+    names = {"localhost", ".", "::1", "0.0.0.0"}
+    try:
+        name = socket.gethostname().lower()
+        names |= {name, name.split(".")[0], socket.getfqdn().lower()}
+        names |= {a.lower() for a in socket.gethostbyname_ex(name)[2]}
+    except OSError:
+        pass
+    return frozenset(names)
+
+
+def _reject_local_or_admin_share(path_str: str, label: str) -> None:
+    r"""INFRA-02: Auch mit ALLOW_NETWORK_FOLDERS keine Freigabe auf DIESEM
+    Rechner (``\\localhost\C$\...``, ``\\127.0.0.1\...``, ``\\<PC-Name>\...``)
+    und keine administrativen Freigaben (``C$``, ``ADMIN$``): darueber erreicht
+    der LocalSystem-Dienst jeden lokalen Pfad an der Systemordner-, Profil- und
+    Programmordner-Pruefung vorbei. Reine String-Pruefung (kein Netzwerkzugriff).
+    """
+    parts = [p for p in _strip_device_prefix(path_str).replace("/", "\\").split("\\") if p]
+    host = parts[0].lower().strip("[]") if parts else ""
+    share = parts[1].lower() if len(parts) > 1 else ""
+    is_local = host in _local_host_names() or host.startswith("127.") or host.endswith(".localhost")
+    if is_local or share.endswith("$"):
+        raise HTTPException(
+            400,
+            f"{label}: Freigaben auf diesem Rechner und administrative Freigaben (C$, ADMIN$) "
+            f"sind nicht erlaubt — bitte den lokalen Pfad angeben: {path_str}",
+        )
+
+
+def _canonical(path: Path | str) -> Path:
+    r"""Vergleichsform: Links/Junctions/8.3-Namen aufgeloest, ohne ``\\?\``,
+    unter Windows klein geschrieben (NTFS ist case-insensitive)."""
+    return Path(os.path.normcase(_strip_device_prefix(os.path.realpath(str(path)))))
 
 
 def _normalize_path_input(value: str | None) -> str:
@@ -97,12 +178,19 @@ def _normalize_path_input(value: str | None) -> str:
     return (value or "").strip().strip("\"'").strip()
 
 
+def _reject_device_prefix(path_str: str, label: str) -> None:
+    if path_str.startswith(_DEVICE_PREFIXES):
+        raise HTTPException(
+            400, f"{label}: Pfade mit \\\\?\\ oder \\\\.\\ sind nicht erlaubt — bitte normal angeben (z.B. D:\\Scans): {path_str}",
+        )
+
+
 def _reject_dangerous(path_str: str, label: str) -> None:
     """Systemverzeichnisse und '..'-Segmente ablehnen (docs/reviews/SECURITY_AUDIT_v2.md N-003)."""
     if ".." in path_str.replace("\\", "/").split("/"):
         raise HTTPException(400, f"{label} enthält unerlaubte Pfad-Segmente: {path_str}")
-    p = path_str.lower().replace("\\", "/").rstrip("/")
-    for forbidden in _FORBIDDEN_PATH_PREFIXES:
+    p = _strip_device_prefix(path_str).lower().replace("\\", "/").rstrip("/")
+    for forbidden in _forbidden_prefixes():
         f = forbidden.lower().replace("\\", "/").rstrip("/")
         if p == f or p.startswith(f + "/"):
             raise HTTPException(400, f"{label} darf nicht auf Systemverzeichnisse zeigen: {path_str}")
@@ -118,6 +206,7 @@ def _validate_host_path(value: str, label: str) -> str:
     path_str = _normalize_path_input(value)
     if not path_str:
         return ""  # leer = deaktiviert
+    _reject_device_prefix(path_str, label)
     _reject_dangerous(path_str, label)
     win = PureWindowsPath(path_str)
     if not (win.is_absolute() or path_str.startswith("/")):
@@ -127,34 +216,101 @@ def _validate_host_path(value: str, label: str) -> str:
     return path_str
 
 
+def _users_root() -> Path | None:
+    """``C:\\Users`` (bzw. umgeleitet) — nur unter Windows."""
+    if os.name != "nt":
+        return None
+    public = os.environ.get("PUBLIC")
+    if public:
+        return Path(public).parent
+    drive = os.environ.get("SystemDrive")
+    return Path(drive + "\\Users") if drive else None
+
+
+def _profile_name(canonical_path: Path, canonical_root: Path) -> str | None:
+    """Erster Ordner unterhalb von ``C:\\Users`` ("" fuer den Ordner selbst),
+    None ausserhalb."""
+    if not canonical_path.is_relative_to(canonical_root):
+        return None
+    parts = canonical_path.relative_to(canonical_root).parts
+    return parts[0] if parts else ""
+
+
+def _reject_foreign_profile(resolved: Path, settings: Settings, label: str, path_str: str) -> None:
+    """FH-01: Der Native-Dienst laeuft als LocalSystem und kann jedes
+    Benutzerprofil lesen. Erlaubt sind nur das Profil, in dem der Datenordner
+    liegt (der installierende Benutzer), das eigene Profil im Dev-Betrieb und
+    ``C:\\Users\\Public`` — sonst liesse sich ueber den Watch-Ordner jede
+    Datei eines anderen Benutzers importieren (und dort wegverschieben).
+    """
+    root = _users_root()
+    if root is None:
+        return
+    canonical_root = _canonical(root)
+    name = _profile_name(resolved, canonical_root)
+    if name is None:
+        return
+    allowed = {os.path.normcase("Public")}
+    for owner in (settings.data_dir, os.environ.get("USERPROFILE")):
+        if owner:
+            owner_name = _profile_name(_canonical(owner), canonical_root)
+            if owner_name:
+                allowed.add(owner_name)
+    if name not in allowed:
+        raise HTTPException(
+            400,
+            f"{label} darf nicht im Profil eines anderen Benutzers liegen — erlaubt sind "
+            f"das eigene Profil, „{root / 'Public'}“ oder Ordner außerhalb von „{root}“: {path_str}",
+        )
+
+
 def _validate_local_dir(value: str, label: str, settings: Settings) -> str:
-    """Pfad, den das Backend selbst liest/schreibt (Watch-/Export-Ordner).
+    r"""Pfad, den das Backend selbst liest/schreibt (Watch-/Export-Ordner).
 
     Muss absolut sein, darf weder System- noch Wurzelverzeichnis sein und
     nicht in die von der App verwalteten Ordner (Daten-, Archiv-, Upload-,
     Thumbnail-, Backup- und Programmordner) zeigen — der Watcher wuerde sonst
     die eigenen Ablagen einlesen bzw. der Export ins Archiv schreiben.
+
+    FH-01: Verglichen wird die kanonische Form (Junctions/8.3-Namen
+    aufgeloest, ohne ``\\?\``, case-insensitive). Netzwerkpfade nur mit
+    ALLOW_NETWORK_FOLDERS — und dann *vor* jedem Dateisystemzugriff geprueft,
+    weil schon ``resolve()`` den Server kontaktiert (NTLM des Dienstkontos).
     """
     path_str = _normalize_path_input(value)
+    _reject_device_prefix(path_str, label)
+    network = _is_network_path(path_str)
+    if network and not settings.ALLOW_NETWORK_FOLDERS:
+        raise HTTPException(
+            400,
+            f"{label}: Netzwerkpfade (\\\\server\\freigabe) sind nicht freigeschaltet "
+            f"(Einstellung ALLOW_NETWORK_FOLDERS): {path_str}",
+        )
+    if network:
+        _reject_local_or_admin_share(path_str, label)
     _reject_dangerous(path_str, label)
     path = Path(path_str)
     if not path.is_absolute():
         raise HTTPException(400, f"{label} muss ein absoluter Pfad sein: {path_str}")
-    resolved = path.resolve()
+    resolved = _canonical(path)
+    if _is_network_path(str(resolved)) and not settings.ALLOW_NETWORK_FOLDERS:
+        # Lokaler Pfad, der per Link auf eine Freigabe zeigt.
+        raise HTTPException(400, f"{label} zeigt auf einen Netzwerkpfad: {path_str}")
     _reject_dangerous(str(resolved), label)
-    if resolved.parent == resolved:
+    if resolved.parent == resolved and not network:
         raise HTTPException(400, f"{label} darf kein Laufwerks- oder Wurzelverzeichnis sein: {path_str}")
 
-    data_dir = settings.data_dir.resolve()
+    data_dir = _canonical(settings.data_dir)
     if resolved == data_dir or data_dir.is_relative_to(resolved):
         raise HTTPException(400, f"{label} darf nicht der Datenordner oder einer seiner Elternordner sein: {path_str}")
-    managed = [settings.ARCHIVE_DIR, settings.UPLOAD_DIR, settings.THUMBNAIL_DIR, str(data_dir / "backups")]
+    managed = [settings.ARCHIVE_DIR, settings.UPLOAD_DIR, settings.THUMBNAIL_DIR, str(settings.data_dir / "backups")]
     install_dir = native_install_dir()
     if install_dir is not None:
         managed.append(str(install_dir))
     for managed_dir in managed:
-        if resolved.is_relative_to(Path(managed_dir).resolve()):
+        if resolved.is_relative_to(_canonical(managed_dir)):
             raise HTTPException(400, f"{label} darf nicht in einem Programm- oder Ablageordner liegen: {path_str}")
+    _reject_foreign_profile(resolved, settings, label, path_str)
     return str(path)
 
 
@@ -515,9 +671,18 @@ async def create_backup_endpoint(
         except FileNotFoundError:
             logger.exception("Backup fehlgeschlagen: Datenbankdatei fehlt")
             raise TaskError("Backup fehlgeschlagen: Die Datenbankdatei wurde nicht gefunden.")
+        except BackupSpaceError as exc:
+            logger.warning("Backup abgelehnt: %s", exc)
+            raise TaskError(f"Backup nicht gestartet. {exc}")
         except Exception:
             logger.exception("Backup fehlgeschlagen")
             raise TaskError("Backup fehlgeschlagen. Details stehen im Server-Log.")
+        # AVAIL-05: dieselbe Aufbewahrungsregel wie das Auto-Backup — sonst
+        # stapelten sich manuelle Voll-Backups bis zur vollen Platte.
+        try:
+            await asyncio.to_thread(cleanup_old_backups, settings)
+        except Exception:
+            logger.exception("Aufräumen alter Backups fehlgeschlagen")
         return {
             "filename": path.name,
             "is_full": full,
@@ -554,6 +719,27 @@ async def download_backup(
     return FileResponse(file_path, filename=file_path.name, media_type="application/zip")
 
 
+# AVAIL-06: VACUUM (exklusive Sperre) und FTS-Rebuild sind schwere
+# Schreibvorgaenge ohne eigenen Guard — parallele Aufrufe blockierten alle
+# Schreiber bis zum busy_timeout ("database is locked" im Queue-Worker/UI).
+# Hoechstens EIN DB-Wartungslauf gleichzeitig; ein zweiter bekommt 409. Bewusst
+# synchroner Vertrag wie bisher (Frontend wartet auf die Antwort).
+_db_maintenance_running = False
+DB_MAINTENANCE_BUSY = "Es läuft bereits eine Datenbank-Wartung. Bitte warten, bis sie fertig ist."
+
+
+@contextmanager
+def _exclusive_db_maintenance():
+    global _db_maintenance_running
+    if _db_maintenance_running:
+        raise HTTPException(409, DB_MAINTENANCE_BUSY)
+    _db_maintenance_running = True
+    try:
+        yield
+    finally:
+        _db_maintenance_running = False
+
+
 @router.post("/system/maintenance/optimize-db")
 async def optimize_db(settings: Settings = Depends(get_settings)):
     """Datenbank optimieren (VACUUM).
@@ -579,8 +765,11 @@ async def optimize_db(settings: Settings = Depends(get_settings)):
             conn.close()
 
     try:
-        await asyncio.to_thread(_vacuum)
+        with _exclusive_db_maintenance():
+            await asyncio.to_thread(_vacuum)
         return {"message": "Datenbank optimiert"}
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("DB-Optimierung fehlgeschlagen")
         raise HTTPException(500, "Optimierung fehlgeschlagen")
@@ -591,8 +780,11 @@ async def rebuild_index(session: AsyncSession = Depends(get_db, scope="function"
     """FTS5-Suchindex neu aufbauen."""
     try:
         from app.services.search_service import rebuild_fts_index
-        count = await rebuild_fts_index(session)
+        with _exclusive_db_maintenance():
+            count = await rebuild_fts_index(session)
         return {"message": f"Index für {count} Dokumente neu aufgebaut"}
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Index-Rebuild fehlgeschlagen")
         raise HTTPException(500, "Index-Rebuild fehlgeschlagen")

@@ -8,11 +8,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
+from app.core.public_errors import internal_error_message
 from app.models.document import ReviewStatus
 from app.models.email_account import EmailAccount
 from app.models.processing_job import JOB_ERROR_DUPLICATE, JobStatus, ProcessingJob
 from app.models.review_question import ReviewQuestion
-from app.services.analysis_service import analyze_document
+from app.services.analysis_service import analyze_document, apply_source_review_policy
 from app.services.archive_service import (
     ArchiveDataError,
     DuplicateDocumentError,
@@ -24,6 +25,7 @@ from app.services.correction_service import apply_auto_corrections
 from app.services.filing_scope_service import scopes_for_analysis
 from app.services.notification_service import notify_processing_failed, notify_review_needed
 from app.services.thumbnail_service import generate_thumbnail
+from app.services.upload_service import remove_upload_copy
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,8 @@ async def _process_job(
     # KI-Wert deterministisch, bevor archiviert wird (nur lesend, kein Write).
     if analysis_result is not None:
         await apply_auto_corrections(session, analysis_result)
+    # INJ-05: steuerrelevante E-Mail-Belege nie ungeprueft archivieren.
+    apply_source_review_policy(analysis_result, job.source)
 
     # Ab hier: Ergebnis-Writes, ein Commit am Ende.
     if ocr_result:
@@ -224,7 +228,8 @@ async def _process_job(
         )
 
     # Quelldatei erst nach erfolgreichem Commit loeschen (archive_service kopiert
-    # statt move). Bei Duplikat/Fehler bleibt sie fuer den User im Upload-Ordner.
+    # statt move). Bei Fehler bleibt sie fuer einen Retry im Upload-Ordner; bei
+    # einem Duplikat entfernt sie _fail_job (FH-05).
     try:
         if file_path.exists():
             file_path.unlink()
@@ -241,6 +246,7 @@ async def _fail_job(
     document_id: str | None = None,
     count_attempt: bool,
     max_retries: int,
+    settings: Settings | None = None,
 ) -> None:
     """Fehler-Bookkeeping in frischer Session (die Job-Session kann nach einer
     Exception halb-committeten Zustand enthalten).
@@ -248,7 +254,13 @@ async def _fail_job(
     count_attempt=True: Retry-Zaehler erhoehen, bis MAX_RETRIES zurueck auf
     PENDING. Nicht wiederholbare Fehler (count_attempt=False) gehen sofort auf
     FAILED. Endgueltige Fehler erzeugen eine SYSTEM-Benachrichtigung.
+
+    FH-05: Bei einem Duplikat wird die Upload-Kopie nach dem Commit geloescht
+    (mit ``settings``) — sie ist byte-identisch mit dem archivierten Dokument.
+    Frueher blieb sie liegen; wiederholt zugeschickte Anhaenge fuellten so die
+    Datenplatte.
     """
+    duplicate_copy: str | None = None
     async with session_factory() as retry_session:
         rj = (await retry_session.execute(
             select(ProcessingJob).where(ProcessingJob.id == job_id)
@@ -273,6 +285,8 @@ async def _fail_job(
             )
         else:
             rj.status = JobStatus.FAILED
+            if error_code == JOB_ERROR_DUPLICATE:
+                duplicate_copy = rj.file_path
             notify_processing_failed(
                 retry_session, rj.original_filename, error_message, document_id=document_id,
             )
@@ -281,6 +295,9 @@ async def _fail_job(
                 rj.id, rj.retry_count, error_message,
             )
         await retry_session.commit()
+
+    if duplicate_copy and settings is not None:
+        remove_upload_copy(duplicate_copy, settings)
 
 
 async def recover_interrupted_jobs(session: AsyncSession, settings: Settings) -> int:
@@ -316,12 +333,46 @@ async def recover_interrupted_jobs(session: AsyncSession, settings: Settings) ->
     return len(jobs)
 
 
+async def purge_duplicate_upload_copies(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> int:
+    """FH-05: Upload-Kopien von FAILED-Duplikat-Jobs entfernen.
+
+    Aeltere Versionen liessen sie liegen. Der Job selbst bleibt (Hinweis +
+    Link aufs vorhandene Dokument). Returns: Anzahl entfernter Dateien.
+    """
+    async with session_factory() as session:
+        paths = (await session.execute(
+            select(ProcessingJob.file_path).where(
+                ProcessingJob.status == JobStatus.FAILED,
+                ProcessingJob.error_code == JOB_ERROR_DUPLICATE,
+            )
+        )).scalars().all()
+
+    def _purge() -> int:
+        removed = 0
+        for path in paths:
+            if Path(path).exists() and remove_upload_copy(path, settings):
+                removed += 1
+        return removed
+
+    removed = await asyncio.to_thread(_purge)
+    if removed:
+        logger.info("%d Upload-Kopie(n) von Duplikat-Jobs entfernt", removed)
+    return removed
+
+
 async def run_queue_worker(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
 ) -> None:
     """Endlos-Loop: Pollt nach PENDING-Jobs und verarbeitet sie."""
     logger.info("Queue-Worker gestartet (Poll-Intervall: %ds)", settings.QUEUE_POLL_INTERVAL)
+    try:
+        await purge_duplicate_upload_copies(session_factory, settings)
+    except Exception:
+        logger.warning("Aufraeumen der Duplikat-Upload-Kopien fehlgeschlagen", exc_info=True)
 
     while True:
         try:
@@ -382,11 +433,15 @@ async def run_queue_worker(
                             session_factory, job_id, e.message,
                             error_code=e.error_code, document_id=e.document_id,
                             count_attempt=False, max_retries=settings.MAX_RETRIES,
+                            settings=settings,
                         )
                     else:
+                        # Unerwartet: Details (Pfade, SQL) nur ins Log, der
+                        # Job-Fehler geht per /api/jobs an den Client.
+                        logger.exception("Job %s fehlgeschlagen", job_id)
                         await _fail_job(
                             session_factory, job_id,
-                            str(e) or f"{type(e).__name__}: Unbekannter Fehler",
+                            internal_error_message(e),
                             count_attempt=True, max_retries=settings.MAX_RETRIES,
                         )
 

@@ -65,6 +65,21 @@ async def create_job(
     return job
 
 
+def remove_upload_copy(file_path: str | Path, settings: Settings) -> bool:
+    """Loescht die Upload-Kopie eines Jobs — nie eine Datei ausserhalb von
+    UPLOAD_DIR (Job-Pfade stammen aus der DB). True, wenn danach weg."""
+    try:
+        path = Path(file_path).resolve()
+        if not path.is_relative_to(Path(settings.UPLOAD_DIR).resolve()):
+            logger.warning("Job-Datei liegt ausserhalb von UPLOAD_DIR, nicht geloescht: %s", path)
+            return False
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        logger.warning("Upload-Kopie konnte nicht entfernt werden: %s", file_path, exc_info=True)
+        return False
+
+
 def discard_upload(job: ProcessingJob) -> None:
     """Entfernt die Upload-Kopie eines Jobs, dessen Commit gescheitert ist."""
     try:

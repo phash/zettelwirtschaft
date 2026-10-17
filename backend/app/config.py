@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     WATCH_DIR: str = "./data/watch"
     ARCHIVE_DIR: str = "./data/archive"
     EXPORT_DIR: str = ""  # Leer = deaktiviert; absoluter Pfad zu einem externen Zielordner
+    # Netzwerkpfade (\\server\freigabe) als Watch-/Export-Ordner in der Web-UI
+    # erlauben (Native/Dev). Standard AUS (FH-01): der Native-Dienst laeuft als
+    # LocalSystem — schon die Pfadpruefung wuerde das Maschinenkonto am
+    # angegebenen Server anmelden (NTLM-Relay), der Export ginge dorthin.
+    # Nur auf einem Host mit vertrauenswuerdiger Freigabe einschalten.
+    ALLOW_NETWORK_FOLDERS: bool = False
     # Optional: Pfad zum Frontend-Build (Native: vom Installer gesetzt).
     # Leer = nicht serven (Docker-Pfad ueber nginx).
     FRONTEND_DIST_DIR: str = ""
@@ -94,6 +100,12 @@ class Settings(BaseSettings):
     # ohne think=false — siehe OLLAMA_THINK. Bestehende Installationen haben
     # den Wert explizit in .env/config.toml (bisheriger Default qwen2.5:7b-instruct).
     OLLAMA_MODEL: str = "gemma4:e2b-it-qat"
+    # SEC-DATA-06: Fehlende OLLAMA_MODEL/EMBEDDING_MODEL laedt das Backend beim
+    # Start ueber Ollama aus dessen oeffentlicher Registry (registry.ollama.ai,
+    # mehrere GB; sichtbar sind dort nur IP + Modellname, keine Dokumente).
+    # false = kein automatischer Download (Offline-/Volumentarif-Betrieb); der
+    # Systemstatus meldet das fehlende Modell, Download dann per `ollama pull`.
+    OLLAMA_AUTO_PULL: bool = True
     OLLAMA_TIMEOUT: int = 300
     OLLAMA_MAX_RETRIES: int = 2
     # Lese-Timeout (Sekunden) fuer einen JSON-Analyse-Aufruf (Dokumentanalyse,
@@ -137,6 +149,18 @@ class Settings(BaseSettings):
     # Lockout-/Rate-Limit-Identitaet frei waehlen. Default: Docker-Adresspool
     # fuer Bridge-/Compose-Netze.
     TRUSTED_PROXIES: str = "172.16.0.0/12"
+
+    # AUTH-02 (DNS-Rebinding-Schutz): zusaetzlich erlaubte Hostnamen im
+    # Host-Header (kommagetrennt, z.B. "nas.example.org,*.meine-domain.de").
+    # Immer erlaubt sind IP-Adressen, localhost, Namen ohne Punkt (PC-Name),
+    # *.local/*.lan/*.home.arpa/*.internal/*.fritz.box sowie der Rechnername.
+    # "*" schaltet die Pruefung ab (nicht empfohlen).
+    ALLOWED_HOSTS: str = ""
+
+    # AUTH-03: FastAPI-Doku (/docs, /redoc, /openapi.json) ausliefern. Aus per
+    # Default — im Native-Betrieb waeren die Seiten sonst ohne PIN im LAN
+    # erreichbar und laden Swagger-UI von einem externen CDN.
+    ENABLE_API_DOCS: bool = False
 
     # ChromaDB / RAG
     # Native-Mode: "embedded" laed Chroma als PersistentClient in-process (kein HTTP-Service noetig).

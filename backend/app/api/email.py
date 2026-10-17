@@ -31,10 +31,21 @@ from app.services.email_fetch_service import (
     test_imap_connection,
 )
 from app.services.email_scheduler_service import IDLE_INTERVAL_SECONDS
+from app.services.notification_service import notify_system
 from app.services.task_service import TaskContext, TaskError, start_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/email", tags=["email"])
+
+# SEC-DATA-02: Das gespeicherte Passwort gehoert zu genau diesem Server +
+# Benutzer. Wer Host/Port/SSL/Benutzer aendert, muss es neu eingeben — sonst
+# koennte jeder mit API-Zugang den Server auf einen eigenen Listener umbiegen
+# und per "Verbindung testen" das (sonst nie ausgelieferte) Passwort abgreifen.
+CREDENTIAL_BOUND_FIELDS = ("imap_host", "imap_port", "use_ssl", "username")
+PASSWORD_REQUIRED_MESSAGE = (
+    "Bei Änderung von Server, Port, SSL oder Benutzername muss das Passwort "
+    "erneut eingegeben werden."
+)
 
 
 def _require_encryption_key(settings: Settings) -> str:
@@ -118,6 +129,26 @@ async def update_account(
         raise HTTPException(422, CRON_REQUIRED_MESSAGE)
     if "filing_scope_id" in changes:
         await _ensure_scope_exists(db, changes["filing_scope_id"])
+
+    rebound = [
+        field for field in CREDENTIAL_BOUND_FIELDS
+        if field in changes and changes[field] != getattr(account, field)
+    ]
+    if rebound and "password" not in changes:
+        raise HTTPException(422, PASSWORD_REQUIRED_MESSAGE)
+    if rebound:
+        old_target = f"{account.username}@{account.imap_host}:{account.imap_port}"
+        new_target = (
+            f"{changes.get('username', account.username)}@"
+            f"{changes.get('imap_host', account.imap_host)}:{changes.get('imap_port', account.imap_port)}"
+        )
+        logger.warning("E-Mail-Konto %s: Server/Zugang geaendert %s -> %s", account.id, old_target, new_target)
+        notify_system(
+            db,
+            "E-Mail-Konto geändert",
+            f"Konto „{account.name}“: Server/Zugang geändert von {old_target} auf {new_target}. "
+            "Falls Sie das nicht waren, bitte das Mail-Passwort beim Anbieter ändern.",
+        )
 
     for field, value in changes.items():
         if field == "password":

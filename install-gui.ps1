@@ -4,6 +4,8 @@ $script:ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $script:ProjectDir
 # Modell-Stufen (gemeinsam mit install.ps1 und dem Native-Setup)
 . (Join-Path $script:ProjectDir "scripts\model-tiers.ps1")
+# Zugriffsrechte fuer .env (SEC-DATA-03)
+. (Join-Path $script:ProjectDir "scripts\secure-acl.ps1")
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -673,6 +675,10 @@ function Phase-Config {
     $emailKey = [Convert]::ToBase64String($emailKeyBytes).Replace('+','-').Replace('/','_')
     $env += "`n# E-Mail-Verschluesselung (automatisch generiert, nicht aendern!)`n"
     $env += "EMAIL_ENCRYPTION_KEY=$emailKey`n"
+    # SEC-DATA-03: erst anlegen + auf SYSTEM/Administratoren/dieses Konto
+    # einschraenken, dann die Geheimnisse hineinschreiben.
+    if (-not (Test-Path -LiteralPath $envPath)) { [System.IO.File]::WriteAllText($envPath, '') }
+    $null = Protect-ZwPath -LiteralPath $envPath
     [System.IO.File]::WriteAllText($envPath, $env)
     Log "  .env erstellt (mit EMAIL_ENCRYPTION_KEY)"
 

@@ -23,6 +23,10 @@ param(
     [switch]$SkipFrontend,
     [switch]$SkipInstaller,
     [switch]$SkipUpdateZip,
+    # INFRA-04: tools/ (Tesseract, poppler, NSSM) muss den gepinnten SHA-256
+    # aus fetch-build-tools.ps1 entsprechen - die Binaries laufen beim Kunden
+    # als LocalSystem. Nur fuer lokale Experimente mit anderen Versionen.
+    [switch]$AllowUnpinnedTools,
     [string]$Version = ""
 )
 
@@ -90,6 +94,15 @@ if (-not $SkipFrontend) {
 # --- 3. Bundled Binaries (Tesseract + poppler) ---
 Write-Host "==> [3/6] Bundled Binaries kopieren" -ForegroundColor Yellow
 $ToolsDir = Join-Path $RepoRoot "tools"
+$present = @(@{ C = 'tesseract'; P = 'tesseract' }, @{ C = 'poppler'; P = 'poppler' }, @{ C = 'nssm'; P = 'nssm\win64\nssm.exe' }) |
+    Where-Object { Test-Path (Join-Path $ToolsDir $_.P) } | ForEach-Object { $_.C }
+if ($present) {
+    & (Join-Path $PSScriptRoot "fetch-build-tools.ps1") -VerifyOnly -Components $present
+    if ($LASTEXITCODE -ne 0) {
+        if (-not $AllowUnpinnedTools) { throw "tools/ entspricht nicht den gepinnten SHA-256 (fetch-build-tools.ps1) - Build abgebrochen (-AllowUnpinnedTools nur fuer lokale Tests)" }
+        Write-Warning "tools/ weicht von den Pins ab - NICHT ausliefern (-AllowUnpinnedTools)"
+    }
+}
 
 $tesseractSrc = Join-Path $ToolsDir "tesseract"
 if (Test-Path $tesseractSrc) {
@@ -128,7 +141,12 @@ $bundleScripts = @(
     "backup.bat", "restore-backup.bat", "restore-backup.ps1",
     "Convert-Env-To-Config.ps1", "New-NativeConfig.ps1", "new-secret.ps1",
     # Von New-NativeConfig/Convert-Env dot-gesourct (Modell-Stufen, Mindestversion).
-    "model-tiers.ps1"
+    "model-tiers.ps1",
+    # Zugriffsrechte Datenordner/config.toml (SEC-DATA-03): New-NativeConfig,
+    # setup-native.nsi und update-wizard.ps1.
+    "secure-acl.ps1",
+    # Zugriffsrechte Programmordner (INFRA-03): setup-native.nsi + update-wizard.ps1.
+    "secure-install-dir.ps1"
 )
 foreach ($s in $bundleScripts) {
     Copy-Item -Force (Join-Path $RepoRoot "scripts\$s") (Join-Path $DistRoot $s)

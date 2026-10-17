@@ -108,6 +108,18 @@ class TestEnsureConfiguredModels:
         pulled = [json.loads(body)["model"] for method, path, body in calls if path == "/api/pull"]
         assert pulled == ["qwen3-embedding:4b", "gemma4:e2b-it-qat"]
 
+    async def test_auto_pull_disabled_never_calls_pull(self, test_settings, caplog):
+        """SEC-DATA-06: OLLAMA_AUTO_PULL=false -> kein Download aus der Registry."""
+        settings = test_settings.model_copy(update={"OLLAMA_AUTO_PULL": False})
+        calls: list = []
+        client = _fake_ollama([], calls=calls)
+        with patch("app.services.ollama_client._get_client", return_value=client):
+            results = await ensure_configured_models(settings)
+
+        assert results == {"qwen3-embedding:4b": False, "gemma4:e2b-it-qat": False}
+        assert not [c for c in calls if c[1] == "/api/pull"]
+        assert "OLLAMA_AUTO_PULL=false" in caplog.text
+
     async def test_present_models_not_pulled(self, test_settings):
         calls: list = []
         client = _fake_ollama(["gemma4:e2b-it-qat", "qwen3-embedding:4b"], calls=calls)

@@ -15,7 +15,8 @@ Regeln fuer ``work``-Funktionen:
   in einer eigenen kurzen Transaktion geschrieben.
 - Erwartete Fehler als :class:`TaskError` (deutsche Meldung fuer die UI)
   werfen; ``HTTPException`` wird ebenfalls mit ihrem ``detail`` uebernommen.
-  Alles andere landet als "Interner Fehler: ..." im Task und im Log.
+  Alles andere landet als generisches "Interner Fehler (<Typ>)" im Task —
+  der Exception-Text (Pfade, SQL, Parameter) nur im Server-Log (SEC-DATA-05).
 - Der Rueckgabewert wird per ``jsonable_encoder`` als ``result`` gespeichert.
 
 Alles laeuft in-process: nach einem Neustart setzt
@@ -32,10 +33,11 @@ from typing import Any
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.public_errors import internal_error_message
 from app.models.background_task import ACTIVE_TASK_STATUSES, BackgroundTask, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,16 @@ class TaskConflictError(Exception):
         super().__init__(message)
         self.active_task = active_task
         self.message = message
+
+
+DEFAULT_LIMIT_MESSAGE = "Es laufen bereits zu viele Vorgänge dieser Art. Bitte warten, bis sie fertig sind."
+
+
+class TaskLimitError(HTTPException):
+    """AVAIL-06: zu viele aktive Vorgaenge dieser Art (``max_active``) -> HTTP 429."""
+
+    def __init__(self, message: str = DEFAULT_LIMIT_MESSAGE):
+        super().__init__(status_code=429, detail=message)
 
 
 @dataclass(frozen=True)
@@ -166,12 +178,16 @@ async def start_task(
     *,
     key: str | None = None,
     conflict_message: str = DEFAULT_CONFLICT_MESSAGE,
+    max_active: int | None = None,
+    limit_message: str = DEFAULT_LIMIT_MESSAGE,
 ) -> BackgroundTask:
     """Legt einen Vorgang an und startet ``work(ctx)`` im Event-Loop der App.
 
     Mit ``key`` ist hoechstens ein aktiver Vorgang pro (kind, key) erlaubt —
     sonst :class:`TaskConflictError`. Ohne ``key`` kein Guard. Fuer "nur ein
     Vorgang dieser Art gleichzeitig" einen festen Key verwenden (z.B. "global").
+    ``max_active`` deckelt zusaetzlich die aktiven Vorgaenge dieses ``kind``
+    ueber alle Keys (AVAIL-06) — sonst :class:`TaskLimitError` (HTTP 429).
 
     Gibt den frisch angelegten (PENDING) Datensatz zurueck; der Endpoint
     antwortet damit als ``TaskResponse`` mit Status 202.
@@ -182,6 +198,15 @@ async def start_task(
                 active = await _find_active(session, kind, key)
                 if active is not None:
                     raise TaskConflictError(active, conflict_message)
+            if max_active is not None:
+                active_count = await session.scalar(
+                    select(func.count())
+                    .select_from(BackgroundTask)
+                    .where(BackgroundTask.kind == kind)
+                    .where(BackgroundTask.status.in_(ACTIVE_TASK_STATUSES))
+                )
+                if (active_count or 0) >= max_active:
+                    raise TaskLimitError(limit_message)
             task = BackgroundTask(kind=kind, key=key, status=TaskStatus.PENDING)
             session.add(task)
             try:
@@ -231,7 +256,9 @@ def _error_message(exc: BaseException) -> str:
     if isinstance(exc, HTTPException):
         detail = exc.detail
         return detail if isinstance(detail, str) else str(detail)
-    return f"Interner Fehler: {type(exc).__name__}: {exc}"
+    # Der Task-Fehler geht per GET /api/tasks an den Client -> nur der Typ;
+    # die Details stehen im Log (logger.exception in _run).
+    return internal_error_message(exc)
 
 
 async def _run(ctx: TaskContext, work: TaskWork) -> None:

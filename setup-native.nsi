@@ -80,11 +80,15 @@ Var UPGRADE          ; "1" = bestehende Installation wird aktualisiert
 Var OLD_VERSION
 Var LEGACY_REGVIEW   ; "1" = Altwerte lagen in der 32-Bit-Registry-Ansicht
 Var FINISH_PIN_TEXT
+Var LOCAL_ONLY_CHECK
+Var LOCAL_ONLY       ; ${BST_CHECKED} = nur 127.0.0.1 (INFRA-07)
+Var SERVER_HOST
 
 ; --- Pages ---
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "LICENSE"
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipPageOnUpgrade
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE InstDirPageLeave
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; Custom Page: Datenordner wählen (bei Upgrade übersprungen)
@@ -117,6 +121,7 @@ Function .onInit
     StrCpy $SERVER_PORT "8080"
     StrCpy $UPGRADE "0"
     StrCpy $LEGACY_REGVIEW "0"
+    StrCpy $LOCAL_ONLY "0"
 
     Call DetectExistingInstall
 
@@ -205,6 +210,29 @@ Function SkipPageOnUpgrade
     ${EndIf}
 FunctionEnd
 
+; INFRA-03: Ein frei gewaehlter Programmordner ausserhalb von Program Files kann
+; vorab von einem anderen lokalen Konto angelegt und mit eigenen Dateien (DLLs,
+; Exe) bestueckt worden sein - die liefen spaeter als SYSTEM. Deshalb dort nur
+; in einen neuen oder leeren Ordner installieren. Die Rechte des Ordners setzt
+; die Install-Section (secure-install-dir.ps1) vor dem Entpacken.
+Function InstDirPageLeave
+    Push $R1
+    Push $R2
+    StrLen $R1 "$PROGRAMFILES64\"
+    StrCpy $R2 "$INSTDIR\" $R1
+    ${If} $R2 != "$PROGRAMFILES64\"
+        ${DirState} "$INSTDIR" $R1
+        ${If} $R1 == 1
+            MessageBox MB_OK|MB_ICONEXCLAMATION "Der Ordner $INSTDIR ist nicht leer.$\r$\n$\r$\nAußerhalb von $PROGRAMFILES64 installiert das Setup nur in einen neuen oder leeren Ordner (Schutz vor untergeschobenen Programmdateien). Bitte einen anderen Ordner wählen." /SD IDOK
+            Pop $R2
+            Pop $R1
+            Abort
+        ${EndIf}
+    ${EndIf}
+    Pop $R2
+    Pop $R1
+FunctionEnd
+
 ; --- Custom Page: Datenordner ---
 Function DataDirPage
     ${If} $UPGRADE == "1"
@@ -225,13 +253,19 @@ Function DataDirPage
     Pop $DATA_DIR_BUTTON
     ${NSD_OnClick} $DATA_DIR_BUTTON OnBrowseDataDir
 
-    ${NSD_CreateLabel} 0 60u 100% 36u "Tipp: ein Pfad in OneDrive/Dropbox/Nextcloud erzeugt automatisch ein Cloud-Backup deiner Dokumente. Ein NAS-Pfad (Z:\) bindet das Familienarchiv ins NAS-Snapshot-System ein."
+    ${NSD_CreateLabel} 0 52u 100% 32u "Tipp: ein Pfad in OneDrive/Dropbox/Nextcloud erzeugt automatisch ein Cloud-Backup deiner Dokumente. Ein NAS-Pfad (Z:\) bindet das Familienarchiv ins NAS-Snapshot-System ein."
     Pop $0
 
-    ${NSD_CreateLabel} 0 110u 100% 12u "Port der Weboberfläche:"
+    ${NSD_CreateLabel} 0 90u 100% 12u "Port der Weboberfläche:"
     Pop $0
-    ${NSD_CreateNumber} 0 124u 60u 14u "$SERVER_PORT"
+    ${NSD_CreateNumber} 0 102u 60u 14u "$SERVER_PORT"
     Pop $PORT_TEXT
+
+    ; INFRA-07: ohne HTTPS laufen PIN, Sitzungs-Cookie und Dokumente im Heimnetz
+    ; unverschluesselt. Wer kein Smartphone/Tablet nutzt, bindet nur an 127.0.0.1.
+    ${NSD_CreateCheckbox} 0 122u 100% 14u "Nur von diesem PC erreichbar (kein Zugriff von Smartphone/anderen Geräten)"
+    Pop $LOCAL_ONLY_CHECK
+    ${NSD_SetState} $LOCAL_ONLY_CHECK $LOCAL_ONLY
 
     nsDialogs::Show
 FunctionEnd
@@ -249,6 +283,7 @@ FunctionEnd
 Function DataDirPageLeave
     ${NSD_GetText} $DATA_DIR_TEXT $DATA_DIR
     ${NSD_GetText} $PORT_TEXT $SERVER_PORT
+    ${NSD_GetState} $LOCAL_ONLY_CHECK $LOCAL_ONLY
     ; Abschliessenden Backslash entfernen ("D:\" -> "D:"): sonst escaped er das
     ; schliessende Anfuehrungszeichen der Kommandozeile fuer New-NativeConfig.ps1.
     StrCpy $0 $DATA_DIR 1 -1
@@ -304,6 +339,21 @@ Section "Zettelwirtschaft" SecMain
     SectionIn RO
     SetOutPath "$INSTDIR"
 
+    ; INFRA-03: Programmordner VOR dem Entpacken (und vor dem Backup-Aufruf der
+    ; alten Exe beim Upgrade) auf SYSTEM/Administratoren Vollzugriff, Benutzer
+    ; Lesen setzen - ein frei gewaehlter Ordner erbt sonst "Authentifizierte
+    ; Benutzer: Aendern" von der Laufwerkswurzel. Das Skript laeuft aus
+    ; $PLUGINSDIR (Temp des Admins), nicht aus dem noch ungeschuetzten Ordner.
+    File "/oname=$PLUGINSDIR\secure-install-dir.ps1" "${DIST}\secure-install-dir.ps1"
+    DetailPrint "Zugriffsrechte des Programmordners festlegen..."
+    nsExec::ExecToLog '${POWERSHELL} -File "$PLUGINSDIR\secure-install-dir.ps1" "$INSTDIR"'
+    Pop $R0
+    ${If} $R0 != "0"
+    ${AndIf} $R0 != "2"
+        MessageBox MB_OK|MB_ICONSTOP "Die Zugriffsrechte des Programmordners $INSTDIR konnten nicht gesetzt werden (Code $R0).$\r$\nOhne sie könnten andere Benutzer Programmdateien des Dienstes austauschen. Bitte einen Ordner unter $PROGRAMFILES64 wählen." /SD IDOK
+        Abort "Installation abgebrochen: Programmordner nicht geschützt."
+    ${EndIf}
+
     ${If} $UPGRADE == "1"
         Call PrepareUpgrade
     ${EndIf}
@@ -320,6 +370,8 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\Convert-Env-To-Config.ps1"
     File "${DIST}\New-NativeConfig.ps1"
     File "${DIST}\model-tiers.ps1"
+    File "${DIST}\secure-acl.ps1"
+    File "${DIST}\secure-install-dir.ps1"
     File "${DIST}\new-secret.ps1"
     File "${DIST}\update-wizard.bat"
     File "${DIST}\update-wizard.ps1"
@@ -345,7 +397,12 @@ Section "Zettelwirtschaft" SecMain
             StrCpy $FINISH_PIN_TEXT "PIN: $PIN_CODE (bitte notieren!)"
         ${EndIf}
         DetailPrint "Schreibe config.toml..."
-        nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\New-NativeConfig.ps1" -OutPath "$CONFIG_PATH" -DataDir "$DATA_DIR" -FrontendDistDir "$INSTDIR\frontend" -Port $SERVER_PORT -PinCode "$PIN_CODE" -Version "${VERSION}"'
+        ${If} $LOCAL_ONLY == ${BST_CHECKED}
+            StrCpy $SERVER_HOST "127.0.0.1"
+        ${Else}
+            StrCpy $SERVER_HOST "0.0.0.0"
+        ${EndIf}
+        nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\New-NativeConfig.ps1" -OutPath "$CONFIG_PATH" -DataDir "$DATA_DIR" -FrontendDistDir "$INSTDIR\frontend" -Port $SERVER_PORT -ServerHost $SERVER_HOST -PinCode "$PIN_CODE" -Version "${VERSION}"'
         Pop $R0
         ${If} $R0 != "0"
             MessageBox MB_OK|MB_ICONSTOP "Die Konfiguration (config.toml) konnte nicht geschrieben werden (Code $R0).$\r$\nDetails stehen im Installationsprotokoll." /SD IDOK
@@ -353,8 +410,19 @@ Section "Zettelwirtschaft" SecMain
         ${EndIf}
     ${EndIf}
 
-    ; Firewall-Rule (nur Erstinstallation — sonst entstehen doppelte Regeln)
+    ; SEC-DATA-03: Datenbank, Archiv, Backups, Logs und config.toml nur fuer
+    ; SYSTEM (Dienst), Administratoren und das installierende Konto. Ohne das
+    ; erbt ein frei gewaehlter Datenordner (C:\Zettelwirtschaft, D:\...) von der
+    ; Laufwerkswurzel "Authentifizierte Benutzer: Aendern". Idempotent, laeuft
+    ; auch bei Upgrades; Netzwerkpfade/Fehler nur als Hinweis im Protokoll.
+    DetailPrint "Zugriffsrechte des Datenordners einschraenken..."
+    nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\secure-acl.ps1" "$DATA_DIR\data" "$DATA_DIR\logs" "$CONFIG_PATH"'
+    Pop $R0
+
+    ; Firewall-Rule (nur Erstinstallation — sonst entstehen doppelte Regeln;
+    ; nicht bei "nur dieser PC", INFRA-07)
     ${If} $UPGRADE != "1"
+    ${AndIf} $LOCAL_ONLY != ${BST_CHECKED}
         DetailPrint "Firewall-Regel..."
         nsExec::ExecToLog '${POWERSHELL} -Command "New-NetFirewallRule -DisplayName Zettelwirtschaft -Direction Inbound -Protocol TCP -LocalPort $SERVER_PORT -Action Allow -Profile Private -ErrorAction SilentlyContinue"'
         Pop $R0
@@ -493,6 +561,8 @@ Section "Uninstall"
     Delete "$INSTDIR\Convert-Env-To-Config.ps1"
     Delete "$INSTDIR\New-NativeConfig.ps1"
     Delete "$INSTDIR\model-tiers.ps1"
+    Delete "$INSTDIR\secure-acl.ps1"
+    Delete "$INSTDIR\secure-install-dir.ps1"
     Delete "$INSTDIR\new-secret.ps1"
     Delete "$INSTDIR\update-wizard.bat"
     Delete "$INSTDIR\update-wizard.ps1"

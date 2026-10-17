@@ -33,6 +33,10 @@ ARCHIVE_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/archive"
 THUMBNAIL_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/thumbnails"
 WATCH_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/watch"
 EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-Sync.
+# Netzwerkpfade (\\server\freigabe) als Watch-/Export-Ordner in der Web-UI erlauben.
+# Standard aus: der Dienst laeuft als LocalSystem und meldet das Maschinenkonto beim
+# angegebenen Server an. Nur mit einer vertrauenswuerdigen Freigabe einschalten.
+# ALLOW_NETWORK_FOLDERS = false
 
 # ---- KI / Ollama ----
 OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)
@@ -40,7 +44,10 @@ OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service
 # gemma4:12b-it-qat. Bisheriger Default (bis v1.5): qwen2.5:7b-instruct.
 # Benoetigt Ollama >= 0.30.3 (getestet mit 0.40.5).
 OLLAMA_MODEL = "gemma4:e2b-it-qat"
-# Fehlende Modelle (OLLAMA_MODEL, EMBEDDING_MODEL) laedt das Backend beim Start selbst.
+# Fehlende Modelle (OLLAMA_MODEL, EMBEDDING_MODEL) laedt das Backend beim Start selbst
+# aus der Ollama-Registry (einzige automatische Internet-Verbindung: Modellname + IP).
+# Abschalten mit OLLAMA_AUTO_PULL = false (dann `ollama pull <modell>` von Hand).
+OLLAMA_AUTO_PULL = true
 OLLAMA_TIMEOUT = 300
 OLLAMA_MAX_RETRIES = 2
 # OLLAMA_ANALYSIS_TIMEOUT = 120   # Timeout (s) der JSON-Dokumentanalyse

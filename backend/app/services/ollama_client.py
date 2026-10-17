@@ -426,6 +426,11 @@ class OllamaHealth:
 
 
 _health_cache: tuple[float, OllamaHealth] | None = None
+# AVAIL-03: laufende Probe (Single-Flight). Gleichzeitige Aufrufer — /api/health
+# ist ohne PIN und ohne Rate-Limit erreichbar — teilen sich EINE Probe, statt
+# Ollama (und je eine DB-Verbindung) parallel zu belegen. Mit Loop gespeichert:
+# ein Task darf nur in seinem eigenen Event-Loop awaited werden (Tests).
+_health_inflight: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
 
 
 async def ollama_health(settings: Settings) -> OllamaHealth:
@@ -437,11 +442,31 @@ async def ollama_health(settings: Settings) -> OllamaHealth:
     zusaetzlich gemeldet. Alle Probleme sind "warning": ein Container-Neustart
     hilft nicht, Dokumente landen bis dahin mit klarer Rueckfrage in der Pruefung.
     """
-    global _health_cache
-    now = time.monotonic()
-    if _health_cache is not None and (now - _health_cache[0]) < HEALTH_TTL_SECONDS:
-        return _health_cache[1]
+    global _health_inflight
+    cached = _health_cache
+    if cached is not None and (time.monotonic() - cached[0]) < HEALTH_TTL_SECONDS:
+        return cached[1]
 
+    loop = asyncio.get_running_loop()
+    inflight = _health_inflight
+    if inflight is None or inflight[0] is not loop or inflight[1].done():
+        task = loop.create_task(_probe_health(settings))
+        _health_inflight = (loop, task)
+
+        def _clear(done: asyncio.Task) -> None:
+            global _health_inflight
+            if _health_inflight is not None and _health_inflight[1] is done:
+                _health_inflight = None
+
+        task.add_done_callback(_clear)
+        inflight = (loop, task)
+    # shield: bricht ein Client ab, laeuft die gemeinsame Probe fuer die
+    # anderen Wartenden weiter.
+    return await asyncio.shield(inflight[1])
+
+
+async def _probe_health(settings: Settings) -> OllamaHealth:
+    global _health_cache
     probe = await probe_ollama(settings)
     version = await get_ollama_version(settings) if probe.reachable else None
     message = probe.message()
@@ -455,14 +480,19 @@ async def ollama_health(settings: Settings) -> OllamaHealth:
     health = OllamaHealth(
         status="ok" if message is None else "warning", message=message, probe=probe, version=version,
     )
-    _health_cache = (now, health)
+    # AVAIL-03: Zeitstempel NACH der Probe. Vorher wurde der Startzeitpunkt
+    # gespeichert — dauerte die Probe >= HEALTH_TTL_SECONDS (Ollama auf einem
+    # ausgeschalteten Fremdrechner: 5 s Connect-Timeout), war der Eintrag schon
+    # beim Speichern abgelaufen und jeder Aufruf probte erneut.
+    _health_cache = (time.monotonic(), health)
     return health
 
 
 def reset_health_cache() -> None:
     """Nur fuer Tests."""
-    global _health_cache
+    global _health_cache, _health_inflight
     _health_cache = None
+    _health_inflight = None
 
 
 # Modelle, deren Download gerade laeuft (fuer die Health-Meldung).
@@ -533,6 +563,14 @@ async def ensure_model(settings: Settings, name: str) -> bool:
     if not probe.missing:
         logger.info("Ollama-Modell '%s' bereits vorhanden", name)
         return True
+    if not settings.OLLAMA_AUTO_PULL:
+        # SEC-DATA-06: kein ungefragter Download aus dem Internet.
+        logger.warning(
+            "Ollama-Modell '%s' fehlt — automatischer Download ist abgeschaltet "
+            "(OLLAMA_AUTO_PULL=false). Bitte 'ollama pull %s' ausfuehren.",
+            name, name,
+        )
+        return False
     if not await pull_model(settings, name):
         return False
     # Capabilities des neu geladenen Modells frisch abfragen.

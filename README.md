@@ -4,6 +4,8 @@ Lokales Dokumentenmanagementsystem für Privathaushalte. Rechnungen, Belege und 
 
 Läuft ausschließlich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, keine Telemetrie.
 
+**Ausgehende Verbindungen:** Dokumente verlassen nie den Rechner. Einzige automatische Internet-Verbindung ist der Download fehlender KI-Modelle durch Ollama aus dessen Registry (beim Start, nur wenn `OLLAMA_MODEL`/`EMBEDDING_MODEL` fehlt; sichtbar sind dort nur IP-Adresse und Modellname). Abschaltbar mit `OLLAMA_AUTO_PULL=false` — Modelle dann von Hand mit Ollama herunterladen (Befehle siehe Installation). Die Update-Prüfung ist opt-in, E-Mail-Abruf nur für selbst eingerichtete Konten.
+
 ## Features
 
 - **KI-Dokumentenanalyse** - Automatische Erkennung von Typ, Datum, Betrag, Aussteller via Ollama/LLM

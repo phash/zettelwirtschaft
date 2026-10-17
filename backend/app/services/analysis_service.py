@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
 import re
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import Settings
 from app.core.date_utils import parse_date_lenient
+from app.core.prompt_safety import neutralize_prompt_tags
 from app.core.normalize import (
     DOCUMENT_TYPE_LABELS,
     VALID_DOCUMENT_TYPES,
@@ -348,6 +351,42 @@ def _ensure_review_question(result: AnalysisResult) -> AnalysisResult:
     return result
 
 
+# INJ-05: Quellen, deren Inhalt ein Fremder bestimmt (E-Mail-Absender). Das
+# LLM-Ergebnis laesst sich per Prompt-Injection steuern (confidence=0.99,
+# needs_review=false) — Modell-Angaben duerfen fuer solche Dokumente die
+# Pruefung steuerrelevanter Belege nicht abschalten.
+_UNTRUSTED_SOURCES = frozenset({"EMAIL"})
+
+
+def apply_source_review_policy(result: AnalysisResult | None, source) -> AnalysisResult | None:
+    """Steuerrelevante Belege aus E-Mail-Importen immer zur Pruefung vorlegen.
+
+    Ein unaufgefordert zugeschickter Anhang soll nicht ungeprueft als
+    absetzbarer Beleg in Steuer-Summen und -Export landen. Die Rueckfrage
+    zielt auf ``tax_relevant`` (Ja = behalten, Nein = aus der Steuer nehmen),
+    der Rest der Analyse bleibt unveraendert. Upload und Watch-Ordner
+    (vom Benutzer selbst eingelegt) sind nicht betroffen.
+    """
+    if result is None or not result.tax_relevant:
+        return result
+    if getattr(source, "value", source) not in _UNTRUSTED_SOURCES:
+        return result
+    result.needs_review = True
+    result.review_questions.append({
+        "question": "Ist dieser per E-Mail eingegangene Beleg wirklich steuerrelevant?",
+        "question_type": "confirmation",
+        "field_affected": "tax_relevant",
+        "suggested_answers": "Ja|Nein",
+        "explanation": (
+            "Das Dokument wurde automatisch aus einem E-Mail-Postfach importiert. "
+            "Bitte prüfen Sie Absender, Betrag und Steuerkategorie, bevor der Beleg "
+            "in die Steuerübersicht übernommen wird."
+        ),
+        "priority": 8,
+    })
+    return result
+
+
 def _analysis_failed_result(error: OllamaError | None) -> AnalysisResult:
     """NEEDS_REVIEW-Ergebnis, wenn die KI-Analyse ausgefallen ist.
 
@@ -400,14 +439,7 @@ def _sanitize_ocr_for_prompt(text: str) -> str:
     Gross-/Kleinschreibung und Leerzeichen-Varianten), damit ein OCR-Text mit
     `</document_ocr>...Anweisung...<document_ocr>` nicht aus dem Wrap
     ausbrechen kann. Wirkt zusaetzlich zur Warnung im Template."""
-    if not text:
-        return ""
-    return re.sub(
-        r"<\s*(/?)\s*document_ocr\s*>",
-        lambda m: f"&lt;{m.group(1)}document_ocr&gt;",
-        text,
-        flags=re.IGNORECASE,
-    )
+    return neutralize_prompt_tags(text, "document_ocr")
 
 
 def _render_ocr_prompt(template_name: str, ocr_text: str, **values: str) -> str:
@@ -691,7 +723,44 @@ async def _try_sequential_analysis(
     return None
 
 
+# AVAIL-06: Prozessweit hoechstens ANALYSIS_CONCURRENCY Analysen (OCR + LLM)
+# gleichzeitig — Queue-Worker und Re-Analysen teilen sich den Slot
+# ("ein Dokument gleichzeitig", Heim-Hardware). Frueher liefen beliebig viele
+# Re-Analysen parallel zum Worker; Ollama-Timeouts kaskadierten und neue Uploads
+# fielen in NEEDS_REVIEW. Ein Semaphore pro Event-Loop (asyncio-Primitive binden
+# sich an den Loop; Tests laufen mit einem Loop pro Testfunktion).
+ANALYSIS_CONCURRENCY = 1
+_analysis_slots: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _analysis_slot() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slot = _analysis_slots.get(loop)
+    if slot is None:
+        slot = _analysis_slots[loop] = asyncio.Semaphore(ANALYSIS_CONCURRENCY)
+    return slot
+
+
 async def analyze_document(
+    file_path: Path,
+    file_type: str,
+    settings: Settings,
+    filing_scopes: list[dict] | None = None,
+    session=None,
+    pre_ocr_text: str | None = None,
+) -> tuple[OcrResult | None, AnalysisResult | None]:
+    """Dokumentenanalyse mit prozessweitem Concurrency-Slot (AVAIL-06), siehe
+    :func:`_analyze_document_unlimited`."""
+    async with _analysis_slot():
+        return await _analyze_document_unlimited(
+            file_path, file_type, settings,
+            filing_scopes=filing_scopes, session=session, pre_ocr_text=pre_ocr_text,
+        )
+
+
+async def _analyze_document_unlimited(
     file_path: Path,
     file_type: str,
     settings: Settings,

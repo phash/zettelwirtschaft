@@ -100,3 +100,41 @@ class TestGlobalRateLimit:
         other = AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.77", 5000)), base_url="http://test")
         async with other:
             assert (await other.get("/api/auth/status")).status_code == 200
+
+
+# --- AUTH-04: Erkennung verlorener Quell-IP (Docker Desktop) ---
+
+
+def _docker_settings(monkeypatch):
+    import app.config
+
+    monkeypatch.setattr(app.config, "_in_container", lambda: True)
+    return Settings()
+
+
+@pytest.mark.parametrize("ip,expected", [("172.17.0.1", True), ("192.168.65.1", True), ("192.168.178.20", False)])
+def test_nat_gateway_detection(monkeypatch, ip, expected):
+    import ipaddress
+
+    from app.core.rate_limit import looks_like_nat_gateway
+
+    assert looks_like_nat_gateway(ipaddress.ip_address(ip), _docker_settings(monkeypatch)) is expected
+
+
+def test_source_ip_loss_warns_once(monkeypatch, caplog):
+    from starlette.requests import Request
+
+    from app.core import rate_limit
+
+    settings = _docker_settings(monkeypatch)
+    monkeypatch.setattr(rate_limit, "_source_ip_warning_logged", False)
+
+    def req(real_ip):
+        return Request({"type": "http", "headers": [(b"x-real-ip", real_ip.encode())], "client": ("172.18.0.3", 1)})
+
+    with caplog.at_level("WARNING", logger="app.core.rate_limit"):
+        assert rate_limit.trusted_client_ip(req("192.168.178.20"), settings) == "192.168.178.20"
+        assert not caplog.records
+        for _ in range(3):
+            assert rate_limit.trusted_client_ip(req("192.168.65.1"), settings) == "192.168.65.1"
+    assert len([r for r in caplog.records if "Docker" in r.getMessage()]) == 1

@@ -70,7 +70,7 @@ def _reset_process_caches():
         vectorize_service._reachable_cache = None
         system._reset_system_info_cache()
         limiter.reset()
-        auth._login_attempts.clear()
+        auth.reset_login_state()
 
     _reset()
     yield

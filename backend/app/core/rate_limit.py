@@ -64,10 +64,41 @@ def trusted_client_ip(request: Request, settings: Settings | None = None) -> str
         logger.debug("X-Real-IP=%s ignoriert (kein vertrauenswuerdiger Proxy: %s)", real_ip, socket_host)
         return socket_host
     try:
-        return str(ipaddress.ip_address(real_ip))
+        addr = ipaddress.ip_address(real_ip)
     except ValueError:
         logger.warning("Ungueltige X-Real-IP %r vom Proxy %s ignoriert", real_ip, socket_host)
         return socket_host
+    _warn_if_source_ip_lost(addr, settings)
+    return str(addr)
+
+
+# AUTH-04: Docker Desktop (Windows/macOS) ersetzt bei veroeffentlichten Ports die
+# Client-Adresse je nach Netzwerkmodus durch seine Gateway-Adresse. Dann teilen
+# sich ALLE Geraete einen Lockout-/Rate-Limit-Schluessel (ein Gast mit falschem
+# PIN sperrt alle aus). Nicht sicher erkennbar — aber eine "Client"-IP aus den
+# Docker-eigenen Netzen ist ein starkes Indiz; einmalig warnen, damit es auf
+# einer echten Installation auffaellt.
+DOCKER_DESKTOP_NETWORKS = (ipaddress.ip_network("192.168.65.0/24"),)
+_source_ip_warning_logged = False
+
+
+def looks_like_nat_gateway(addr: ipaddress.IPv4Address | ipaddress.IPv6Address, settings: Settings) -> bool:
+    networks = [*settings.trusted_proxy_networks, *DOCKER_DESKTOP_NETWORKS]
+    return any(addr in net for net in networks if addr.version == net.version)
+
+
+def _warn_if_source_ip_lost(addr: ipaddress.IPv4Address | ipaddress.IPv6Address, settings: Settings) -> None:
+    global _source_ip_warning_logged
+    if _source_ip_warning_logged or not looks_like_nat_gateway(addr, settings):
+        return
+    _source_ip_warning_logged = True
+    logger.warning(
+        "Client-IP %s stammt aus einem Docker-Netz — vermutlich ersetzt Docker Desktop die "
+        "echte Geraete-Adresse durch sein Gateway. PIN-Sperre und Rate-Limit gelten dann fuer "
+        "ALLE Geraete gemeinsam (eine Serie falscher PINs sperrt alle aus). Abhilfe: "
+        "Native-Installation verwenden oder Docker-Netzwerkmodus mit Quell-IP-Erhalt.",
+        addr,
+    )
 
 
 class GlobalRateLimiter:

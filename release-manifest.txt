@@ -19,6 +19,7 @@ uninstall.bat
 generate-mounts.ps1
 wait-health.ps1
 scripts/model-tiers.ps1
+scripts/secure-acl.ps1
 ssl/generate-cert.sh
 ssl/generate-self-signed-cert.py
 ssl/nginx-ssl.conf

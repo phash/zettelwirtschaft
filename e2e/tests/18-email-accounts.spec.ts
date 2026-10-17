@@ -135,6 +135,21 @@ test.describe('E-Mail accounts', () => {
     await expect(accountRow(page, 'Rechnungen neu')).toBeVisible();
   });
 
+  test('Changing the server requires re-entering the password (SEC-DATA-02)', async ({ page }) => {
+    await page.goto('/einstellungen');
+    await accountRow(page, ACCOUNT.name).getByRole('button', { name: 'Bearbeiten' }).click();
+    await page.getByLabel('IMAP-Server').fill('imap.anderer-anbieter.de');
+    await emailCard(page).getByRole('button', { name: 'Speichern', exact: true }).click();
+
+    await expect(page.getByText('Bei Änderung von Server, Port, SSL oder Benutzername bitte das Passwort erneut eingeben.')).toBeVisible();
+    expect(mocks.writes).toEqual([]);
+
+    await page.getByLabel('Neues Passwort (leer = unverändert)').fill('neues-passwort');
+    await emailCard(page).getByRole('button', { name: 'Speichern', exact: true }).click();
+    await expect.poll(() => mocks.writes.length).toBe(1);
+    expect(mocks.writes[0].body).toMatchObject({ imap_host: 'imap.anderer-anbieter.de', password: 'neues-passwort' });
+  });
+
   test('Delete account after confirmation', async ({ page }) => {
     await page.goto('/einstellungen');
     await accountRow(page, ACCOUNT.name).getByRole('button', { name: 'Löschen' }).click();

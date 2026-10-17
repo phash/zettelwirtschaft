@@ -9,7 +9,6 @@ from app.bin_paths import configure_bundled_binaries
 configure_bundled_binaries()
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -192,7 +191,15 @@ async def lifespan(app: FastAPI):
 # ueberlastet. Die Pin-Login-Route behaelt ihren eigenen, strengeren Lockout.
 from fastapi import Depends, Request
 from app.core.rate_limit import global_rate_limit, limiter
+from app.core.host_guard import HostGuardMiddleware
 from app.core.request_limits import RequestBodyLimitMiddleware
+from app.core.security_headers import SecurityHeadersMiddleware
+
+# AUTH-03: /docs, /redoc, /openapi.json nur auf ausdruecklichen Wunsch
+# (ENABLE_API_DOCS) — die PIN-Middleware schuetzt nur /api/*, im Native-Betrieb
+# waere die komplette API-Landkarte sonst ohne PIN im LAN abrufbar (und Swagger-UI
+# laedt Assets von einem externen CDN).
+_docs_enabled = get_settings().ENABLE_API_DOCS
 
 app = FastAPI(
     title="Zettelwirtschaft",
@@ -200,6 +207,9 @@ app = FastAPI(
     version=read_app_version(),
     lifespan=lifespan,
     dependencies=[Depends(global_rate_limit)],
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 app.add_exception_handler(TaskConflictError, task_conflict_handler)
@@ -254,21 +264,20 @@ class PinAuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(PinAuthMiddleware)
 
-# CORS: LAN-Zugriff erlauben (Home-Netzwerk, kein Cloud)
 _settings = get_settings()
-# M-1 (Re-Review): CORS-Regex auf localhost + private RFC1918-Bereiche (jeder
-# Port, http/https) — eine zusaetzliche allow_origins-Liste waere redundant.
-# Hinweis: `allow_credentials=True` + breite Origin-Regex bedeutet, dass jede
-# Seite im selben LAN, die Cookies von zettelwirtschaft.local hat, Requests
-# senden kann. Im Heim-LAN akzeptabel, im Firmennetz problematisch — siehe
-# README/CLAUDE.md fuer den Trade-off.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# BR-03: bewusst KEINE CORSMiddleware. Die SPA spricht die API immer same-origin
+# an (Docker: nginx-Proxy, Native: StaticFiles, Dev: Vite-Proxy auf :3000). Die
+# fruehere Regex (localhost:* + RFC1918, allow_credentials=True) gab jeder
+# anderen Port-Origin auf demselben Rechner (same-site -> bekommt das
+# SameSite=strict-Session-Cookie) Lesezugriff auf das komplette Archiv.
+
+# AUTH-02: Host-/Origin-/Fetch-Metadata-Pruefung (DNS-Rebinding, CSRF) — zuletzt
+# registriert = laeuft zuerst, vor PIN-Middleware und Routen.
+app.add_middleware(HostGuardMiddleware)
+# BR-04: Security-Header (CSP, X-Frame-Options, nosniff, Referrer-Policy) im
+# Native-Betrieb, wo kein nginx davor steht. Aeusserste Schicht, damit auch
+# 400/403 des Host-Guards die Header tragen.
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
@@ -287,31 +296,39 @@ app.include_router(tasks_router, prefix="/api")
 
 
 # Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.
-# Damit entfaellt der separate nginx-Container. FRONTEND_DIST_DIR wird vom
-# Installer auf `<install-dir>/frontend/dist` gesetzt; im Dev/Docker leer.
+# Damit entfaellt der separate nginx-Container. Im Bundle immer
+# `<install-dir>/frontend` (INFRA-01, siehe core.install_dir.frontend_dist_dir —
+# FRONTEND_DIST_DIR aus der config.toml wird dort ignoriert); Dev: optional
+# FRONTEND_DIST_DIR, Docker: leer.
 # WICHTIG: Asset-Mount + SPA-Fallback NACH allen `/api`-Routern, sonst
 # werden API-Calls von StaticFiles abgefangen.
-def _mount_frontend() -> None:
+def _mount_frontend(target: FastAPI, settings) -> None:
     from fastapi import HTTPException, Request
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
-    dist_dir = _settings.FRONTEND_DIST_DIR
-    if not dist_dir:
+    from app.core.install_dir import frontend_dist_dir
+
+    dist_path = frontend_dist_dir(settings.FRONTEND_DIST_DIR)
+    if dist_path is None:
         return
-    dist_path = Path(dist_dir)
+    if settings.FRONTEND_DIST_DIR and Path(settings.FRONTEND_DIST_DIR).resolve() != dist_path.resolve():
+        logging.getLogger("zettelwirtschaft").warning(
+            "FRONTEND_DIST_DIR=%r wird ignoriert — die Weboberflaeche kommt immer aus dem Programmordner (%s)",
+            settings.FRONTEND_DIST_DIR, dist_path,
+        )
     if not dist_path.exists():
         return
 
     index_file = dist_path / "index.html"
     assets_dir = dist_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+        target.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     # SPA-Fallback: liefert echte Files wenn vorhanden, sonst index.html
     # (Vue-Router uebernimmt das Routing dann clientseitig).
     # Statische SPA-Shell zaehlt nicht gegen das API-Rate-Limit (wie /assets).
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @target.get("/{full_path:path}", include_in_schema=False)
     @limiter.exempt
     async def _spa_fallback(full_path: str, request: Request):
         # Bekannte /api/*-Routen fangen die Router oben ab. Unbekannte API-Pfade
@@ -331,4 +348,4 @@ def _mount_frontend() -> None:
         return FileResponse(str(index_file))
 
 
-_mount_frontend()
+_mount_frontend(app, _settings)

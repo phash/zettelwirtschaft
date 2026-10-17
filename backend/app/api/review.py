@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["review"])
 
 DOCUMENT_NOT_FOUND = "Dokument nicht gefunden"
+# AVAIL-06: Obergrenze aktiver (wartender + laufender) Re-Analysen ueber alle Dokumente.
+MAX_ACTIVE_REANALYSES = 3
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
@@ -262,6 +264,11 @@ async def reanalyze_document(
     task = await start_task(
         session_factory, REANALYZE_TASK_KIND, work, key=document_id,
         conflict_message="Für dieses Dokument läuft bereits eine Re-Analyse.",
+        # AVAIL-06: Re-Analysen teilen sich den Analyse-Slot mit dem
+        # Queue-Worker; mehr als ein paar wartende Vorgaenge sind kein
+        # legitimer Bedienfall (die UI analysiert ein Dokument nach dem anderen).
+        max_active=MAX_ACTIVE_REANALYSES,
+        limit_message="Es laufen bereits mehrere Re-Analysen. Bitte warten, bis sie fertig sind.",
     )
     return TaskResponse.model_validate(task)
 

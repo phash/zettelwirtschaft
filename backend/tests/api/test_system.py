@@ -498,6 +498,152 @@ class TestFolderSettingsDev:
         assert (await client.get("/api/system/settings")).json()["watch_dir"] == str(good)
 
 
+_WIN = os.name == "nt"
+_BS = "\\"
+
+
+class TestFolderPathHardening:
+    """FH-01: \\\\?\\-/UNC-Praefixe umgingen die Systemordner- und
+    Ablageordner-Pruefung; fremde Benutzerprofile waren erlaubt (Dienst =
+    LocalSystem)."""
+
+    @staticmethod
+    def _bypass_paths(test_settings) -> list[str]:
+        data = str(Path(test_settings.data_dir).resolve())
+        uploads = str(Path(test_settings.UPLOAD_DIR).resolve())
+        if not _WIN:
+            return ["//attacker.lan/share/sub", "//?/" + data.lstrip("/")]
+        lp = _BS * 2 + "?" + _BS
+        return [
+            lp + r"C:\Windows\System32",
+            lp + r"C:\ProgramData\x",
+            lp + uploads,                       # app-verwalteter Ordner
+            lp + data,                          # Datenordner selbst
+            lp + r"UNC\attacker.lan\share",
+            _BS * 2 + "." + _BS + r"C:\Windows",
+            _BS * 2 + r"attacker.lan\share\sub",  # SMB des Angreifers
+            _BS * 2 + r"127.0.0.1\c$\Users",
+            "//attacker.lan/share/sub",
+            r"C:\Program Files (x86)\Zettel",
+            os.environ.get("SystemRoot", r"C:\Windows") + r"\Temp\zettel",
+        ]
+
+    async def test_prefix_and_unc_bypasses_rejected(self, client, dev_mode, test_settings, no_watch_restart):
+        for bad in self._bypass_paths(test_settings):
+            for field in ("watch_dir", "export_dir"):
+                body = {"watch_dir": "", "export_dir": ""} | {field: bad}
+                resp = await client.put("/api/system/settings", json=body)
+                assert resp.status_code == 400, (field, bad, resp.text)
+        assert len(no_watch_restart) == 0
+
+    async def test_unc_is_rejected_before_any_filesystem_access(
+        self, client, dev_mode, monkeypatch, no_watch_restart,
+    ):
+        """Schon realpath()/resolve() eines UNC-Pfads meldet das Dienstkonto per
+        NTLM am fremden Server an — die Ablehnung muss vorher greifen."""
+        import app.api.system as system_api
+
+        touched: list[str] = []
+        real = system_api.os.path.realpath
+        monkeypatch.setattr(system_api.os.path, "realpath", lambda p, *a, **k: touched.append(str(p)) or real(p, *a, **k))
+        unc = _BS * 2 + r"attacker.lan\share\x" if _WIN else "//attacker.lan/share/x"
+        resp = await client.put("/api/system/settings", json={"watch_dir": "", "export_dir": unc})
+        assert resp.status_code == 400
+        assert "Netzwerkpfade" in resp.json()["detail"]
+        assert not any("attacker" in t for t in touched)
+
+    def test_network_folder_opt_in(self, test_settings, monkeypatch):
+        """Mit ALLOW_NETWORK_FOLDERS bleibt die SMB-Freigabe (Scanner/NAS) moeglich."""
+        import app.api.system as system_api
+
+        settings = test_settings.model_copy(update={"ALLOW_NETWORK_FOLDERS": True})
+        monkeypatch.setattr(system_api.os.path, "realpath", lambda p, *a, **k: str(p))  # kein Netzwerkzugriff
+        share = _BS * 2 + r"nas\scans" if _WIN else "//nas/scans"
+        assert system_api._validate_local_dir(share, "Watch-Ordner", settings) == str(Path(share))
+        with pytest.raises(Exception):
+            # Geraete-Praefixe bleiben auch dann verboten.
+            system_api._validate_local_dir(_BS * 2 + "?" + _BS + r"UNC\nas\scans", "Watch-Ordner", settings)
+
+    def test_network_opt_in_still_rejects_loopback_and_admin_shares(self, test_settings, monkeypatch):
+        """INFRA-02: Auch mit ALLOW_NETWORK_FOLDERS fuehren \\\\localhost\\C$ & Co. nicht
+        an der Systemordner-/Profil-/Programmordner-Pruefung vorbei (LocalSystem)."""
+        import socket
+
+        import app.api.system as system_api
+        from fastapi import HTTPException
+
+        settings = test_settings.model_copy(update={"ALLOW_NETWORK_FOLDERS": True})
+        touched: list[str] = []
+        monkeypatch.setattr(system_api.os.path, "realpath", lambda p, *a, **k: touched.append(str(p)) or str(p))
+        sep = _BS if _WIN else "/"
+        unc = (_BS * 2) if _WIN else "//"
+        host = socket.gethostname()
+        for bad in (
+            unc + sep.join(["localhost", "C$", "Program Files", "Zettelwirtschaft"]),
+            unc + sep.join(["LOCALHOST", "c$", "Windows", "System32"]),
+            "//localhost/C$/Windows/System32",
+            unc + sep.join(["127.0.0.1", "Users", "Administrator"]),
+            unc + sep.join(["[::1]", "share"]),
+            unc + sep.join([host, "Users", "Administrator", "Documents"]),
+            unc + sep.join(["nas", "ADMIN$"]),
+            unc + sep.join(["nas", "D$", "scans"]),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                system_api._validate_local_dir(bad, "Watch-Ordner", settings)
+            assert exc.value.status_code == 400, bad
+        assert touched == []  # Ablehnung vor jedem Dateisystem-/Netzwerkzugriff
+        # Normale NAS-Freigabe bleibt erlaubt.
+        share = unc + sep.join(["nas", "scans"])
+        assert system_api._validate_local_dir(share, "Watch-Ordner", settings) == str(Path(share))
+
+    @pytest.mark.skipif(not _WIN, reason="Benutzerprofile unter C:\\Users nur unter Windows")
+    async def test_foreign_user_profile_rejected(
+        self, client, dev_mode, tmp_path, monkeypatch, no_watch_restart,
+    ):
+        users = tmp_path / "Users"
+        for name in ("Public", "ich", "fremd"):
+            (users / name).mkdir(parents=True)
+        monkeypatch.setenv("PUBLIC", str(users / "Public"))
+        monkeypatch.setenv("USERPROFILE", str(users / "ich"))
+
+        for bad in (users / "fremd" / "Documents", users / "FREMD", users):
+            resp = await client.put("/api/system/settings", json={"watch_dir": str(bad), "export_dir": ""})
+            assert resp.status_code == 400, bad
+        for good in (users / "Public" / "Scans", users / "ich" / "Scans"):
+            resp = await client.put("/api/system/settings", json={"watch_dir": str(good), "export_dir": ""})
+            assert resp.status_code == 200, (good, resp.text)
+
+    @pytest.mark.skipif(not _WIN, reason="Benutzerprofile unter C:\\Users nur unter Windows")
+    def test_profile_of_data_dir_owner_allowed(self, test_settings, tmp_path, monkeypatch):
+        """Native: Dienst = LocalSystem (USERPROFILE = systemprofile) — erlaubt ist
+        das Profil, in dem der Datenordner liegt (installierender Benutzer)."""
+        import app.api.system as system_api
+        from fastapi import HTTPException
+
+        users = tmp_path / "Users"
+        (users / "Public").mkdir(parents=True)
+        monkeypatch.setenv("PUBLIC", str(users / "Public"))
+        monkeypatch.setenv("USERPROFILE", r"C:\Windows\system32\config\systemprofile")
+        settings = test_settings.model_copy(update={
+            "ARCHIVE_DIR": str(users / "besitzer" / "Documents" / "Zettelwirtschaft" / "data" / "archive"),
+        })
+        ok = users / "besitzer" / "Scans"
+        assert system_api._validate_local_dir(str(ok), "Watch-Ordner", settings) == str(ok)
+        with pytest.raises(HTTPException):
+            system_api._validate_local_dir(str(users / "anderer" / "Scans"), "Watch-Ordner", settings)
+
+    @pytest.mark.skipif(not _WIN, reason="Junctions nur unter Windows")
+    async def test_junction_to_managed_dir_rejected(self, client, dev_mode, tmp_path, test_settings, no_watch_restart):
+        import subprocess
+
+        uploads = Path(test_settings.UPLOAD_DIR)
+        uploads.mkdir(parents=True, exist_ok=True)
+        link = tmp_path / "harmlos"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(uploads.resolve())], check=True, capture_output=True)
+        resp = await client.put("/api/system/settings", json={"watch_dir": str(link), "export_dir": ""})
+        assert resp.status_code == 400
+
+
 @pytest.mark.asyncio
 class TestFolderSettingsDocker:
     async def test_host_path_sets_container_path(self, client, docker_mode, test_settings, no_watch_restart):
@@ -543,7 +689,10 @@ class TestFolderSettingsDocker:
         assert resp.status_code == 200
         assert resp.json()["restart_required"] is False
 
-    @pytest.mark.parametrize("bad", ["C:\\Windows\\System32", "/etc", "V:\\", "relativ\\pfad", "D:\\a\\..\\b"])
+    @pytest.mark.parametrize("bad", [
+        "C:\\Windows\\System32", "/etc", "V:\\", "relativ\\pfad", "D:\\a\\..\\b",
+        "\\\\?\\C:\\Windows\\System32", "\\\\.\\C:\\Windows", "C:\\Program Files (x86)\\x",  # FH-01
+    ])
     async def test_invalid_host_paths_rejected(self, client, docker_mode, bad, no_watch_restart):
         resp = await client.put("/api/system/settings", json={
             "watch_dir": "", "export_dir": "", "watch_dir_host": bad, "export_dir_host": "",

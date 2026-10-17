@@ -28,6 +28,12 @@ param(
     [Parameter(Mandatory = $true)] [string]$DataDir,
     [string]$FrontendDistDir = "",
     [int]$Port = 8080,
+    # INFRA-07: Bind-Adresse. "0.0.0.0" = im LAN erreichbar (Smartphone),
+    # "127.0.0.1" = nur dieser PC (kein PIN/Cookie/Dokument im Klartext im WLAN).
+    [ValidateSet('0.0.0.0', '127.0.0.1')] [string]$ServerHost = '0.0.0.0',
+    # Optional HTTPS (SERVER_SSL_CERTFILE/KEYFILE); nur zusammen angeben.
+    [string]$SslCertFile = "",
+    [string]$SslKeyFile = "",
     # PIN-Schutz ist Default; nur mit -DisablePin wird PIN_ENABLED = false.
     [switch]$DisablePin,
     [string]$PinCode = "",
@@ -44,6 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $PinEnabled = -not $DisablePin
 . (Join-Path $PSScriptRoot 'model-tiers.ps1')
+. (Join-Path $PSScriptRoot 'secure-acl.ps1')
 
 function ConvertTo-TomlString([string]$value) {
     # TOML Basic String: Backslash und Anfuehrungszeichen escapen,
@@ -58,6 +65,7 @@ function ConvertTo-TomlPath([string]$path) {
 
 try {
     if ($Port -lt 1 -or $Port -gt 65535) { throw "Ungueltiger Port: $Port" }
+    if ([bool]$SslCertFile -ne [bool]$SslKeyFile) { throw "HTTPS: -SslCertFile und -SslKeyFile nur gemeinsam angeben." }
     if ($PinEnabled -and $PinCode.Trim().Length -lt 4) {
         throw "PIN-Schutz ist aktiv, aber der PIN ist leer oder kuerzer als 4 Zeichen."
     }
@@ -87,8 +95,19 @@ try {
     $lines += @(
         "# Aenderungen werden nach einem Neustart des Dienstes wirksam.",
         "",
-        "SERVER_HOST = `"0.0.0.0`"",
-        "SERVER_PORT = $Port",
+        "# 0.0.0.0 = im Heimnetz erreichbar (Smartphone), 127.0.0.1 = nur dieser PC.",
+        "# Im LAN ohne HTTPS laufen PIN, Sitzungs-Cookie und Dokumente unverschluesselt",
+        "# durchs (W)LAN - HTTPS siehe SERVER_SSL_* (config.toml.example).",
+        "SERVER_HOST = $(ConvertTo-TomlString $ServerHost)",
+        "SERVER_PORT = $Port"
+    )
+    if ($SslCertFile) {
+        $lines += @(
+            "SERVER_SSL_CERTFILE = $(ConvertTo-TomlPath $SslCertFile)",
+            "SERVER_SSL_KEYFILE = $(ConvertTo-TomlPath $SslKeyFile)"
+        )
+    }
+    $lines += @(
         "",
         "DATABASE_URL = $(ConvertTo-TomlString "sqlite+aiosqlite:///$data/zettelwirtschaft.db")",
         "UPLOAD_DIR = $(ConvertTo-TomlPath "$data/uploads")",
@@ -128,6 +147,13 @@ try {
     }
     # UTF-8 OHNE BOM: tomllib (Python) lehnt eine BOM ab.
     $text = ($lines -join "`r`n") + "`r`n"
+    # SEC-DATA-03: PIN_CODE + EMAIL_ENCRYPTION_KEY - Datei erst anlegen und auf
+    # SYSTEM/Administratoren/dieses Konto einschraenken, dann befuellen (sonst
+    # erbt sie z.B. unter C:\Zettelwirtschaft "Authentifizierte Benutzer: Aendern").
+    if (-not (Test-Path -LiteralPath $OutPath)) {
+        [System.IO.File]::WriteAllText($OutPath, '')
+    }
+    $null = Protect-ZwPath -LiteralPath $OutPath
     [System.IO.File]::WriteAllText($OutPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     Write-Output "[OK] config.toml geschrieben: $OutPath"
     exit 0

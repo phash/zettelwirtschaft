@@ -25,6 +25,40 @@ PARTIAL_PREFIX = ".partial_"
 # Namenswahl (freier Dateiname, siehe create_backup) und Schreiben atomar sind.
 _backup_lock = threading.Lock()
 
+# AVAIL-05: Freier Platz, der nach einem Backup mindestens uebrig bleiben muss
+# (SQLite-WAL, Uploads, Queue). Ohne Pruefung fuellten wiederholte Voll-Backups
+# die Platte, bis Datenbank-Schreibvorgaenge und Uploads scheiterten.
+BACKUP_FREE_SPACE_RESERVE_BYTES = 512 * 1024 * 1024
+
+
+class BackupSpaceError(OSError):
+    """Nicht genug freier Speicher fuer das Backup (+ Reserve)."""
+
+
+def _estimated_backup_bytes(settings: Settings, include_documents: bool) -> int:
+    """Obergrenze der ZIP-Groesse: DB + (bei Voll-Backup) alle Archivdateien.
+    ZIP_DEFLATED komprimiert PDFs/Bilder kaum — unkomprimierte Summe ist die
+    ehrliche Schaetzung."""
+    total = settings.sqlite_db_path.stat().st_size
+    if include_documents:
+        archive_dir = Path(settings.ARCHIVE_DIR)
+        if archive_dir.exists():
+            total += sum(f.stat().st_size for f in archive_dir.rglob("*") if f.is_file())
+    return total
+
+
+def ensure_backup_space(settings: Settings, include_documents: bool, target_dir: Path) -> None:
+    """Wirft :class:`BackupSpaceError`, wenn das Backup die Platte unter die
+    Reserve fuellen wuerde (Snapshot im System-Temp + ZIP im Zielordner)."""
+    needed = _estimated_backup_bytes(settings, include_documents)
+    free = shutil.disk_usage(target_dir).free
+    if free < needed + BACKUP_FREE_SPACE_RESERVE_BYTES:
+        mb = 1024 * 1024
+        raise BackupSpaceError(
+            f"Nicht genug freier Speicher für das Backup: benötigt ca. {needed / mb:.0f} MB "
+            f"+ {BACKUP_FREE_SPACE_RESERVE_BYTES / mb:.0f} MB Reserve, frei {free / mb:.0f} MB."
+        )
+
 
 def backup_dir(settings: Settings) -> Path:
     """Standard-Zielordner ``<Datenordner>/backups`` (wird angelegt)."""
@@ -69,6 +103,7 @@ def create_backup(
         target_dir = backup_dir(settings)
 
     with _backup_lock:
+        ensure_backup_space(settings, include_documents, target_dir)
         timestamp = datetime.now(settings.local_tz).strftime("%Y%m%d_%H%M%S")
         backup_type = "full" if include_documents else "db"
         filename = f"backup_{backup_type}_{timestamp}.zip"

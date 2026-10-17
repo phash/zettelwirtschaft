@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import math
+import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +20,18 @@ logger = logging.getLogger(__name__)
 # per OCR gelesen (z.B. eingescannte Seite hinter einem digitalen Deckblatt;
 # ein gestempelter Fusszeilentext allein reicht nicht).
 _MIN_DIGITAL_PAGE_CHARS = 30
+
+# FH-02: Grenzen fuer untrusted PDFs (Upload, Watch-Ordner, E-Mail-Anhang).
+_OCR_DPI = 300
+# Wall-Clock-Limit pro pdftoppm-/pdfinfo-Aufruf (Sekunden).
+_POPPLER_TIMEOUT_S = 120
+# Textlayer: hoechstens so viele Seiten / so lange (Sekunden) lesen.
+# TODO(FH-02): Eine einzelne Seite mit riesigem Content-Stream kann
+# extract_text() weiterhin minutenlang beschaeftigen — das Zeitbudget greift
+# nur zwischen Seiten. Saubere Loesung: Extraktion in einem Subprozess mit
+# hartem Timeout (Native braucht dafuer multiprocessing.freeze_support).
+_MAX_TEXT_PAGES = 200
+_TEXT_TIME_BUDGET_S = 60
 
 # Zweiter OCR-Durchgang (Binarisierung + Schraeglagenkorrektur), wenn der
 # erste schwach ist — typisch fuer verrauschte Thermobon-Scans, die im ersten
@@ -385,13 +400,39 @@ def _merge_pages(pages: list[PageText], page_count: int) -> OcrResult | None:
 # ---------------------------------------------------------------------------
 
 
-def _read_pdf_text_pages(file_path: Path) -> list[str] | None:
-    """Digitaler Textlayer pro Seite (pdfplumber), None wenn unlesbar."""
+def _read_pdf_text_pages(file_path: Path) -> list[str | None] | None:
+    """Digitaler Textlayer pro Seite (pdfplumber), None wenn unlesbar.
+
+    FH-02: Ein kleines PDF mit vielen textlastigen Seiten (geteilter Content-
+    Stream) blockiert sonst den einzigen Queue-Worker fuer Stunden. Gelesen
+    werden deshalb hoechstens ``_MAX_TEXT_PAGES`` Seiten und nur, solange das
+    Zeitbudget ``_TEXT_TIME_BUDGET_S`` reicht. Nicht gelesene Seiten sind
+    ``None`` — sie werden weder als Text noch per OCR verarbeitet.
+    """
     import pdfplumber
 
     try:
         with pdfplumber.open(file_path) as pdf:
-            return [(page.extract_text() or "").strip() for page in pdf.pages]
+            pages = pdf.pages
+            texts: list[str | None] = [None] * len(pages)
+            deadline = time.monotonic() + _TEXT_TIME_BUDGET_S
+            for index, page in enumerate(pages[:_MAX_TEXT_PAGES]):
+                if time.monotonic() > deadline:
+                    logger.warning(
+                        "PDF-Textlayer: Zeitbudget (%ds) erschoepft nach %d von %d Seiten",
+                        _TEXT_TIME_BUDGET_S, index, len(pages),
+                    )
+                    break
+                texts[index] = (page.extract_text() or "").strip()
+                # pdfplumber cacht Layout-Objekte pro Seite — freigeben, damit
+                # lange PDFs den Speicher nicht Seite fuer Seite aufblaehen.
+                page.close()
+            if len(pages) > _MAX_TEXT_PAGES:
+                logger.warning(
+                    "PDF-Textlayer: nur die ersten %d von %d Seiten gelesen",
+                    _MAX_TEXT_PAGES, len(pages),
+                )
+            return texts
     except Exception as e:
         logger.warning("pdfplumber konnte PDF nicht lesen: %s", e)
         return None
@@ -401,10 +442,52 @@ def _pdf_page_count(file_path: Path) -> int | None:
     from pdf2image import pdfinfo_from_path
 
     try:
-        return int(pdfinfo_from_path(file_path)["Pages"])
+        return int(pdfinfo_from_path(file_path, timeout=_POPPLER_TIMEOUT_S)["Pages"])
     except Exception as e:
         logger.error("PDF-Seitenzahl nicht ermittelbar: %s", e)
         return None
+
+
+_PAGE_SIZE_RE = re.compile(r"([0-9.]+)\s*x\s*([0-9.]+)\s*pts")
+
+
+def _pdf_page_size_pts(file_path: Path, page_number: int) -> tuple[float, float] | None:
+    """MediaBox-Groesse (Punkte, ungedreht) einer Seite laut pdfinfo, sonst None."""
+    from pdf2image import pdfinfo_from_path
+
+    try:
+        info = pdfinfo_from_path(
+            file_path, first_page=page_number, last_page=page_number, timeout=_POPPLER_TIMEOUT_S,
+        )
+    except Exception as e:
+        logger.error("PDF-Seitengroesse von Seite %d nicht ermittelbar: %s", page_number, e)
+        return None
+    for key, value in info.items():
+        # pdfinfo -f/-l: "Page    3 size:  595.276 x 841.89 pts (A4)"
+        if key.split() == ["Page", str(page_number), "size"]:
+            match = _PAGE_SIZE_RE.search(str(value))
+            if match:
+                width, height = float(match.group(1)), float(match.group(2))
+                if width > 0 and height > 0:
+                    return width, height
+    logger.error("PDF-Seitengroesse von Seite %d nicht lesbar", page_number)
+    return None
+
+
+def _render_size(width_pts: float, height_pts: float, dpi: int = _OCR_DPI) -> tuple[int, int]:
+    """Zielgroesse in Pixeln fuer das OCR-Rendering, hoechstens MAX_IMAGE_PIXELS.
+
+    FH-02: ``dpi`` allein liesse pdftoppm eine 14400-pt-MediaBox auf
+    60000x60000 px rastern (~3,6 GB), bevor Pillows Bomb-Check greift. Mit
+    festem ``-scale-to-x/-scale-to-y`` ist die Ausgabe exakt so gross wie hier
+    berechnet — unabhaengig von /Rotate oder /UserUnit.
+    """
+    scale = dpi / 72.0
+    width, height = width_pts * scale, height_pts * scale
+    if width * height > MAX_IMAGE_PIXELS:
+        factor = math.sqrt(MAX_IMAGE_PIXELS / (width * height))
+        width, height = width * factor, height * factor
+    return max(1, math.floor(width)), max(1, math.floor(height))
 
 
 def _ocr_pdf_page(file_path: Path, page_number: int, languages: str) -> PageText | None:
@@ -412,12 +495,18 @@ def _ocr_pdf_page(file_path: Path, page_number: int, languages: str) -> PageText
 
     Seite fuer Seite statt aller Seiten auf einmal: sonst liegen bis zu
     MAX_OCR_PAGES RGB-Seiten (~26 MB je Seite) gleichzeitig im Speicher.
+    Die Pixelgroesse ist auf MAX_IMAGE_PIXELS begrenzt, pdftoppm bekommt ein
+    Timeout (FH-02).
     """
     from pdf2image import convert_from_path
 
+    page_size = _pdf_page_size_pts(file_path, page_number)
+    if page_size is None:
+        return None
     try:
         images = convert_from_path(
-            file_path, dpi=300, first_page=page_number, last_page=page_number, grayscale=True,
+            file_path, dpi=_OCR_DPI, first_page=page_number, last_page=page_number, grayscale=True,
+            size=_render_size(*page_size), timeout=_POPPLER_TIMEOUT_S,
         )
     except Exception as e:
         logger.error("pdf2image Konvertierung von Seite %d fehlgeschlagen: %s", page_number, e)
@@ -445,6 +534,8 @@ def _extract_pdf_sync(file_path: Path, settings: Settings) -> OcrResult | None:
     ocr_budget = settings.MAX_OCR_PAGES
     ocr_pages = 0
     for page_number, text in enumerate(texts, start=1):
+        if text is None:
+            continue  # ausserhalb des Seiten-/Zeitbudgets (FH-02)
         if len(text) >= _MIN_DIGITAL_PAGE_CHARS:
             pages.append(PageText(page_number=page_number, text=text, confidence=1.0))
             continue

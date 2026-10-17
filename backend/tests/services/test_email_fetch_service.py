@@ -264,7 +264,8 @@ async def test_relevant_mail_creates_job_and_is_moved(account_id, test_session_f
     assert "CREATE" in server.command_names()
     assert len(server.folders[TARGET]) == 1
     # Abholen nur mit PEEK auf read-only Ordner
-    assert all("PEEK" in c[3] for c in server.uid_commands("FETCH"))
+    # (RFC822.SIZE liest nur Metadaten und setzt kein \Seen)
+    assert all("PEEK" in c[3] for c in server.uid_commands("FETCH") if c[3] != "(RFC822.SIZE)")
     assert ("EXAMINE", "INBOX") in server.commands
     # Nie pauschales EXPUNGE/CLOSE: vom Benutzer geloeschte Mail bleibt erhalten
     assert "EXPUNGE" not in server.command_names() and "CLOSE" not in server.command_names()
@@ -399,7 +400,9 @@ async def test_failure_of_first_mail_does_not_break_the_next(account_id, test_se
     assert [(r.message_id, r.status) for r in records] == [
         ("<crash@t>", EmailStatus.FAILED), ("<ok@t>", EmailStatus.RELEVANT),
     ]
-    assert "LLM down" in records[0].relevance_reason
+    # SEC-DATA-05: Exception-Text (Pfade/SQL) nicht in der History, nur der Typ.
+    assert "LLM down" not in records[0].relevance_reason
+    assert "RuntimeError" in records[0].relevance_reason
     # R-06: beide abgelegt, keine Endlos-UNSEEN
     assert len(server.folders[TARGET]) == 2
     assert (await _account(test_session_factory, account_id)).last_error == "1 von 2 E-Mails fehlgeschlagen"
@@ -544,7 +547,69 @@ async def test_max_per_run_processes_oldest_first(account_id, test_session_facto
 
     assert stats["total"] == 2 and stats["remaining"] == 1
     assert [r.message_id for r in await _records(test_session_factory, account_id)] == ["<m0@t>", "<m1@t>"]
-    assert len(server.uid_commands("FETCH")) == 2
+    assert server.body_fetches == [1, 2]
+
+
+async def test_oversized_mail_is_not_downloaded(account_id, test_session_factory, mail_settings):
+    """FH-05: Mails ueber der Grenze werden nicht geladen, sondern sichtbar als
+    FAILED verbucht, gemeldet und abgelegt (blockieren keinen spaeteren Lauf)."""
+    settings = mail_settings.model_copy(update={"MAX_UPLOAD_SIZE_MB": 1})
+    server = FakeImapServer()
+    big = server.add_message(_build_mime_email(
+        subject="Riesig", attachments=[("rechnung.pdf", PDF)], message_id="<big@t>",
+    ).as_bytes())
+    server.reported_sizes[big] = 3 * 1024 * 1024  # > 2 x MAX_UPLOAD_SIZE_MB
+    small = server.add_message(_build_mime_email(attachments=[("klein.pdf", PDF)], message_id="<small@t>").as_bytes())
+
+    stats, rel = await _run(account_id, test_session_factory, settings, server)
+
+    assert server.body_fetches == [small]  # die grosse Mail wurde nie komplett geladen
+    assert stats["total"] == 2 and stats["failed"] == 1 and stats["relevant"] == 1
+    assert rel.await_count == 1  # kein LLM-Aufruf fuer die grosse Mail
+    records = {r.message_id: r for r in await _records(test_session_factory, account_id)}
+    assert records["<big@t>"].status == EmailStatus.FAILED
+    assert records["<big@t>"].subject == "Riesig"
+    assert "zu groß" in records["<big@t>"].relevance_reason
+    assert len(server.folders[TARGET]) == 2  # beide abgelegt
+    async with test_session_factory() as s:
+        notes = (await s.execute(select(Notification).where(Notification.type == NotificationType.SYSTEM))).scalars().all()
+    assert any("zu groß" in n.title for n in notes)
+
+    # Zweiter Lauf: nichts mehr zu tun, kein Doppel-Eintrag.
+    stats, _ = await _run(account_id, test_session_factory, settings, server)
+    assert stats["total"] == 0
+    assert len(await _records(test_session_factory, account_id)) == 2
+
+
+async def test_wrong_reported_size_is_checked_after_download(account_id, test_session_factory, mail_settings):
+    settings = mail_settings.model_copy(update={"MAX_UPLOAD_SIZE_MB": 1})
+    server = FakeImapServer()
+    raw = _build_mime_email(attachments=[("x.pdf", b"%PDF-1.4" + b"0" * (2 * 1024 * 1024 + 10))], message_id="<luege@t>").as_bytes()
+    uid = server.add_message(raw)
+    server.reported_sizes[uid] = 100  # Server meldet falsche Groesse
+
+    stats, rel = await _run(account_id, test_session_factory, settings, server)
+
+    assert stats["failed"] == 1 and rel.await_count == 0
+    [record] = await _records(test_session_factory, account_id)
+    assert record.message_id == "<luege@t>" and "zu groß" in record.relevance_reason
+
+
+async def test_batch_byte_budget_defers_rest(account_id, test_session_factory, mail_settings):
+    """FH-05: Pro Lauf liegen hoechstens ~2 grosse Mails im Speicher, der Rest
+    folgt beim naechsten Abruf."""
+    settings = mail_settings.model_copy(update={"MAX_UPLOAD_SIZE_MB": 1})
+    server = FakeImapServer()
+    for i in range(4):
+        uid = server.add_message(_build_mime_email(message_id=f"<b{i}@t>").as_bytes())
+        server.reported_sizes[uid] = 1536 * 1024  # je 1,5 MB, Budget 4 MB
+
+    stats, _ = await _run(account_id, test_session_factory, settings, server, relevance=IRRELEVANT)
+
+    assert server.body_fetches == [1, 2]
+    assert stats["total"] == 2 and stats["remaining"] == 2
+    stats, _ = await _run(account_id, test_session_factory, settings, server, relevance=IRRELEVANT)
+    assert server.body_fetches == [1, 2, 3, 4] and stats["remaining"] == 0
 
 
 async def test_wrong_encryption_key_gives_specific_error(account_id, test_session_factory, mail_settings):

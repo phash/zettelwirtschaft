@@ -323,3 +323,95 @@ def test_login_attempt_table_is_bounded(monkeypatch):
     assert len(auth._login_attempts) == 3
     assert "192.168.0.0" not in auth._login_attempts  # am laengsten inaktiv
     auth._login_attempts.clear()
+
+
+# --- AUTH-01: Counter-Vergessen + globales Fehlversuchs-Budget ---
+
+
+@pytest.mark.asyncio
+async def test_counter_survives_end_of_capped_lockout(pin_client):
+    """AUTH-01: Endet ein gedeckelter Lockout (>= 1h), darf der Counter NICHT
+    vergessen werden — frueher begann der Backoff danach wieder bei 0."""
+    from app.api import auth
+
+    now = datetime.now(timezone.utc)
+    last_fail = now - timedelta(seconds=auth.MAX_LOCKOUT_SECONDS + 1)
+    lockout_end = last_fail + timedelta(seconds=auth.MAX_LOCKOUT_SECONDS)  # = now - 1s
+    auth._login_attempts["127.0.0.1"] = (12, lockout_end, last_fail)
+
+    r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+    assert r.status_code == 401
+    count, lockout, seen = auth._login_attempts["127.0.0.1"]
+    assert count == 13
+    assert (lockout - seen).total_seconds() == pytest.approx(auth.MAX_LOCKOUT_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_counter_forgotten_after_long_idle_from_lockout_end(pin_client):
+    from app.api import auth
+
+    now = datetime.now(timezone.utc)
+    lockout_end = now - timedelta(seconds=auth.ATTEMPT_FORGIVE_SECONDS + 1)
+    auth._login_attempts["127.0.0.1"] = (12, lockout_end, lockout_end - timedelta(hours=1))
+
+    r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+    assert r.status_code == 401
+    assert auth._login_attempts["127.0.0.1"][0] == 1
+
+
+def test_forgive_window_is_much_longer_than_max_lockout():
+    from app.api import auth
+
+    assert auth.ATTEMPT_FORGIVE_SECONDS >= 12 * auth.MAX_LOCKOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_global_failure_budget_blocks_rotating_lan_ips(lan_pin_app, monkeypatch, db_session):
+    """AUTH-01: viele LAN-IPs (IPv4-Aliase) duerfen den Per-IP-Lockout nicht
+    parallelisieren — nach GLOBAL_MAX_FAILURES Fehlversuchen pro Stunde sperrt
+    die Anmeldung fuer alle Nicht-Loopback-Clients, auch mit korrektem PIN."""
+    import app.config
+    from sqlalchemy import select
+
+    from app.api import auth
+    from app.models.notification import Notification
+
+    monkeypatch.setattr(app.config, "_in_container", lambda: False)
+    failures = 0
+    ip = 0
+    while failures < auth.GLOBAL_MAX_FAILURES:
+        async with _client_for(lan_pin_app, f"192.168.5.{ip}") as c:
+            for _ in range(auth.MAX_LOGIN_ATTEMPTS - 1):  # unter Per-IP-Lockout bleiben
+                if failures >= auth.GLOBAL_MAX_FAILURES:
+                    break
+                r = await c.post("/api/auth/login", json={"pin": "0000"})
+                assert r.status_code == 401
+                failures += 1
+        ip += 1
+
+    async with _client_for(lan_pin_app, "192.168.5.250") as c:
+        r = await c.post("/api/auth/login", json={"pin": "1234"})
+    assert r.status_code == 429
+    assert "netzwerk" in r.json()["detail"].lower()
+
+    # Besitzer am Server-PC (Loopback) kommt weiterhin rein.
+    async with _client_for(lan_pin_app, "127.0.0.1") as c:
+        r = await c.post("/api/auth/login", json={"pin": "1234"})
+    assert r.status_code == 200
+
+    # Genau eine Warnung in der Glocke.
+    rows = (await db_session.execute(select(Notification))).scalars().all()
+    assert len([n for n in rows if "PIN" in n.title]) == 1
+
+
+@pytest.mark.asyncio
+async def test_global_budget_window_expires(lan_pin_app, monkeypatch):
+    import app.config
+    from app.api import auth
+
+    monkeypatch.setattr(app.config, "_in_container", lambda: False)
+    old = datetime.now(timezone.utc) - timedelta(seconds=auth.GLOBAL_FAILURE_WINDOW_SECONDS + 1)
+    auth._global_failures.extend([old] * auth.GLOBAL_MAX_FAILURES)
+    async with _client_for(lan_pin_app, "192.168.5.251") as c:
+        r = await c.post("/api/auth/login", json={"pin": "1234"})
+    assert r.status_code == 200

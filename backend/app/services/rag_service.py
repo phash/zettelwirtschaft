@@ -3,13 +3,13 @@
 import asyncio
 import json
 import logging
-import re
 
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.core.normalize import enum_value
+from app.core.prompt_safety import neutralize_prompt_tags
 from app.models.document import Document, DocumentStatus
 from app.services.embedding_service import embed_query
 from app.services.llm_service import call_llm, chat_text, fill_prompt, load_prompt_template
@@ -37,7 +37,7 @@ class RagServiceUnavailable(Exception):
 
 # Delimiter-Tags des Prompt-Templates, tolerant gegen Gross-/Kleinschreibung
 # und Leerzeichen ("</ DOCUMENT_EXCERPTS >").
-_DELIMITER_RE = re.compile(r"<\s*(/?)\s*(document_excerpts|user_question)\s*>", re.IGNORECASE)
+_PROMPT_TAGS = ("document_excerpts", "user_question")
 
 
 def _sanitize_for_prompt(text: str) -> str:
@@ -49,9 +49,7 @@ def _sanitize_for_prompt(text: str) -> str:
     selbst enthalten, koennte sie aus dem Wrap ausbrechen und neue
     Instruktionen einschmuggeln. Die spitzen Klammern werden ersetzt.
     """
-    if not text:
-        return ""
-    return _DELIMITER_RE.sub(lambda m: f"&lt;{m.group(1)}{m.group(2).lower()}&gt;", text)
+    return neutralize_prompt_tags(text, *_PROMPT_TAGS)
 
 
 # Fuellwoerter natuerlichsprachiger Fragen. Ohne Filter verknuepfte die Suche

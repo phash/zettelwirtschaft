@@ -446,6 +446,46 @@ function Update-ServiceSettings {
     else { Write-Log "WARNUNG: nssm set AppRotateOnline fehlgeschlagen (exit=$LASTEXITCODE)" }
 }
 
+# SEC-DATA-03: Zugriffsrechte von Datenordner und config.toml auch bei
+# bestehenden Installationen einschraenken (wie setup-native.nsi). Idempotent
+# (bereits geschuetzte Pfade bleiben unveraendert), nicht-fatal.
+function Update-DataAcl {
+    # INFRA-03: aus dem Update-Paket (Temp-Ordner des Admins) laden, NICHT aus
+    # dem Programmordner - bei aelteren Installationen in einem frei gewaehlten
+    # Ordner koennte ein anderes Konto die Kopie dort austauschen (Ausfuehrung
+    # mit Admin-Rechten).
+    $aclScript = Join-Path $WizardDirResolved 'secure-acl.ps1'
+    if (-not (Test-Path -LiteralPath $aclScript)) { Write-Log 'WARNUNG: secure-acl.ps1 fehlt - Zugriffsrechte unveraendert'; return }
+    . $aclScript
+    $targets = @()
+    if ($DataDir) { $targets += (Join-Path $DataDir 'data'), (Join-Path $DataDir 'logs') }
+    if ($ConfigPath) { $targets += $ConfigPath }
+    foreach ($t in $targets) {
+        if (-not (Test-Path -LiteralPath $t)) { continue }
+        if (Protect-ZwPath -LiteralPath $t 3>$null) { Write-Log "Zugriffsrechte eingeschraenkt: $t" }
+        else { Write-Log "WARNUNG: Zugriffsrechte fuer $t nicht gesetzt (Netzwerkpfad/Fehler)" }
+    }
+}
+
+# INFRA-03: Programmordner vor allen Schritten, die daraus etwas mit Admin-
+# Rechten starten (Backup-Exe, nssm.exe), auf SYSTEM/Administratoren Vollzugriff
+# + Benutzer Lesen setzen. Aeltere Installationen in einem frei gewaehlten
+# Ordner (C:\Zettelwirtschaft) erbten "Authentifizierte Benutzer: Aendern".
+# Skript aus dem Update-Paket, nicht-fatal (Warnung im Protokoll).
+function Protect-InstallDirAcl {
+    if ($DryRun) { return }
+    $dirScript = Join-Path $WizardDirResolved 'secure-install-dir.ps1'
+    if (-not (Test-Path -LiteralPath $dirScript)) { Write-Log 'WARNUNG: secure-install-dir.ps1 fehlt im Update-Paket - Rechte des Programmordners unveraendert'; return }
+    try {
+        . $dirScript
+        $code = Protect-ZwInstallDir -LiteralPath $InstallDir 3>$null
+        if ($code -eq 0) { Write-Log "Zugriffsrechte Programmordner festgelegt: $InstallDir" }
+        else { Write-Log "WARNUNG: Zugriffsrechte Programmordner nur teilweise gesetzt (Code $code): $InstallDir" }
+    } catch {
+        Write-Log "WARNUNG: Zugriffsrechte Programmordner nicht gesetzt: $_"
+    }
+}
+
 function Step-StartService {
     Set-StepStatus 'start' 'running'
     Write-Log "Starte Dienst $ServiceName (Migrationen laufen beim Start)..."
@@ -459,6 +499,7 @@ function Step-StartService {
             Set-StepStatus 'start' 'warn'; return $true
         }
         Update-ServiceSettings
+        try { Update-DataAcl } catch { Write-Log "WARNUNG: Zugriffsrechte nicht aktualisiert: $_" }
         Start-Service -Name $ServiceName -ErrorAction Stop
         $svc.WaitForStatus('Running', (New-TimeSpan -Seconds 120))
         Write-Log 'Dienst laeuft'
@@ -475,6 +516,7 @@ function Invoke-Update {
     Write-Log "Install: $InstallDir"
     Write-Log "Quelle:  $WizardDirResolved"
     Write-Log ''
+    Protect-InstallDirAcl
     $null = Step-Backup;        Update-Progress 20
     $okStop = Step-StopService; Update-Progress 45
     if (-not $okStop) { return $false }

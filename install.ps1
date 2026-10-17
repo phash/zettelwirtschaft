@@ -6,6 +6,8 @@ $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
 # Modell-Stufen (gemeinsam mit install-gui.ps1 und dem Native-Setup)
 . (Join-Path $ProjectDir "scripts\model-tiers.ps1")
+# Zugriffsrechte fuer .env (SEC-DATA-03)
+. (Join-Path $ProjectDir "scripts\secure-acl.ps1")
 
 # --- Hilfsfunktionen ---
 
@@ -341,7 +343,12 @@ EMBEDDING_MODEL=$embeddingModel
 EMAIL_ENCRYPTION_KEY=$emailKey
 "@
 
-Set-Content -Path (Join-Path $ProjectDir ".env") -Value $envContent -Encoding UTF8
+# SEC-DATA-03: .env (PIN_CODE, EMAIL_ENCRYPTION_KEY) erst anlegen und auf
+# SYSTEM/Administratoren/dieses Konto einschraenken, dann befuellen.
+$envFile = Join-Path $ProjectDir ".env"
+if (-not (Test-Path -LiteralPath $envFile)) { [System.IO.File]::WriteAllText($envFile, '') }
+$null = Protect-ZwPath -LiteralPath $envFile
+Set-Content -Path $envFile -Value $envContent -Encoding UTF8
 Write-OK ".env erstellt."
 
 # Watch-Ordner anlegen falls aktiviert

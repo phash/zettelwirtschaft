@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import shutil
+import stat
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +33,10 @@ PROCESSED_DIRNAME = "verarbeitet"
 # Zwischendateien von Sync-Clients, Browsern und Scannern — sie werden erst
 # nach dem Umbenennen (on_moved) zur eigentlichen Datei.
 _TEMP_SUFFIXES = (".tmp", ".part", ".partial", ".crdownload", ".download", ".filepart")
+
+# IO_REPARSE_TAG_MOUNT_POINT (Junction) und IO_REPARSE_TAG_SYMLINK — die
+# Konstanten gibt es in ``stat`` nur unter Windows.
+_REDIRECTING_REPARSE_TAGS = frozenset({0xA0000003, 0xA000000C})
 
 
 def _is_candidate(path: Path, settings: Settings) -> bool:
@@ -76,10 +82,49 @@ def _unique_destination(target_dir: Path, name: str) -> Path:
     return dest
 
 
-def _move_into(file_path: Path, target_dir: Path) -> Path | None:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique_destination(target_dir, file_path.name)
+def _is_link(path: Path) -> bool:
+    """True fuer Symlinks, Junctions und andere Reparse-Points (ohne zu folgen).
+
+    FH-04: Der Native-Dienst laeuft als LocalSystem. Liegt der Watch-Ordner in
+    einem fuer andere lokale Benutzer beschreibbaren Ordner, koennten diese
+    ``verarbeitet``/``rejected`` als Junction (braucht keine Rechte) auf einen
+    beliebigen Systemordner anlegen — der Dienst verschoebe Dateien dann mit
+    SYSTEM-Rechten dorthin. Ebenso wenig darf er verlinkten Quelldateien folgen.
+    """
     try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    # Nur umleitende Reparse-Points (Junction/Mount-Point, Symlink) — andere
+    # Tags wie OneDrive-/Cloud-Dateien oder Deduplizierung sind normale Dateien.
+    return getattr(st, "st_reparse_tag", 0) in _REDIRECTING_REPARSE_TAGS
+
+
+def _move_into(file_path: Path, watch_dir: Path, dirname: str) -> Path | None:
+    """Verschiebt ``file_path`` nach ``<watch_dir>/<dirname>`` — nur wenn dieser
+    Ordner ein echtes Unterverzeichnis des Watch-Ordners ist (FH-04)."""
+    target_dir = watch_dir / dirname
+    try:
+        target_dir.mkdir(exist_ok=True)
+        if (
+            _is_link(target_dir)
+            or not target_dir.is_dir()
+            or target_dir.resolve().parent != watch_dir.resolve()
+        ):
+            logger.error(
+                "%s ist kein echter Unterordner des Watch-Ordners (Link/Junction?) — "
+                "Datei %s bleibt liegen", target_dir, file_path.name,
+            )
+            return None
+        if _is_link(file_path):
+            logger.error("Verlinkte Datei wird nicht verschoben: %s", file_path)
+            return None
+        dest = _unique_destination(target_dir, file_path.name)
+        # TODO(FH-04): Zwischen Pruefung und Verschieben bleibt ein kurzes
+        # TOCTOU-Fenster (Ordner gegen Junction tauschen). Saubere Loesung:
+        # Dienst nicht als LocalSystem betreiben (siehe service-install.bat).
         shutil.move(str(file_path), str(dest))
         return dest
     except Exception:
@@ -90,7 +135,7 @@ def _move_into(file_path: Path, target_dir: Path) -> Path | None:
 def _move_to_rejected(file_path: Path, watch_dir: Path) -> None:
     """Verschiebt eine abgelehnte Datei nach <watch_dir>/rejected (ohne
     gleichnamige fruehere Ablehnungen zu ueberschreiben)."""
-    if _move_into(file_path, watch_dir / REJECTED_DIRNAME):
+    if _move_into(file_path, watch_dir, REJECTED_DIRNAME):
         logger.info("Datei verschoben nach rejected: %s", file_path.name)
 
 
@@ -107,13 +152,18 @@ def _finish_original(file_path: Path, watch_dir: Path, settings: Settings) -> No
         except OSError:
             logger.warning("Quelldatei konnte nicht entfernt werden: %s", file_path, exc_info=True)
         return
-    if _move_into(file_path, watch_dir / PROCESSED_DIRNAME):
+    if _move_into(file_path, watch_dir, PROCESSED_DIRNAME):
         logger.info("Original verschoben nach %s: %s", PROCESSED_DIRNAME, file_path.name)
 
 
 async def _import_file(file_path: Path, file_size: int, watch_dir: Path, session_factory, settings: Settings) -> None:
     """Gemeinsamer Import-Pfad fuer Laufzeit-Events und Startup-Scan."""
     original_name = file_path.name
+    # Erst hier (nach Settle-Delay/Stabilitaets-Check) pruefen: die Datei kann
+    # zwischen Event und Import gegen einen Link getauscht worden sein (FH-04).
+    if await asyncio.to_thread(_is_link, file_path):
+        logger.warning("Verlinkte Datei im Watch-Ordner ignoriert: %s", file_path)
+        return
     try:
         async with session_factory() as session:
             job = await process_upload(
@@ -223,7 +273,10 @@ async def _scan_existing_files(
     # damit der Event-Loop beim Start (langsamer USB-Stick/Netzwerk-Share) nicht
     # haengt.
     def _list_files() -> list[Path]:
-        return [f for f in watch_dir.iterdir() if f.is_file() and _is_candidate(f, settings)]
+        return [
+            f for f in watch_dir.iterdir()
+            if not _is_link(f) and f.is_file() and _is_candidate(f, settings)
+        ]
 
     files = await asyncio.to_thread(_list_files)
 

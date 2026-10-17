@@ -238,6 +238,193 @@ Invoke-Test 'New-NativeConfig.ps1 (5.1): gueltige TOML ohne BOM, Umlaut-Pfad, Fe
     Assert-True ($r.Code -eq 0) "explizite Modelle: Exit $($r.Code): $($r.Output)"
     $d3 = Read-Toml $cfg3
     Assert-True ($d3.OLLAMA_MODEL -eq 'qwen2.5:7b-instruct' -and $d3.EMBEDDING_MODEL -eq 'bge-m3') "explizite Modelle ueberschrieben: $($d3.OLLAMA_MODEL) / $($d3.EMBEDDING_MODEL)"
+
+    # INFRA-07: Standard bleibt LAN (Smartphone), "nur dieser PC" bindet an 127.0.0.1,
+    # optional HTTPS; andere Bind-Adressen / halbe TLS-Angaben werden abgelehnt.
+    Assert-True ($d.SERVER_HOST -eq '0.0.0.0' -and -not $d.SERVER_SSL_CERTFILE) "Standard-Bind: $($d.SERVER_HOST)"
+    $cfg4 = Join-Path $Temp 'native\local.toml'
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg4, '-DataDir', 'D:\Daten', '-DisablePin', '-ServerHost', '127.0.0.1', '-SslCertFile', 'D:\Daten\ssl\cert.pem', '-SslKeyFile', 'D:\Daten\ssl\key.pem')
+    Assert-True ($r.Code -eq 0) "nur lokal + TLS: Exit $($r.Code): $($r.Output)"
+    $d4 = Read-Toml $cfg4
+    Assert-True ($d4.SERVER_HOST -eq '127.0.0.1' -and $d4.SERVER_SSL_CERTFILE -eq 'D:/Daten/ssl/cert.pem' -and $d4.SERVER_SSL_KEYFILE -eq 'D:/Daten/ssl/key.pem') "lokal/TLS: $($d4.SERVER_HOST) $($d4.SERVER_SSL_CERTFILE) $($d4.SERVER_SSL_KEYFILE)"
+    foreach ($bad in @(@('-ServerHost', '10.0.0.5'), @('-SslCertFile', 'D:\c.pem'))) {
+        $out = Join-Path $Temp 'native\bad-bind.toml'
+        $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') (@('-OutPath', $out, '-DataDir', 'D:\Daten', '-DisablePin') + $bad)
+        Assert-True ($r.Code -ne 0 -and -not (Test-Path $out)) "ungueltig akzeptiert: $($bad -join ' ')"
+    }
+    # Setup: Checkbox "nur dieser PC" -> -ServerHost, keine Firewall-Freigabe.
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    Assert-True ($nsi.Contains('-ServerHost $SERVER_HOST') -and $nsi -match '\$\{AndIf\} \$LOCAL_ONLY != \$\{BST_CHECKED\}') 'setup-native.nsi: Bind-Auswahl / Firewall-Ausnahme fehlt'
+}
+
+# SEC-DATA-03: config.toml/.env und Datenordner duerfen nicht die breiten Rechte
+# einer Laufwerkswurzel ("Authentifizierte Benutzer: Aendern") erben.
+$ZwBroadSids = @('S-1-5-11', 'S-1-5-32-545', 'S-1-1-0', 'S-1-5-4')   # Auth. Benutzer, Benutzer, Jeder, Interaktiv
+function Get-AclSids([string]$path) {
+    return @((Get-Acl -LiteralPath $path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) |
+        ForEach-Object { $_.IdentityReference.Value })
+}
+function New-BroadDir([string]$path) {
+    # Simuliert C:\Zettelwirtschaft: Elternordner vererbt "Authentifizierte Benutzer: Aendern".
+    New-Item -ItemType Directory -Force -Path $path | Out-Null
+    $null = & icacls $path /grant '*S-1-5-11:(OI)(CI)M'
+    Assert-True ($LASTEXITCODE -eq 0) "icacls /grant fehlgeschlagen fuer $path"
+}
+
+Invoke-Test 'secure-acl.ps1 (5.1): Datenordner + config.toml nur SYSTEM/Administratoren/Installierender' {
+    $root = Join-Path $Temp "acl\$umlautDir"
+    New-BroadDir $root
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'data\archive') | Out-Null
+    Set-Content (Join-Path $root 'data\zettelwirtschaft.db') 'db'
+    Assert-True ((Get-AclSids (Join-Path $root 'data\zettelwirtschaft.db')) -contains 'S-1-5-11') 'Testaufbau: breite Rechte werden nicht vererbt'
+
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\secure-acl.ps1') @((Join-Path $root 'data'), (Join-Path $root 'fehlt'))
+    Assert-True ($r.Code -eq 2) "Exit $($r.Code) (erwartet 2 wegen fehlendem Pfad): $($r.Output)"
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    foreach ($p in 'data', 'data\zettelwirtschaft.db', 'data\archive') {
+        $sids = Get-AclSids (Join-Path $root $p)
+        foreach ($b in $ZwBroadSids) { Assert-True ($sids -notcontains $b) "$p behaelt $b" }
+        Assert-True ($sids -contains 'S-1-5-18' -and $sids -contains 'S-1-5-32-544' -and $sids -contains $me) "$p ohne SYSTEM/Administratoren/Benutzer: $($sids -join ', ')"
+    }
+    Assert-True ((Get-Acl -LiteralPath (Join-Path $root 'data')).AreAccessRulesProtected) 'Vererbung nicht abgeschaltet'
+    # Neue Dateien (Dienst legt Archiv/Backups spaeter an) erben die engen Rechte.
+    Set-Content (Join-Path $root 'data\archive\neu.pdf') 'x'
+    Assert-True ((Get-AclSids (Join-Path $root 'data\archive\neu.pdf')) -notcontains 'S-1-5-11') 'neue Datei erbt breite Rechte'
+
+    # Idempotent: bewusst ergaenzte Rechte (z.B. Scanner-Konto) bleiben beim naechsten Lauf.
+    $null = & icacls (Join-Path $root 'data') /grant '*S-1-5-4:(OI)(CI)RX'
+    Assert-True ($LASTEXITCODE -eq 0) 'icacls /grant (Interaktiv) fehlgeschlagen'
+    $r =Invoke-WinPS (Join-Path $RepoRoot 'scripts\secure-acl.ps1') @((Join-Path $root 'data'))
+    Assert-True ($r.Code -eq 0) "zweiter Lauf: Exit $($r.Code): $($r.Output)"
+    Assert-True ((Get-AclSids (Join-Path $root 'data')) -contains 'S-1-5-4') 'zweiter Lauf hat eine bewusst gesetzte Berechtigung entfernt'
+
+    # New-NativeConfig: config.toml (PIN, EMAIL_ENCRYPTION_KEY) im breiten Ordner.
+    $cfg = Join-Path $root 'config.toml'
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg, '-DataDir', $root, '-PinCode', '123456')
+    Assert-True ($r.Code -eq 0) "New-NativeConfig Exit $($r.Code): $($r.Output)"
+    $sids = Get-AclSids $cfg
+    foreach ($b in $ZwBroadSids) { Assert-True ($sids -notcontains $b) "config.toml lesbar fuer $b" }
+    Assert-True ((Read-Toml $cfg).PIN_CODE -eq '123456') 'config.toml nach dem Einschraenken nicht lesbar/geschrieben'
+}
+
+# INFRA-03: frei gewaehlter Programmordner (C:\Zettelwirtschaft) darf nicht
+# "Authentifizierte Benutzer: Aendern" erben - die Dienst-Binaries laufen als SYSTEM.
+function Restore-OwnAccess([string]$path) {
+    # Testaufraeumen: als Besitzer die eigenen Rechte zurueckgeben (Benutzer haben nur RX).
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (Test-Path -LiteralPath $path) { $null = & icacls $path /grant "*${me}:(OI)(CI)F" /T /C /Q 2>&1 }
+}
+
+Invoke-Test 'secure-install-dir.ps1 (5.1 + 7): Programmordner SYSTEM/Administratoren Vollzugriff, Benutzer nur Lesen' {
+    foreach ($ps in @($WinPS, (Get-Command pwsh -ErrorAction SilentlyContinue).Source) | Where-Object { $_ }) {
+        $inst = Join-Path $Temp ("instdir-" + [IO.Path]::GetFileNameWithoutExtension($ps) + "\$umlautDir")
+        New-BroadDir $inst
+        New-Item -ItemType Directory -Force -Path (Join-Path $inst 'backend\_internal') | Out-Null
+        Set-Content (Join-Path $inst 'backend\zettelwirtschaft-backend.exe') 'x'
+        Set-Content (Join-Path $inst 'backend\_internal\python313.dll') 'x'
+        # Explizit freigegebene Datei (z.B. von einem frueheren Benutzer verbogen)
+        $null = & icacls (Join-Path $inst 'backend\zettelwirtschaft-backend.exe') /grant '*S-1-1-0:F'
+        Assert-True ((Get-AclSids (Join-Path $inst 'backend\_internal\python313.dll')) -contains 'S-1-5-11') 'Testaufbau: breite Rechte werden nicht vererbt'
+        try {
+            $out = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\secure-install-dir.ps1') $inst 2>&1
+            Assert-True ($LASTEXITCODE -eq 0) "$ps Exit ${LASTEXITCODE}: $($out -join ' ')"
+            Assert-True ((Get-Acl -LiteralPath $inst).AreAccessRulesProtected) "$ps Vererbung nicht abgeschaltet"
+            foreach ($p in '', 'backend', 'backend\zettelwirtschaft-backend.exe', 'backend\_internal\python313.dll') {
+                $rules = @((Get-Acl -LiteralPath (Join-Path $inst $p)).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+                $sids = @($rules | ForEach-Object { $_.IdentityReference.Value })
+                foreach ($b in 'S-1-5-11', 'S-1-1-0', 'S-1-5-4') { Assert-True ($sids -notcontains $b) "${ps}: '$p' behaelt $b" }
+                foreach ($r in $rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-5-32-545' }) {
+                    $w = [System.Security.AccessControl.FileSystemRights]'Write, Delete, ChangePermissions, TakeOwnership'
+                    Assert-True (($r.FileSystemRights -band $w) -eq 0) "${ps}: Benutzer duerfen '$p' aendern ($($r.FileSystemRights))"
+                }
+                Assert-True ($sids -contains 'S-1-5-18' -and $sids -contains 'S-1-5-32-544') "${ps}: '$p' ohne SYSTEM/Administratoren: $($sids -join ', ')"
+            }
+            # Netzwerkpfad und Laufwerkswurzel werden abgelehnt (Exit 1).
+            $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\secure-install-dir.ps1') @('\\localhost\C$\zw-test')
+            Assert-True ($r.Code -eq 1) "UNC: Exit $($r.Code)"
+            $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\secure-install-dir.ps1') @('C:\')
+            Assert-True ($r.Code -eq 1) "Laufwerkswurzel: Exit $($r.Code)"
+        } finally {
+            Restore-OwnAccess $inst
+        }
+    }
+
+    # Setup: Rechte VOR dem Entpacken und vor dem Backup-Aufruf der alten Exe,
+    # Skript aus $PLUGINSDIR; nicht-leerer fremder Ordner wird abgelehnt.
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    $sec = $nsi.IndexOf('Section "Zettelwirtschaft" SecMain')
+    $acl = $nsi.IndexOf('-File "$PLUGINSDIR\secure-install-dir.ps1" "$INSTDIR"', $sec)
+    Assert-True ($sec -gt 0 -and $acl -gt $sec) 'setup-native.nsi: secure-install-dir.ps1-Aufruf in SecMain fehlt'
+    Assert-True ($acl -lt $nsi.IndexOf('Call PrepareUpgrade', $sec) -and $acl -lt $nsi.IndexOf('File /r "${DIST}\backend"', $sec)) 'setup-native.nsi: Programmordner-Rechte erst nach Backup/Entpacken'
+    Assert-True ($nsi -match 'MUI_PAGE_CUSTOMFUNCTION_LEAVE InstDirPageLeave' -and $nsi -match '\$\{DirState\} "\$INSTDIR"') 'setup-native.nsi: Pruefung auf nicht-leeren Programmordner fehlt'
+    # Update-Assistent: Rechte vor dem Backup, Hilfsskripte aus dem Update-Paket.
+    $wiz = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'scripts\update-wizard.ps1'))
+    $inv = $wiz.IndexOf('function Invoke-Update')
+    Assert-True ($inv -gt 0 -and $wiz.IndexOf('Protect-InstallDirAcl', $inv) -lt $wiz.IndexOf('Step-Backup;', $inv)) 'update-wizard.ps1: Programmordner-Rechte nicht vor dem Backup'
+    Assert-True ($wiz -notmatch "Join-Path \`$InstallDir '(secure-acl|secure-install-dir)\.ps1'") 'update-wizard.ps1: Rechte-Skript aus dem (ggf. beschreibbaren) Programmordner geladen'
+}
+
+# INFRA-01: Restore (Admin) nur in den Datenordner - nie Programmordner/beliebige Pfade.
+Invoke-Test 'restore-backup.ps1 (5.1): verweigert DB/Archiv ausserhalb des Datenordners' {
+    $data = Join-Path $Temp "restore\$umlautDir"
+    New-Item -ItemType Directory -Force -Path (Join-Path $data 'data') | Out-Null
+    $zip = Join-Path $Temp 'restore\backup.zip'
+    Set-Content $zip 'kein-zip'
+    $cfg = Join-Path $data 'config.toml'
+    $dataFwd = $data.Replace('\', '/')
+    $cases = @(
+        @{ Db = "$dataFwd/data/zettelwirtschaft.db"; Archive = 'C:/Program Files/Zettelwirtschaft/backend'; Ok = $false },
+        @{ Db = 'C:/Windows/Temp/zw.db'; Archive = "$dataFwd/data/archive"; Ok = $false },
+        @{ Db = "$dataFwd/data/zettelwirtschaft.db"; Archive = $dataFwd; Ok = $false },
+        @{ Db = "$dataFwd/../zw.db"; Archive = "$dataFwd/data/archive"; Ok = $false },
+        @{ Db = './data/zettelwirtschaft.db'; Archive = "$dataFwd/data/archive"; Ok = $false },
+        @{ Db = "$dataFwd/data/zettelwirtschaft.db"; Archive = "$dataFwd/data/archive"; Ok = $true }
+    )
+    foreach ($c in $cases) {
+        [System.IO.File]::WriteAllText($cfg, "DATABASE_URL = `"sqlite+aiosqlite:///$($c.Db)`"`r`nARCHIVE_DIR = `"$($c.Archive)`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        # -NonInteractive: im Gutfall scheitert erst die Tippbestaetigung (Read-Host) -
+        # der Dienst wird in keinem Fall angefasst.
+        $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\restore-backup.ps1') @('-BackupZip', $zip, '-ConfigPath', $cfg, '-DataDir', $data)
+        $refused = $r.Output -match 'FEHLER: Restore-Ziel'
+        if ($c.Ok) {
+            Assert-True (-not $refused -and $r.Output -match 'Ziel-DB:') "gueltige Ziele abgelehnt ($($c.Db) / $($c.Archive)): $($r.Output)"
+        } else {
+            Assert-True ($refused -and $r.Code -eq 1 -and $r.Output -notmatch 'Ziel-DB:') "unsicheres Ziel akzeptiert ($($c.Db) / $($c.Archive)): $($r.Output)"
+        }
+    }
+}
+
+# INFRA-04: Build-Tools laufen beim Kunden als SYSTEM - nur gepinnte Downloads.
+Invoke-Test 'fetch-build-tools.ps1: Downloads mit Version + SHA-256 gepinnt, manipuliertes tools/ wird erkannt' {
+    $path = Join-Path $RepoRoot 'scripts\fetch-build-tools.ps1'
+    $text = [System.IO.File]::ReadAllText($path)
+    Assert-True ($text -notmatch 'releases/latest|/raw/main/|Invoke-RestMethod') 'ungepinnte Quelle (latest/main/API) im Skript'
+    Assert-True ($text -notmatch 'Get-FileIfMissing|Invoke-WebRequest -Uri \$tessMirror') 'Download ohne Pin-Pruefung im Skript'
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$t, [ref]$e)
+    $pinAst = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$BuildToolPins' }, $false) | Select-Object -First 1
+    Assert-True ($null -ne $pinAst) '$BuildToolPins nicht gefunden'
+    $pins = & ([scriptblock]::Create($pinAst.Extent.Text + '; $BuildToolPins'))
+    foreach ($k in 'poppler', 'nssm', 'tesseract', 'tessdataDeu') {
+        $p = $pins[$k]
+        Assert-True ($p -and $p.Sha256 -match '^[0-9a-f]{64}$' -and $p.Version) "${k}: Version/SHA-256 fehlt"
+        foreach ($u in $p.Urls) { Assert-True ($u -like 'https://*' -and $u.Contains($p.Version.TrimStart('v'))) "${k}: URL ungepinnt: $u" }
+    }
+    # Datei-Pins der ausgelieferten Binaries: manipuliertes/fremdes tools/ -> Exit 1.
+    $fake = Join-Path $Temp 'tools-fake'
+    New-Item -ItemType Directory -Force -Path (Join-Path $fake 'nssm\win64') | Out-Null
+    Set-Content (Join-Path $fake 'nssm\win64\nssm.exe') 'manipuliert'
+    $env:ZW_TOOLS_DIR = $fake
+    try {
+        $r = Invoke-WinPS $path @('-VerifyOnly', '-Components', 'nssm')
+        Assert-True ($r.Code -eq 1 -and $r.Output -match 'SHA-256') "manipuliertes nssm.exe nicht erkannt: Exit $($r.Code) $($r.Output)"
+        $real = Join-Path $RepoRoot 'tools\nssm\win64\nssm.exe'
+        if (Test-Path $real) {
+            Copy-Item $real (Join-Path $fake 'nssm\win64\nssm.exe') -Force
+            $r = Invoke-WinPS $path @('-VerifyOnly', '-Components', 'nssm')
+            Assert-True ($r.Code -eq 0) "gepinntes nssm.exe abgelehnt: $($r.Output)"
+        }
+    } finally { Remove-Item Env:\ZW_TOOLS_DIR -ErrorAction SilentlyContinue }
 }
 
 Invoke-Test 'model-tiers.ps1 (5.1): Stufen nach RAM/VRAM, nvidia-smi-Parsing, Bestands-.env' {
@@ -355,7 +542,7 @@ Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     foreach ($f in 'nssm.exe', 'service-install.bat', 'service-uninstall.bat', 'config.toml.example', 'VERSION', 'update-wizard.bat', 'update-wizard.ps1', 'backup.bat', 'restore-backup.bat', 'restore-backup.ps1') {
         Set-Content (Join-Path $dist $f) 'x'
     }
-    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
+    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1', 'secure-acl.ps1', 'secure-install-dir.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
     $outExe = Join-Path $Temp 'nsis\zw-native-test.exe'
     Push-Location $RepoRoot
     try { $o = & $MakeNsis /WX /V2 /DVERSION=0.0.0-test "/DDIST=$dist" "/DOUTFILE=$outExe" setup-native.nsi 2>&1 } finally { Pop-Location }

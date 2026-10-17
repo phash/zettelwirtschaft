@@ -238,6 +238,9 @@ class TestQueueWorker:
         updated_job = await _get_job_fresh(test_session_factory, job_id)
         assert updated_job.retry_count == 3
         assert updated_job.error_message is not None
+        # SEC-DATA-05: der Fehlertext geht per /api/jobs an den Client — keine
+        # Server-Pfade aus str(exc).
+        assert "nonexistent" not in updated_job.error_message
         notes = await _notifications(test_session_factory)
         assert [n.type for n in notes] == [NotificationType.SYSTEM]
         assert "missing.pdf" in notes[0].message
@@ -381,6 +384,45 @@ class TestDuplicateHandling:
         assert "Duplikat erkannt: Duplikat" not in job.error_message
         # Dashboard verlinkt "Vorhandenes Dokument öffnen" ueber job.document_id
         assert job.document_id == existing.id
+
+    async def test_duplicate_upload_copy_is_removed(
+        self, fast_settings: Settings, test_session_factory, db_session: AsyncSession, sample_pdf: Path,
+    ):
+        """FH-05: wiederholt zugeschickte Anhaenge/Uploads fuellten UPLOAD_DIR."""
+        await self._archived_doc(db_session, sample_pdf)
+        upload_dir = Path(fast_settings.UPLOAD_DIR)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        copy = upload_dir / "abc_dup.pdf"
+        copy.write_bytes(sample_pdf.read_bytes())
+        job_id = await _add_job(db_session, copy)
+
+        with _patch_analyze():
+            await _run_worker_until(
+                test_session_factory, fast_settings, _job_reaches(test_session_factory, job_id),
+            )
+
+        job = await _get_job_fresh(test_session_factory, job_id)
+        assert job.status == JobStatus.FAILED and job.error_code == JOB_ERROR_DUPLICATE
+        assert not copy.exists()
+        assert sample_pdf.exists()  # nur Kopien in UPLOAD_DIR werden geloescht
+
+    async def test_legacy_duplicate_copies_are_purged(
+        self, test_settings: Settings, test_session_factory, db_session: AsyncSession, sample_pdf: Path,
+    ):
+        upload_dir = Path(test_settings.UPLOAD_DIR)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        dup = upload_dir / "abc_alt_dup.pdf"
+        other = upload_dir / "abc_alt_fehler.pdf"
+        for path in (dup, other):
+            path.write_bytes(sample_pdf.read_bytes())
+        await _add_job(db_session, dup, status=JobStatus.FAILED, error_code=JOB_ERROR_DUPLICATE)
+        await _add_job(db_session, other, status=JobStatus.FAILED, error_code=None)
+        await _add_job(db_session, sample_pdf, status=JobStatus.FAILED, error_code=JOB_ERROR_DUPLICATE)
+
+        assert await worker.purge_duplicate_upload_copies(test_session_factory, test_settings) == 1
+        assert not dup.exists()
+        assert other.exists()  # anderer Fehler: Datei bleibt fuer den Retry
+        assert sample_pdf.exists()  # ausserhalb von UPLOAD_DIR nie loeschen
 
     async def test_deleted_document_does_not_block_reimport(
         self, fast_settings: Settings, test_session_factory, db_session: AsyncSession, sample_pdf: Path,

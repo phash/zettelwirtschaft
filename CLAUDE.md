@@ -296,7 +296,7 @@ zettelwirtschaft/
         normalize.py             # Enum-Sets aus den Models, Steuerkategorie-/Waehrungs-Normalisierung
         query_params.py          # gemeinsame Query-Parameter-Parser (Dokumenttypen, leere Werte)
         rate_limit.py            # globales Rate-Limit (limits) + trusted_client_ip (Proxy nur im Docker-Betrieb)
-        request_limits.py        # ASGI-Body-Limit (MAX_UPLOAD_SIZE_MB + 5 MB, 413)
+        request_limits.py        # ASGI-Body-Limit pro Route (413): Upload MAX_UPLOAD_SIZE_MB + 5 MB, sonst 256 KiB, /api/auth/* 4 KiB
         install_dir.py           # native_install_dir(): <install> aus sys.executable (nur PyInstaller-Bundle)
         sqlite_migration.py      # Idempotenz-Helfer fuer Rebuild-Migrationen
         text_utils.py            # Slugs + Dateinamen mit deutscher Transliteration (ä -> ae)
@@ -397,8 +397,10 @@ zettelwirtschaft/
 - **Re-Analyse:** nutzt die Haupt-Pipeline (inkl. OCR-Sanitizer + Verifier). Vom Benutzer editierte Felder (AuditLog UPDATED) bleiben erhalten, alle anderen KI-Felder werden komplett ersetzt (Auto-Tags, Garantie, Scope sofern nicht user-gesetzt); unbeteiligte offene Fragen bleiben stehen.
 - **PWA Service Worker Caching:** `navigateFallbackDenylist: [/^\/api\//]` verhindert dass der SW API-Requests mit `index.html` beantwortet. File/Thumbnail-Endpunkte sind `NetworkOnly` (Binaerdaten duerfen nicht gecacht werden, da sonst iframes die App statt das Dokument laden). API-JSON-Responses sind `NetworkFirst` mit 5min Cache.
 - **Lizenz:** AGPL-3.0 (verhindert proprietaere SaaS-Forks).
-- **PIN Rate-Limiting:** In-Memory Per-IP-Lockout mit exponentiellem Backoff (30 s, 60 s, ... max. 1 h). `secrets.compare_digest` fuer constant-time Vergleich. Client-IP ueber `core/rate_limit.trusted_client_ip` — `X-Real-IP` von nginx nur im Docker-Betrieb aus `TRUSTED_PROXIES`, Native/Dev nutzen die Socket-Adresse.
-- **CORS:** Explizite Origins + LAN-Regex (`192.168.*`, `10.*`, `172.16-31.*`) statt `["*"]`.
+- **PIN Rate-Limiting:** In-Memory Per-IP-Lockout mit exponentiellem Backoff (30 s, 60 s, ... max. 1 h; Counter erst 24 h nach Lockout-Ende vergessen) + globales Budget (30 Fehlversuche/h ueber alle IPs -> Login fuer Nicht-Loopback gesperrt + SYSTEM-Notification). Host-/Origin-Pruefung gegen DNS-Rebinding/CSRF: `core/host_guard.py`. Docker Desktop kann die Quell-IP verlieren (dann ein gemeinsamer Lockout fuer alle Geraete) -> einmalige Log-Warnung. `secrets.compare_digest` fuer constant-time Vergleich. Client-IP ueber `core/rate_limit.trusted_client_ip` — `X-Real-IP` von nginx nur im Docker-Betrieb aus `TRUSTED_PROXIES`, Native/Dev nutzen die Socket-Adresse.
+- **CORS:** bewusst KEINE CORSMiddleware (BR-03) — die SPA ist immer same-origin (nginx-Proxy / Native-StaticFiles / Vite-Dev-Proxy). Die alte Regex `localhost:*`+RFC1918 mit `allow_credentials` gab anderen Port-Origins auf demselben Rechner (same-site -> bekommen das SameSite=strict-Cookie) Lesezugriff. CSRF: `core/host_guard.py` lehnt POST/PUT/PATCH/DELETE mit `Sec-Fetch-Site: cross-site|same-site` oder fremdem `Origin` ab (auch bei PIN aus).
+- **DoS-Grenzen (AVAIL-01..07):** Body-Limit pro Route VOR dem JSON-Parsen (`core/request_limits.py`, nginx spiegelt: `/api/` 256k, eigene `location = /api/documents/upload` 55M — neue Upload-Routen in BEIDEN eintragen, Drift-Test `tests/core/test_request_limits.py`). Analysen (Queue-Worker + Re-Analyse) teilen einen prozessweiten Slot (`analysis_service.ANALYSIS_CONCURRENCY=1`), max. 3 aktive Re-Analysen (429, `start_task(max_active=...)`). VACUUM/FTS-Rebuild exklusiv (409). Backups pruefen freien Platz (+512 MB Reserve) und rotieren auch manuell. `/api/health`-Ollama-Probe single-flight, DB-Verbindung vor der Probe freigegeben. E-Mail-Parsing in `to_thread`, max. 20 Anhaenge/1000 MIME-Teile/1 MB HTML+Body pro Mail. Geteilter NAT-Schluessel (Docker Desktop) -> Per-Key-Lockout max. 60 s.
+- **Security-Header Native:** `core/security_headers.py` setzt CSP/X-Frame-Options/nosniff/Referrer-Policy nur bei `deployment_mode == "native"` (Docker: nginx). Werte identisch mit `frontend/nginx-common.conf` — Drift-Test `tests/core/test_browser_hardening.py`.
 - **Nginx Security-Headers:** CSP, X-Frame-Options SAMEORIGIN, X-Content-Type-Options nosniff, server_tokens off. Locations mit eigenem `add_header` (Static-Assets, `/sw.js`) brauchen `add_header_inherit merge;` (nginx >= 1.29.3), sonst entfallen dort alle server-weiten Security-Header (nginx-Vererbungsregel).
 - **App-Version im Backend:** einzige Quelle `app/core/version.py:read_app_version()` (CWD-`VERSION` > `data/.version` > Native `<install>/VERSION` relativ zur Exe — NSSM-CWD ist `<install>/backend`).
 - **Backup-Sicherheit:** `.env` wird nicht mehr in Backup-ZIPs aufgenommen (enthaelt Secrets). Path-Traversal-Schutz bei Backup-Download via `resolve()` + `is_relative_to()`.
@@ -465,8 +467,8 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
   -> Ergebnisse in ProcessingJob speichern (ocr_text, ocr_confidence, analysis_result)
   -> Konfidenz-Check gegen CONFIDENCE_THRESHOLD (0.7)
   -> Archivierung:
-     - SHA-256 Hash berechnen + Duplikat-Check (FAILED bei Duplikat,
-       Quelldatei bleibt fuer User-Inspektion stehen)
+     - SHA-256 Hash berechnen + Duplikat-Check (FAILED bei Duplikat; die
+       Upload-Kopie wird geloescht — sie ist identisch mit dem Archivdokument)
      - Filing Scope bestimmen (Keyword-Match > LLM (>=0.7) > Default)
      - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ kopieren,
        erst nach DB-Commit aus Upload-Ordner loeschen (rollback-sicher)
@@ -534,12 +536,18 @@ User-Frage
 ### Native-Windows (ab v1.3)
 - **Build:** `pwsh scripts/build-native.ps1` (Voraussetzung: `tools/{tesseract,poppler,nssm}` vorbereitet, NSIS im PATH)
 - **Tools-Bootstrap:** `pwsh scripts/fetch-build-tools.ps1` laed poppler+NSSM+Tesseract idempotent in `tools/`.
-  Tesseract-Version wird dynamisch vom Mirror aufgeloest und per **7-Zip** entpackt (7-Zip muss vorhanden sein); `deu.traineddata` wird separat nachgeladen.
+  Versionen, URLs und SHA-256 sind in `$BuildToolPins` fest gepinnt (INFRA-04: kein `latest`, keine Mirror-Aufloesung,
+  tessdata vom Tag `4.1.0`); Tesseract-Setup wird per **7-Zip** entpackt (7-Zip muss vorhanden sein). `build-native.ps1`
+  prueft `tools/` per `fetch-build-tools.ps1 -VerifyOnly` gegen die Pins und bricht bei Abweichung ab
+  (`-AllowUnpinnedTools` nur lokal). Versions-Update = Pins + Hashes anpassen.
+- **Programmordner-Rechte (INFRA-03):** `scripts/secure-install-dir.ps1` setzt `<install>` auf SYSTEM/Administratoren F,
+  Benutzer RX (Setup vor dem Entpacken aus `$PLUGINSDIR`, Update-Wizard vor dem Backup aus dem Update-Paket). Setup
+  installiert ausserhalb von `$PROGRAMFILES64` nur in neue/leere Ordner.
 - **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit). Bundle ist ~187 MB / 1842 Files.
 - **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`, `--version`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
 - **bin_paths.py** wird in `main.py` SEHR FRUEH importiert (vor pdf2image/pytesseract), setzt PATH+TESSDATA_PREFIX+pytesseract.tesseract_cmd auf gebundeltes `<install>/bin/`. No-op im Dev/Docker.
 - **ChromaDB embedded:** `_get_chroma_client` schaltet via `CHROMADB_MODE` zwischen `PersistentClient(path=...)` (native) und `HttpClient` (docker).
-- **Frontend:** `app.mount("/assets")` + Catch-All-Route `@app.get("/{full_path:path}")` mit `FileResponse(index.html)` als Fallback (SPA-Routing fuer `/dokumente` usw.). Nur aktiv wenn `FRONTEND_DIST_DIR` gesetzt + existiert.
+- **Frontend:** `app.mount("/assets")` + Catch-All-Route `@app.get("/{full_path:path}")` mit `FileResponse(index.html)` als Fallback (SPA-Routing fuer `/dokumente` usw.). Im Bundle IMMER `<install>/frontend` (`core.install_dir.frontend_dist_dir`, INFRA-01 — `FRONTEND_DIST_DIR` aus der config.toml wird dort ignoriert, sonst Dateiserver ohne PIN); Dev: `FRONTEND_DIST_DIR` gesetzt + existiert.
 - **Service:** NSSM-Wrapper (`scripts/service-install.bat`), Log-Rotation 10 MB, `DependOnService Ollama` (nur wenn ein Dienst `Ollama` existiert), AutoStart beim Systemstart.
 - **Migration aus Docker:** `scripts/Convert-Env-To-Config.ps1` mapt `.env`-Keys auf TOML.
 
@@ -719,7 +727,10 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 | `LLM_USE_VERIFIER` | `false` | Zweiter LLM-Pass validiert Erst-Pass-Felder bei niedriger Konfidenz |
 | `LLM_VERIFIER_THRESHOLD` | `0.5` | Confidence-Schwelle (`<=`) ab der der Verifier feuert |
 | `PIN_ENABLED` | `false` | Optionaler Web-PIN-Schutz; Backend warnt im Startup-Log + UI-Banner wenn aus |
+| `OLLAMA_AUTO_PULL` | `true` | Fehlende Modelle beim Start aus der Ollama-Registry laden (einzige automatische Internet-Verbindung); `false` = nur melden |
 | `EMAIL_ENCRYPTION_KEY` | (Pflicht fuer E-Mail) | Fernet-Key, vom Installer auto-generiert |
+| `ALLOWED_HOSTS` | `""` | Zusaetzliche Host-Namen fuer den DNS-Rebinding-Schutz (`app/core/host_guard.py`); IPs, localhost, PC-Name, `*.local`/`*.lan`/`*.home.arpa`/`*.internal`/`*.fritz.box` immer erlaubt, `*` = aus |
+| `ENABLE_API_DOCS` | `false` | `/docs`, `/redoc`, `/openapi.json` ausliefern (ungeschuetzt durch PIN!) |
 | `TIMEZONE` | `Europe/Berlin` | Zeitzone fuer Cron-Zeitplaene der E-Mail-Konten (ungueltig -> UTC + Warnung) |
 | `TRUSTED_PROXIES` | `172.16.0.0/12` | Netze (kommagetrennte CIDRs), deren `X-Real-IP` uebernommen wird — nur im Docker-Betrieb wirksam; docker-compose setzt das Proxy-Netz `ZW_PROXY_SUBNET` |
 | `OLLAMA_TIMEOUT` / `OLLAMA_ANALYSIS_TIMEOUT` | `300` / `120` | Timeout (s) fuer Ollama-Aufrufe allgemein / fuer die JSON-Analyse |
@@ -733,11 +744,11 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 
 | Variable | Default | Effekt |
 |---|---|---|
-| `SERVER_HOST` | `0.0.0.0` | HTTP-Bind. `127.0.0.1` = nur lokal, `0.0.0.0` = LAN |
+| `SERVER_HOST` | `0.0.0.0` | HTTP-Bind. `127.0.0.1` = nur lokal (Setup-Checkbox "Nur von diesem PC", keine Firewall-Regel), `0.0.0.0` = LAN (ohne `SERVER_SSL_*` unverschluesselt, INFRA-07) |
 | `SERVER_PORT` | `8080` | HTTP-Port (Native uvicorn). Docker nutzt `FRONTEND_PORT` |
 | `CHROMADB_MODE` | `http` | `embedded` = `PersistentClient(path=...)`, `http` = Docker-Container |
 | `CHROMADB_PATH` | (auto: `<ARCHIVE_DIR>/../chromadb`) | Pfad fuer Embedded-Mode |
-| `FRONTEND_DIST_DIR` | `""` | Wenn gesetzt + existiert: Backend mountet `dist/` als `/` (Native, kein nginx). Leer = Docker-Pfad |
+| `FRONTEND_DIST_DIR` | `""` | Dev: wenn gesetzt + existiert, mountet das Backend `dist/` als `/`. Im Native-Bundle ignoriert (immer `<install>/frontend`, INFRA-01). Leer = Docker-Pfad |
 | `ZETTELWIRTSCHAFT_CONFIG` (Env) | (none) | Pfad zur `config.toml` — von NSSM-Service in AppEnvironmentExtra gesetzt |
 
 ## Planungsdokumente

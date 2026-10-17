@@ -4,6 +4,7 @@ import json
 import logging
 
 from app.config import Settings
+from app.core.prompt_safety import neutralize_prompt_tags
 from app.services.llm_service import call_llm, load_prompt_template
 
 logger = logging.getLogger(__name__)
@@ -24,16 +25,12 @@ _RELEVANCE_SCHEMA = {
 
 
 def _sanitize_email_field(text: str) -> str:
-    """F-11 (Re-Review): Entschaerft die <email_data>-Delimiter-Tags damit
-    ein Absender/Betreff mit `</email_data>...neue Anweisung...<email_data>`
+    """F-11 / INJ-06: Entschaerft die <email_data>-Delimiter-Tags (auch
+    Gross-/Kleinschreibung und Leerzeichen-Varianten), damit ein
+    Absender/Betreff mit `</email_data>...neue Anweisung...<email_data>`
     nicht aus dem Wrap ausbrechen kann.
     """
-    if not text:
-        return ""
-    return (
-        text.replace("<email_data>", "&lt;email_data&gt;")
-        .replace("</email_data>", "&lt;/email_data&gt;")
-    )
+    return neutralize_prompt_tags(text, "email_data")
 
 
 async def check_email_relevance(

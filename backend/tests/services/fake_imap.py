@@ -48,6 +48,14 @@ class FakeImapServer:
         self.connections = 0
         self.on_select = None  # optionaler Hook(server, connection_no)
         self._next_uid = 1
+        # UIDs, deren kompletter Inhalt (BODY[]) geladen wurde.
+        self.body_fetches: list[int] = []
+        # Optional gemeldete Groesse je UID (sonst echte Laenge) — fuer Tests
+        # mit grossen Mails ohne echte 100 MB.
+        self.reported_sizes: dict[int, int] = {}
+
+    def size_of(self, uid: int, msg: dict) -> int:
+        return self.reported_sizes.get(uid, len(msg["raw"]))
 
     def add_message(self, raw: bytes, folder: str = "INBOX", flags=()) -> int:
         uid = self._next_uid
@@ -138,12 +146,26 @@ class FakeImapConnection:
             uids = [u for u, m in sorted(box.items()) if "\\Seen" not in m["flags"]]
             return "OK", [" ".join(str(u) for u in uids).encode()]
         if command == "FETCH":
-            uid, spec = int(args[0]), args[1]
+            spec = args[1]
+            if spec == "(RFC822.SIZE)":
+                # Wie Dovecot/Gmail: eine Zeile pro Mail, UID nicht zwingend vorn.
+                lines = [
+                    f"{uid} (RFC822.SIZE {self.server.size_of(uid, box[uid])} UID {uid})".encode()
+                    for uid in _uids(args[0]) if uid in box
+                ]
+                return "OK", lines or [None]
+            uid = int(args[0])
             msg = box.get(uid)
             if msg is None:
                 return "OK", [None]
             if "PEEK" not in spec:
                 msg["flags"].add("\\Seen")
+            if spec == "(BODY.PEEK[HEADER])":
+                raw = msg["raw"]
+                end = raw.find(b"\r\n\r\n")
+                header = raw[: end + 4] if end != -1 else raw
+                return "OK", [(f"{uid} (UID {uid} BODY[HEADER] {{{len(header)}}}".encode(), header), b")"]
+            self.server.body_fetches.append(uid)
             return "OK", [(f"{uid} (UID {uid} BODY[] {{{len(msg['raw'])}}}".encode(), msg["raw"]), b")"]
         if command == "STORE":
             assert not self.readonly, "STORE auf read-only Ordner"

