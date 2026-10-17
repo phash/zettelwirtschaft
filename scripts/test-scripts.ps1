@@ -534,6 +534,286 @@ Invoke-Test 'Convert-Env-To-Config.ps1 (5.1): .env -> gueltige TOML, Werte ueber
     Assert-True ($r.Code -ne 0) 'PIN_ENABLED mit leerem PIN wurde nicht abgelehnt'
 }
 
+# ---------------------------------------------------------------- Uebernahme manueller Installationen
+# Stub einer manuell (service-install.bat) eingerichteten Installation: Programm-
+# und Datenordner mit Leerzeichen + Umlauten, NSSM-Dienstschluessel in HKCU statt
+# HKLM\SYSTEM\CurrentControlSet\Services (legacy-install.ps1 -ServicesRoot).
+$LegacyRoot = 'HKCU:\Software\ZwScriptTest\LegacyServices'
+$LegacySvc = 'ZwTestLegacySvc'
+$LegacyScript = Join-Path $RepoRoot 'scripts\legacy-install.ps1'
+
+function Read-ZwIni([string]$path) {
+    $h = @{}
+    foreach ($line in [System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)) {
+        $i = $line.IndexOf('=')
+        if ($i -gt 0) { $h[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+    }
+    return $h
+}
+
+function New-ZwLegacyStub([string]$name, [switch]$DataInOldDir) {
+    $base = Join-Path $Temp "legacy\$name"
+    $old = Join-Path $base "Alte Installation $umlautDir"
+    $data = if ($DataInOldDir) { $old } else { Join-Path $base "Daten $umlautDir" }
+    foreach ($d in "$old\backend", "$old\frontend", "$data\data", "$data\logs") { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    Set-Content (Join-Path $old 'backend\zettelwirtschaft-backend.exe') 'alt'
+    Set-Content (Join-Path $old 'nssm.exe') 'nssm'
+    [System.IO.File]::WriteAllText((Join-Path $old 'VERSION'), "1.2.2`r`n")
+    $db = Join-Path $data 'data\zettelwirtschaft.db'
+    [System.IO.File]::WriteAllBytes($db, ([System.Text.Encoding]::ASCII.GetBytes("SQLite format 3`0") + (New-Object byte[] 4080)))
+    $cfg = Join-Path $data 'config.toml'
+    $d = $data.Replace('\', '/') + '/data'
+    $toml = @(
+        '# config.toml einer manuellen Installation', 'SERVER_HOST = "0.0.0.0"', 'SERVER_PORT = 8080',
+        "DATABASE_URL = `"sqlite+aiosqlite:///$d/zettelwirtschaft.db`"", "UPLOAD_DIR = `"$d/uploads`"",
+        "ARCHIVE_DIR = `"$d/archive`"", "THUMBNAIL_DIR = `"$d/thumbnails`"", "WATCH_DIR = `"$d/watch`"",
+        'EXPORT_DIR = ""', "FRONTEND_DIST_DIR = `"$($old.Replace('\', '/'))/frontend`"",
+        'PIN_ENABLED = true', 'PIN_CODE = "123456"', 'CHROMADB_MODE = "embedded"', "CHROMADB_PATH = `"$d/chromadb`""
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText($cfg, $toml + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+    $key = Join-Path $LegacyRoot $LegacySvc
+    Remove-Item -Path $key -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -Path "$key\Parameters" -Force | Out-Null
+    New-ItemProperty -Path $key -Name ImagePath -PropertyType ExpandString -Value "`"$old\nssm.exe`"" | Out-Null
+    New-ItemProperty -Path $key -Name DependOnService -PropertyType MultiString -Value @('Ollama') | Out-Null
+    New-ItemProperty -Path "$key\Parameters" -Name Application -Value "$old\backend\zettelwirtschaft-backend.exe" | Out-Null
+    New-ItemProperty -Path "$key\Parameters" -Name AppDirectory -Value "$old\backend" | Out-Null
+    New-ItemProperty -Path "$key\Parameters" -Name AppEnvironmentExtra -PropertyType MultiString -Value @("ZETTELWIRTSCHAFT_CONFIG=$cfg") | Out-Null
+    New-ItemProperty -Path "$key\Parameters" -Name AppStdout -Value "$data\logs\backend.log" | Out-Null
+    return @{ Old = $old; Data = $data; Db = $db; Config = $cfg; Key = $key }
+}
+
+function Remove-ZwLegacyStubKey {
+    Remove-Item -Path $LegacyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    # Elternschluessel nur entfernen, wenn er sonst leer ist.
+    $parent = Split-Path -Parent $LegacyRoot
+    $k = Get-Item -Path $parent -ErrorAction SilentlyContinue
+    if ($k -and $k.SubKeyCount -eq 0 -and $k.ValueCount -eq 0) { Remove-Item -Path $parent -Force -ErrorAction SilentlyContinue }
+}
+
+function Invoke-ZwLegacyDetect([string]$ini) {
+    Remove-Item $ini -ErrorAction SilentlyContinue
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'Detect', '-ServiceName', $LegacySvc, '-ServicesRoot', $LegacyRoot, '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0 -and (Test-Path $ini)) "Detect Exit $($r.Code): $($r.Output)"
+    return (Read-ZwIni $ini)
+}
+
+Invoke-Test 'legacy-install.ps1 (5.1): Detect leitet Pfade eines manuell eingerichteten Dienstes ab (Umlaute, Leerzeichen)' {
+    try {
+        $s = New-ZwLegacyStub 'detect'
+        $ini = Join-Path $Temp 'legacy\detect.ini'
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'adoptable') "Status: $($h.Status) / $($h.Reason)"
+        Assert-True ($h.OldInstallDir -eq $s.Old) "OldInstallDir: $($h.OldInstallDir)"
+        Assert-True ($h.Nssm -eq "$($s.Old)\nssm.exe") "Nssm: $($h.Nssm)"
+        Assert-True ($h.ConfigPath -eq $s.Config) "ConfigPath: $($h.ConfigPath)"
+        Assert-True ($h.DataDir -eq $s.Data) "DataDir: $($h.DataDir)"
+        Assert-True ($h.DbPath -eq $s.Db) "DbPath: $($h.DbPath)"
+        Assert-True ($h.LogDir -eq "$($s.Data)\logs") "LogDir: $($h.LogDir)"
+        Assert-True ($h.OldVersion -eq '1.2.2') "OldVersion: $($h.OldVersion)"
+        Assert-True ($h.OllamaDependency -eq '1' -and $h.FrontendKey -eq '1') 'OllamaDependency/FrontendKey'
+        Assert-True ($h.FrontendDistDir -eq ($s.Old.Replace('\', '/') + '/frontend')) "FrontendDistDir: $($h.FrontendDistDir)"
+        Assert-True ($h.DataInsideOldDir -eq '0' -and $h.OldDirDeletable -eq '1') "DataInsideOldDir=$($h.DataInsideOldDir) OldDirDeletable=$($h.OldDirDeletable)"
+
+        # Ohne VERSION-Datei: 'unbekannt'.
+        Remove-Item (Join-Path $s.Old 'VERSION')
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'adoptable' -and $h.OldVersion -eq 'unbekannt') "Ohne VERSION: $($h.OldVersion)"
+
+        # Daten im alten Programmordner: uebernehmbar, aber nie zum Loeschen anbieten.
+        $s2 = New-ZwLegacyStub 'inside' -DataInOldDir
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'adoptable' -and $h.DataInsideOldDir -eq '1' -and $h.OldDirDeletable -eq '0') "Daten im alten Ordner: inside=$($h.DataInsideOldDir) deletable=$($h.OldDirDeletable)"
+        Assert-True ($h.DataDir -eq $s2.Old) "DataDir (inside): $($h.DataDir)"
+
+        # Fehlende ZETTELWIRTSCHAFT_CONFIG -> nicht uebernehmen.
+        Set-ItemProperty -Path "$($s2.Key)\Parameters" -Name AppEnvironmentExtra -Value @('FOO=bar') -Type MultiString
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'foreign' -and $h.Reason -eq 'no-config-env') "Ohne Config-Variable: $($h.Status)/$($h.Reason)"
+
+        # Relative Datenpfade wuerden nach dem Umzug in den neuen Programmordner zeigen.
+        $s3 = New-ZwLegacyStub 'relative'
+        $t = [System.IO.File]::ReadAllText($s3.Config) -replace '(?m)^ARCHIVE_DIR = .*$', 'ARCHIVE_DIR = "./data/archive"'
+        [System.IO.File]::WriteAllText($s3.Config, $t)
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'foreign' -and $h.Reason -eq 'relative-paths') "Relativer Pfad: $($h.Status)/$($h.Reason)"
+
+        # config.toml fehlt.
+        Remove-Item $s3.Config
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'foreign' -and $h.Reason -eq 'config-missing') "Ohne config.toml: $($h.Status)/$($h.Reason)"
+
+        # Kein NSSM-Dienst (z.B. eigener Wrapper) -> nicht uebernehmen.
+        Set-ItemProperty -Path $s3.Key -Name ImagePath -Value '%SystemRoot%\system32\svchost.exe -k netsvcs'
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'foreign' -and $h.Reason -eq 'not-nssm') "Fremder Dienst: $($h.Status)/$($h.Reason)"
+
+        # Kein Dienst.
+        Remove-Item -Path $s3.Key -Recurse -Force
+        $h = Invoke-ZwLegacyDetect $ini
+        Assert-True ($h.Status -eq 'none') "Ohne Dienst: $($h.Status)"
+    } finally {
+        Remove-ZwLegacyStubKey
+    }
+}
+
+Invoke-Test 'legacy-install.ps1 (5.1): Backup sichert DB + WAL + config.toml ohne alte Exe, verweigert gesperrte/kaputte DB' {
+    $s = New-ZwLegacyStub 'backup'
+    Remove-ZwLegacyStubKey
+    Set-Content -LiteralPath "$($s.Db)-wal" 'wal'
+    $out = Join-Path $Temp "legacy\Backups $umlautDir"
+    $ini = Join-Path $Temp 'legacy\backup.ini'
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'Backup', '-ConfigPath', $s.Config, '-DbPath', $s.Db, '-OutDir', $out, '-Version', '9.9.9', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0) "Backup Exit $($r.Code): $($r.Output)"
+    $zipPath = (Read-ZwIni $ini).Path
+    Assert-True ((Test-Path -LiteralPath $zipPath) -and ((Split-Path -Leaf $zipPath) -match '^pre-9\.9\.9_\d{8}_\d{6}\.zip$') -and ((Split-Path -Parent $zipPath) -eq $out)) "ZIP: $zipPath"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $z = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $names = @($z.Entries | ForEach-Object { $_.FullName }) | Sort-Object
+        Assert-True (($names -join ',') -eq 'config.toml,database/zettelwirtschaft.db,database/zettelwirtschaft.db-wal') "Eintraege: $($names -join ',')"
+        $sr = New-Object System.IO.StreamReader($z.GetEntry('config.toml').Open())
+        try { $cfgZip = $sr.ReadToEnd() } finally { $sr.Dispose() }
+        Assert-True ($cfgZip -eq [System.IO.File]::ReadAllText($s.Config)) 'config.toml im ZIP weicht ab'
+    } finally { $z.Dispose() }
+
+    # Noch geoeffnete DB (Dienst nicht beendet) -> Fehler, kein halbes ZIP.
+    $before = @(Get-ChildItem -LiteralPath $out).Count
+    $lock = [System.IO.File]::Open($s.Db, 'Open', 'ReadWrite', 'ReadWrite')
+    try {
+        $r = Invoke-WinPS $LegacyScript @('-Action', 'Backup', '-ConfigPath', $s.Config, '-DbPath', $s.Db, '-OutDir', $out, '-Version', '9.9.9', '-ResultFile', $ini)
+    } finally { $lock.Dispose() }
+    Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'locked-or-io') "Gesperrte DB: Exit $($r.Code) $((Read-ZwIni $ini).Reason)"
+    Assert-True (@(Get-ChildItem -LiteralPath $out).Count -eq $before) 'Unvollstaendiges ZIP blieb liegen'
+
+    # Keine SQLite-Datei / DB fehlt.
+    Set-Content -LiteralPath $s.Db 'keine datenbank'
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'Backup', '-ConfigPath', $s.Config, '-DbPath', $s.Db, '-OutDir', $out, '-Version', '9.9.9', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'verify') "Kaputte DB: Exit $($r.Code) $((Read-ZwIni $ini).Reason)"
+    Remove-Item -LiteralPath $s.Db
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'Backup', '-ConfigPath', $s.Config, '-DbPath', $s.Db, '-OutDir', $out, '-Version', '9.9.9', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'db-missing') "Fehlende DB: Exit $($r.Code)"
+    Assert-True (@(Get-ChildItem -LiteralPath $out).Count -eq $before) 'Fehlgeschlagenes Backup hinterliess ein ZIP'
+}
+
+Invoke-Test 'legacy-install.ps1 (5.1): SetFrontendDir aendert nur FRONTEND_DIST_DIR (Bytes, BOM, Kommentar bleiben)' {
+    $dir = Join-Path $Temp "legacy\frontend $umlautDir"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $cfg = Join-Path $dir 'config.toml'
+    $ini = Join-Path $dir 'r.ini'
+    $newFe = "C:\Program Files\Zettelwirtschaft $umlautDir\frontend"
+    $orig = "# Kopf $umlautDir`r`nSERVER_PORT = 8080`r`nPIN_CODE = `"123456`"`r`nFRONTEND_DIST_DIR = `"C:/Users/x/AppData/Local/Zettelwirtschaft-Native/frontend`"  # alt`r`nLOG_LEVEL = `"INFO`"`r`n"
+    $expected = $orig.Replace('"C:/Users/x/AppData/Local/Zettelwirtschaft-Native/frontend"', ('"' + $newFe.Replace('\', '/') + '"'))
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    foreach ($variant in @(@{ Bom = $false; Eol = "`r`n" }, @{ Bom = $true; Eol = "`n" })) {
+        $o = $orig.Replace("`r`n", $variant.Eol); $e = $expected.Replace("`r`n", $variant.Eol)
+        $bytes = $utf8.GetBytes($o); if ($variant.Bom) { $bytes = [byte[]](0xEF, 0xBB, 0xBF) + $bytes }
+        [System.IO.File]::WriteAllBytes($cfg, [byte[]]$bytes)
+        $r = Invoke-WinPS $LegacyScript @('-Action', 'SetFrontendDir', '-ConfigPath', $cfg, '-FrontendDir', $newFe, '-ResultFile', $ini)
+        Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Status -eq 'updated') "SetFrontendDir Exit $($r.Code): $($r.Output)"
+        $want = $utf8.GetBytes($e); if ($variant.Bom) { $want = [byte[]](0xEF, 0xBB, 0xBF) + $want }
+        $got = [System.IO.File]::ReadAllBytes($cfg)
+        Assert-True ([Convert]::ToBase64String($got) -eq [Convert]::ToBase64String([byte[]]$want)) "Bom=$($variant.Bom): Datei weicht ab:`n$([System.Text.Encoding]::UTF8.GetString($got))"
+        # Zweiter Lauf: unveraendert.
+        $r = Invoke-WinPS $LegacyScript @('-Action', 'SetFrontendDir', '-ConfigPath', $cfg, '-FrontendDir', $newFe, '-ResultFile', $ini)
+        Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Status -eq 'unchanged') 'Zweiter Lauf nicht idempotent'
+    }
+    if ($Python) {
+        [System.IO.File]::WriteAllText($cfg, $expected, $utf8)
+        $d = Read-Toml $cfg
+        Assert-True ($d.FRONTEND_DIST_DIR -eq $newFe.Replace('\', '/')) "tomllib: $($d.FRONTEND_DIST_DIR)"
+    }
+    # Atomar ersetzt (Temp-Datei + ReplaceFile): eine eingeschraenkte ACL der
+    # config.toml (SEC-DATA-03) bleibt erhalten, keine Temp-Datei bleibt liegen.
+    $sec = New-Object System.Security.AccessControl.FileSecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow')))
+    Set-Acl -LiteralPath $cfg -AclObject $sec
+    $sddlBefore = (Get-Acl -LiteralPath $cfg).GetSecurityDescriptorSddlForm('Access')
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'SetFrontendDir', '-ConfigPath', $cfg, '-FrontendDir', 'D:\Neu', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Status -eq 'updated' -and ([System.IO.File]::ReadAllText($cfg) -match '(?m)^FRONTEND_DIST_DIR = "D:/Neu"  # alt\r?$')) "Atomar: Exit $($r.Code) $($r.Output)"
+    $sddlAfter = (Get-Acl -LiteralPath $cfg).GetSecurityDescriptorSddlForm('Access')
+    Assert-True ($sddlAfter -eq $sddlBefore) "ACL der config.toml geaendert: $sddlBefore -> $sddlAfter"
+    Assert-True (-not @(Get-ChildItem -LiteralPath $dir -Filter 'config.toml.zw-tmp-*' -Force)) 'Temp-Datei blieb liegen'
+    # Rollback auf leeren Wert und fehlender Schluessel.
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'SetFrontendDir', '-ConfigPath', $cfg, '-FrontendDir', '', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0 -and ([System.IO.File]::ReadAllText($cfg) -match '(?m)^FRONTEND_DIST_DIR = ""  # alt\r?$')) "Leerer Wert: $([System.IO.File]::ReadAllText($cfg))"
+    $noKey = "SERVER_PORT = 8080`r`n"
+    [System.IO.File]::WriteAllText($cfg, $noKey, $utf8)
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'SetFrontendDir', '-ConfigPath', $cfg, '-FrontendDir', $newFe, '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Status -eq 'missing' -and [System.IO.File]::ReadAllText($cfg) -eq $noKey) 'Fehlender Schluessel: Datei wurde veraendert'
+}
+
+Invoke-Test 'legacy-install.ps1 (5.1): RemoveOldDir loescht nur bekannte Programmdateien, folgt keinen Verknuepfungen' {
+    $s = New-ZwLegacyStub 'remove'
+    Remove-ZwLegacyStubKey
+    $ini = Join-Path $Temp 'legacy\remove.ini'
+    $old = $s.Old
+    # Typischer alter Programmordner + Fremdes, das bleiben muss.
+    New-Item -ItemType Directory -Force -Path "$old\backend\_internal\sub", "$old\frontend\assets", "$old\bin\poppler" | Out-Null
+    Set-Content "$old\backend\_internal\sub\x.pyd" 'x'; Set-Content "$old\frontend\assets\a.js" 'x'; Set-Content "$old\bin\poppler\p.dll" 'x'
+    foreach ($f in 'service-install.bat', 'service-uninstall.bat') { Set-Content (Join-Path $old $f) 'x' }
+    Set-Content "$old\Notizen $umlautDir.txt" 'eigene Datei'
+    New-Item -ItemType Directory -Force -Path "$old\backend\data" | Out-Null
+    Set-Content "$old\backend\data\alt.db" 'alte DB aus Zeiten relativer Pfade'
+    # Junction im frontend auf einen Ordner ausserhalb: Ziel bleibt unangetastet.
+    $outside = Join-Path $Temp "legacy\remove-ziel $umlautDir"
+    New-Item -ItemType Directory -Force -Path $outside | Out-Null
+    Set-Content "$outside\wichtig.txt" 'nicht loeschen'
+    New-Item -ItemType Junction -Path "$old\frontend\link" -Target $outside | Out-Null
+
+    $common = @('-Action', 'RemoveOldDir', '-OldDir', $old, '-ConfigPath', $s.Config, '-DbPath', $s.Db, '-ResultFile', $ini)
+    $r = Invoke-WinPS $LegacyScript $common
+    $h = Read-ZwIni $ini
+    Assert-True ($r.Code -eq 0 -and $h.Status -eq 'partial') "Exit $($r.Code) Status $($h.Status): $($r.Output)"
+    Assert-True (Test-Path -LiteralPath "$outside\wichtig.txt") 'Junction-Ziel wurde geloescht'
+    Assert-True ((Test-Path -LiteralPath "$old\Notizen $umlautDir.txt") -and (Test-Path -LiteralPath "$old\backend\data\alt.db")) 'Fremde Dateien wurden geloescht'
+    foreach ($gone in 'nssm.exe', 'VERSION', 'service-install.bat', 'backend\zettelwirtschaft-backend.exe', 'backend\_internal', 'bin', 'frontend\assets') {
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $old $gone))) "Programmdatei blieb liegen: $gone"
+    }
+    Assert-True ($h.Remaining -match 'Notizen' -and $h.Remaining -match 'backend' -and $h.Remaining -match 'frontend') "Remaining: $($h.Remaining)"
+
+    # Nur Programmdateien -> Ordner verschwindet ganz.
+    (Get-Item -LiteralPath "$old\frontend\link").Delete()
+    Remove-Item -LiteralPath "$old\Notizen $umlautDir.txt", "$old\backend\data" -Recurse -Force
+    $r = Invoke-WinPS $LegacyScript $common
+    Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Status -eq 'removed' -and -not (Test-Path -LiteralPath $old)) "Leerer Ordner: Exit $($r.Code) $((Read-ZwIni $ini).Status)"
+
+    # Aktive config.toml im Ordner -> verweigert, nichts geloescht.
+    $s2 = New-ZwLegacyStub 'remove-inside' -DataInOldDir
+    Remove-ZwLegacyStubKey
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'RemoveOldDir', '-OldDir', $s2.Old, '-ConfigPath', $s2.Config, '-DbPath', $s2.Db, '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'data-inside' -and (Test-Path -LiteralPath "$($s2.Old)\nssm.exe") -and (Test-Path -LiteralPath $s2.Db)) "Daten im Ordner: Exit $($r.Code) $((Read-ZwIni $ini).Reason)"
+
+    # StopService fuer einen nicht vorhandenen Dienst: ok, WasRunning=0.
+    $r = Invoke-WinPS $LegacyScript @('-Action', 'StopService', '-ServiceName', 'ZwKeinSolcherDienst', '-ResultFile', $ini)
+    Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).WasRunning -eq '0') "StopService: Exit $($r.Code) WasRunning=$((Read-ZwIni $ini).WasRunning)"
+}
+
+Invoke-Test 'legacy-install.ps1 (5.1): WaitHealth ueber SERVER_PORT der config.toml, Timeout mit Exit 1' {
+    if (-not $Python) { Skip 'python nicht gefunden' }
+    $p = Join-Path $Temp 'legacy\health'
+    New-Item -ItemType Directory -Force -Path (Join-Path $p 'api') | Out-Null
+    Set-Content (Join-Path $p 'api\health') '{"status":"ok"}'
+    # Freien Port waehlen (nie 8080/11434 - dort laufen echte Dienste).
+    $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $l.Start(); $port = $l.LocalEndpoint.Port; $l.Stop()
+    $cfg = Join-Path $p 'config.toml'
+    [System.IO.File]::WriteAllText($cfg, "SERVER_HOST = `"127.0.0.1`"`r`nSERVER_PORT = $port`r`n")
+    $ini = Join-Path $p 'r.ini'
+    $common = @('-Action', 'WaitHealth', '-ServiceName', 'ZwKeinSolcherDienst', '-ConfigPath', $cfg, '-ResultFile', $ini)
+    $srv = Start-Process -FilePath $Python -ArgumentList '-m', 'http.server', $port, '--bind', '127.0.0.1', '--directory', $p -PassThru -WindowStyle Hidden
+    try {
+        $r = Invoke-WinPS $LegacyScript ($common + @('-TimeoutSeconds', '20'))
+        Assert-True ($r.Code -eq 0 -and (Read-ZwIni $ini).Url -eq "http://127.0.0.1:$port/api/health") "Exit $($r.Code): $($r.Output)"
+    } finally {
+        Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
+    }
+    $r = Invoke-WinPS $LegacyScript ($common + @('-TimeoutSeconds', '3'))
+    Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'timeout') "Timeout: Exit $($r.Code)"
+}
+
 # ---------------------------------------------------------------- NSIS
 Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     if (-not $MakeNsis) { Skip 'makensis nicht gefunden' }
@@ -542,7 +822,7 @@ Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     foreach ($f in 'nssm.exe', 'service-install.bat', 'service-uninstall.bat', 'config.toml.example', 'VERSION', 'update-wizard.bat', 'update-wizard.ps1', 'backup.bat', 'restore-backup.bat', 'restore-backup.ps1') {
         Set-Content (Join-Path $dist $f) 'x'
     }
-    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1', 'secure-acl.ps1', 'secure-install-dir.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
+    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1', 'secure-acl.ps1', 'secure-install-dir.ps1', 'legacy-install.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
     $outExe = Join-Path $Temp 'nsis\zw-native-test.exe'
     Push-Location $RepoRoot
     try { $o = & $MakeNsis /WX /V2 /DVERSION=0.0.0-test "/DDIST=$dist" "/DOUTFILE=$outExe" setup-native.nsi 2>&1 } finally { Pop-Location }
@@ -558,6 +838,8 @@ Invoke-Test 'setup-native-helpers.nsh: GenerateSecret liefert gueltigen PIN + Fe
 Unicode True
 !include "LogicLib.nsh"
 !include "$RepoRoot\setup-native-helpers.nsh"
+; Der Test-Installer ruft nicht alle Hilfsfunktionen auf.
+!pragma warning disable 6010
 Name "ZwSecretTest"
 OutFile "$dir\harness.exe"
 RequestExecutionLevel user
@@ -584,6 +866,66 @@ SectionEnd
     $txt = Get-Content $result -Raw
     Assert-True ($txt -match '(?m)^PIN=\d{6}\r?$') "PIN: $txt"
     Assert-True ($txt -match '(?m)^KEY=[A-Za-z0-9_-]{43}=\r?$') "KEY: $txt"
+}
+
+Invoke-Test 'setup-native-helpers.nsh: LegacyHelper + ReadINIStr (Umlaut-Pfade), PathsOverlap (echter NSIS-Lauf)' {
+    if (-not $MakeNsis) { Skip 'makensis nicht gefunden' }
+    $dir = Join-Path $Temp 'nsis-legacy'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $result = Join-Path $dir 'result.txt'
+    try {
+        $s = New-ZwLegacyStub 'nsis'
+        # Ueberschneidungs-Faelle: A, B, erwartet
+        $cases = @(
+            @('C:\Users\x\AppData\Local\Zettelwirtschaft-Native', 'c:\users\x\appdata\local\zettelwirtschaft-native', '1'),
+            @('C:\Users\x\AppData\Local\Zettelwirtschaft-Native\sub', 'C:\Users\x\AppData\Local\Zettelwirtschaft-Native', '1'),
+            @('C:\Users\x', 'C:\Users\x\AppData\Local\Zettelwirtschaft-Native\', '1'),
+            @('C:\Program Files\Zettelwirtschaft', 'C:\Program Files\Zettelwirtschaft-Native', '0'),
+            @('C:\Program Files\Zettelwirtschaft', 'D:\Daten', '0'),
+            @('', 'C:\A', '0')
+        )
+        $overlap = ($cases | ForEach-Object { "    Push `"$($_[0])`"`r`n    Push `"$($_[1])`"`r`n    Call PathsOverlap`r`n    Pop `$5`r`n    StrCpy `$4 `"`$4`$5`"" }) -join "`r`n"
+        $nsi = @"
+Unicode True
+!include "LogicLib.nsh"
+!include "$RepoRoot\setup-native-helpers.nsh"
+; Der Test-Installer ruft nicht alle Hilfsfunktionen auf.
+!pragma warning disable 6010
+Name "ZwLegacyTest"
+OutFile "$dir\harness.exe"
+RequestExecutionLevel user
+SilentInstall silent
+Section
+    InitPluginsDir
+    File "/oname=`$PLUGINSDIR\legacy-install.ps1" "$LegacyScript"
+    Push '-Action Detect -ServiceName $LegacySvc -ServicesRoot "$LegacyRoot" -ResultFile "`$PLUGINSDIR\l.ini"'
+    Call LegacyHelper
+    Pop `$1
+    ReadINIStr `$2 "`$PLUGINSDIR\l.ini" "result" "Status"
+    ReadINIStr `$3 "`$PLUGINSDIR\l.ini" "result" "DataDir"
+    ReadINIStr `$6 "`$PLUGINSDIR\l.ini" "result" "OldInstallDir"
+    StrCpy `$4 ""
+$overlap
+    FileOpen `$0 "$result" w
+    FileWriteWord `$0 0xFEFF
+    FileWriteUTF16LE `$0 "EXIT=`$1`$\r`$\nSTATUS=`$2`$\r`$\nDATA=`$3`$\r`$\nOLD=`$6`$\r`$\nOVERLAP=`$4`$\r`$\n"
+    FileClose `$0
+SectionEnd
+"@
+        [System.IO.File]::WriteAllText((Join-Path $dir 'harness.nsi'), $nsi, (New-Object System.Text.UTF8Encoding($true)))
+        $o = & $MakeNsis /WX /V2 (Join-Path $dir 'harness.nsi') 2>&1
+        Assert-True ($LASTEXITCODE -eq 0) "makensis Harness:`n$($o -join "`n")"
+        $p = Start-Process -FilePath (Join-Path $dir 'harness.exe') -Wait -PassThru
+        Assert-True ($p.ExitCode -eq 0 -and (Test-Path $result)) 'Harness lief nicht'
+        $h = @{}
+        foreach ($line in [System.IO.File]::ReadAllLines($result, [System.Text.Encoding]::Unicode)) { $i = $line.IndexOf('='); if ($i -gt 0) { $h[$line.Substring(0, $i)] = $line.Substring($i + 1) } }
+        Assert-True ($h.EXIT -eq '0' -and $h.STATUS -eq 'adoptable') "Detect im Setup: EXIT=$($h.EXIT) STATUS=$($h.STATUS)"
+        Assert-True ($h.DATA -eq $s.Data -and $h.OLD -eq $s.Old) "Umlaut-Pfade verfaelscht: DATA=$($h.DATA) OLD=$($h.OLD)"
+        $want = ($cases | ForEach-Object { $_[2] }) -join ''
+        Assert-True ($h.OVERLAP -eq $want) "PathsOverlap: $($h.OVERLAP) statt $want"
+    } finally {
+        Remove-ZwLegacyStubKey
+    }
 }
 
 Invoke-Test 'Release: Manifest vollstaendig, Setup.exe (Docker) kompiliert aus dem gestagten Ordner' {

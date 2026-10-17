@@ -111,7 +111,11 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
    robocopy C:\Temp\chroma ~/Documents/Zettelwirtschaft/data/chromadb /E
    ```
    Alternativ: leerer Ordner → Backend re-indexiert beim ersten Start (~ 30s pro 1000 Docs).
-6. **Service installieren** (Admin): `scripts/service-install.bat <install-dir> <config> <log-dir>`.
+6. **Service installieren:** `Zettelwirtschaft-<version>-Native-Setup.exe` ausführen und als
+   Datenordner den Ordner mit der neuen `config.toml` wählen (bestehende config.toml bleibt,
+   PIN/Keys werden nicht neu erzeugt). Früher manuell per
+   `scripts/service-install.bat <install-dir> <config> <log-dir>` (Admin) — solche
+   Installationen übernimmt das Setup ab v1.6.1 (siehe „Manuell eingerichtete Installation“).
 7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder neu ziehen lassen: das Backend
    pullt fehlende Modelle beim Start automatisch. Manuell: `ollama pull <EMBEDDING_MODEL>` +
    `ollama pull <OLLAMA_MODEL>` — **exakt** die Tags aus `config.toml` (`gemma4:12b` ist ein
@@ -119,6 +123,19 @@ Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
    alten `.env`; fehlt dort ein Eintrag, lief die Installation mit dem alten Default — der
    Konverter setzt dann bewusst `qwen2.5:7b-instruct` / `bge-m3` (nicht die neuen Defaults).
    Ollama muss **>= 0.30.3** sein (gemma4/qwen3-embedding; getestet 0.40.5).
+
+**Manuell eingerichtete Installation** (Dienst per `service-install.bat`, kein
+`HKLM\SOFTWARE\Zettelwirtschaft`, ab v1.6.1): einfach die neue Setup.exe starten. Sie
+erkennt den Dienst über `scripts/legacy-install.ps1 -Action Detect` (liest die
+NSSM-Parameter aus `HKLM\SYSTEM\CurrentControlSet\Services\ZettelwirtschaftBackend\Parameters`,
+Ergebnis als UTF-16-INI für `ReadINIStr`), bietet die Übernahme an und: stoppt den
+Dienst → ZIP-Backup von DB (+WAL) und config.toml nach
+`%USERPROFILE%\Documents\Zettelwirtschaft-Backups\pre-<version>_<zeit>.zip` (ohne alte Exe)
+→ installiert in einen NEUEN Programmordner (nie den alten) → stellt in der config.toml nur
+`FRONTEND_DIST_DIR` um → `service-install.bat` ersetzt den Dienst (gleicher Log-Ordner)
+→ Registry → Health-Check → alten Programmordner optional löschen. Abbruch davor →
+alter Dienst wird wiederhergestellt (`RestoreLegacyService`). Abgelehnt: kein NSSM,
+fehlende config.toml, relative Datenpfade. Der Registry-Upgrade-Pfad ist unverändert.
 
 **Update / Backup / Restore** (Native, ab v1.4):
 
