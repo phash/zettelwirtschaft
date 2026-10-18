@@ -17,7 +17,8 @@ export function useReviewCount() {
     if (!force && Date.now() - lastFetch < MIN_REFRESH_INTERVAL_MS) return count.value
     inflight = getReviewStats()
       .then((stats) => {
-        count.value = Number(stats?.open_documents) || 0
+        // Dokumente in Prüfung + Stapel, die auf die Aufteilung warten
+        count.value = (Number(stats?.open_documents) || 0) + (Number(stats?.split_batches) || 0)
         return count.value
       })
       .catch(() => count.value) // Badge ist Komfort — bei Fehler alten Wert behalten

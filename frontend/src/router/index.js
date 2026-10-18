@@ -40,6 +40,13 @@ const routes = [
     meta: { title: 'Prüfen' },
   },
   {
+    path: '/aufteilen/:batchId',
+    name: 'split-editor',
+    component: () => import('../views/SplitEditorView.vue'),
+    props: true,
+    meta: { title: 'Aufteilen' },
+  },
+  {
     path: '/suche',
     name: 'search',
     component: () => import('../views/SearchView.vue'),

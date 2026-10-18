@@ -71,6 +71,9 @@ def detect_stamp(cur: sqlite3.Cursor) -> str | None:
     sodass Frisch-Installs (DB von SQLAlchemy create_all aufgesetzt, alle Tabellen
     + Indizes da) auf 009 stempelten und 010+011 sich Doppelausführungen einhandelten.
     """
+    # 018_document_split: Tabelle fuer aufzuteilende Stapel-PDFs.
+    if has_table(cur, "split_batches"):
+        return "018_document_split"
     # 017_review_data_fixes ist eine reine (idempotente) Datenmigration ohne
     # Schema-Merkmal: eine auf 016 gestempelte DB fuehrt sie einfach erneut aus.
     # 016_schema_consistency: Partial Unique Index auf documents.file_hash.

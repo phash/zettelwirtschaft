@@ -75,6 +75,15 @@ class Document(Base):
             unique=True,
             sqlite_where=text("status != 'DELETED'"),
         ),
+        # Ein Teil eines aufgeteilten Stapels kann nicht doppelt aktiv
+        # archiviert werden (Spezifikation 12).
+        Index(
+            "ux_documents_split_part_active",
+            "split_batch_id",
+            "split_part_index",
+            unique=True,
+            sqlite_where=text("status != 'DELETED' AND split_batch_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -121,6 +130,14 @@ class Document(Base):
     filing_scope_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("filing_scopes.id"), nullable=True, index=True
     )
+
+    # Herkunft aus einem aufgeteilten Stapel (Spezifikation 12)
+    split_batch_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("split_batches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    split_part_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Seiten im Original, z.B. "3-11,13-44"
+    source_pages: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Status
     status: Mapped[str] = mapped_column(

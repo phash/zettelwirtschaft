@@ -20,6 +20,11 @@ class AuditAction(str, enum.Enum):
     # KI-Re-Analyse hat Felder ueberschrieben. Bewusst NICHT "UPDATED": UPDATED
     # markiert Benutzer-Aenderungen, die eine spaetere Re-Analyse schuetzt.
     REANALYZED = "REANALYZED"
+    # Aufteilung (Spezifikation 12): SPLIT am Originaldokument (MANUAL, mit den
+    # Teil-IDs), SPLIT_CREATED an jedem Teildokument, SPLIT_UNDONE beim Rueckgaengig.
+    SPLIT = "SPLIT"
+    SPLIT_CREATED = "SPLIT_CREATED"
+    SPLIT_UNDONE = "SPLIT_UNDONE"
 
 
 class AuditLog(Base):

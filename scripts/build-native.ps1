@@ -63,15 +63,48 @@ try {
     # Beide installiert -> Namespace-Konflikt im Bundle, PersistentClient
     # crasht zur Laufzeit mit "http-only client mode".
     Write-Host "  Sicherstellen: chromadb-client deinstalliert" -ForegroundColor DarkGray
+    # Beide Distributionen schreiben in denselben Ordner "chromadb". War
+    # chromadb-client installiert, loescht sein Uninstall die gemeinsamen
+    # Dateien - pip haelt chromadb trotzdem fuer installiert ("already
+    # satisfied") und das Bundle bekaeme kein embedded Chroma. Deshalb dann
+    # chromadb erzwungen neu installieren.
+    python -m pip show chromadb-client 2>&1 | Out-Null
+    $hadClient = ($LASTEXITCODE -eq 0)
     python -m pip uninstall -y chromadb-client 2>&1 | Out-Null
     python -m pip install -r requirements-build.txt 2>&1 | Select-Object -Last 3
     Assert-ExitCode "pip install -r requirements-build.txt"
+    if ($hadClient) {
+        Write-Host "  chromadb nach Entfernen von chromadb-client neu installieren" -ForegroundColor DarkGray
+        $chromaReq = (Select-String -Path requirements-build.txt -Pattern '^\s*chromadb[<>=!~ ]').Line.Trim()
+        python -m pip install --force-reinstall --no-deps $chromaReq 2>&1 | Select-Object -Last 1
+        Assert-ExitCode "pip install --force-reinstall chromadb"
+    }
+    # Vor dem Bundling pruefen statt erst zur Laufzeit: PersistentClient muss
+    # importierbar sein (sonst "http-only client mode" im Dienst).
+    python -c "import tempfile, chromadb; d = tempfile.mkdtemp(); c = chromadb.PersistentClient(path=d); c.get_or_create_collection('build_check'); print('chromadb', chromadb.__version__, 'embedded ok')"
+    Assert-ExitCode "chromadb (embedded) PersistentClient"
 
     # python -m statt "pyinstaller" aus dem PATH: garantiert derselbe
     # Interpreter (und dieselben Pakete) wie beim pip install oben.
     python -m PyInstaller zettelwirtschaft.spec --clean --noconfirm
     Assert-ExitCode "PyInstaller"
     Copy-Item -Recurse -Force "dist\zettelwirtschaft-backend" (Join-Path $DistRoot "backend")
+    # Aufteilen von Stapel-Scans braucht pdfium.dll (pypdfium2_raw) im Bundle -
+    # fehlt sie, scheitert jede Aufteilung erst zur Laufzeit.
+    $pdfiumDll = Get-ChildItem -Path (Join-Path $DistRoot "backend") -Recurse -Filter "pdfium.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pdfiumDll) { throw "pdfium.dll fehlt im Backend-Bundle (pypdfium2_raw) - Build abgebrochen" }
+    Write-Host "  pdfium.dll: $($pdfiumDll.FullName)" -ForegroundColor DarkGray
+    # pypdfium2 liest beim Import seine version.json (Hooks aus
+    # pyinstaller-hooks-contrib) - fehlt sie, scheitert schon der Import.
+    foreach ($pkg in @("pypdfium2", "pypdfium2_raw")) {
+        $versionJson = Get-ChildItem -Path (Join-Path $DistRoot "backend") -Recurse -Filter "version.json" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq $pkg } | Select-Object -First 1
+        if (-not $versionJson) { throw "$pkg\version.json fehlt im Backend-Bundle - Build abgebrochen" }
+    }
+    # Laufzeit-Check am fertigen Bundle: DLL laden und im Speicher schneiden.
+    $backendExe = Join-Path $DistRoot "backend\zettelwirtschaft-backend.exe"
+    & $backendExe --self-test-pdfium
+    Assert-ExitCode "pdfium-Selbsttest (zettelwirtschaft-backend.exe --self-test-pdfium)"
 } finally {
     Pop-Location
 }
@@ -148,7 +181,9 @@ $bundleScripts = @(
     # Zugriffsrechte Programmordner (INFRA-03): setup-native.nsi + update-wizard.ps1.
     "secure-install-dir.ps1",
     # Uebernahme manuell eingerichteter Installationen (setup-native.nsi, ab 1.6.1).
-    "legacy-install.ps1"
+    "legacy-install.ps1",
+    # Scanner-Freigabe des Eingangsordners (setup-native.nsi + Startmenue, ab 1.7).
+    "freigabe-einrichten.bat", "freigabe-einrichten.ps1"
 )
 foreach ($s in $bundleScripts) {
     Copy-Item -Force (Join-Path $RepoRoot "scripts\$s") (Join-Path $DistRoot $s)

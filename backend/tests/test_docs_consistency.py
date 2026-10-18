@@ -108,3 +108,37 @@ def test_review_reports_live_in_docs_reviews():
     )
     assert stray == []
     assert (REPO_ROOT / "docs" / "reviews" / "README.md").exists()
+
+
+SPLIT_SETTINGS = (
+    "SPLIT_AUTO_ENABLED", "SPLIT_MIN_PAGES", "SPLIT_USE_LLM", "SPLIT_MAX_PAGES", "SPLIT_TIME_BUDGET_S",
+    "SPLIT_BLANK_INK", "SPLIT_MAX_PARTS", "SPLIT_KEEP_SOURCE_DAYS", "SPLIT_THUMBNAIL_WIDTH",
+)
+
+
+@pytest.mark.parametrize("name", SPLIT_SETTINGS)
+def test_documented_split_defaults_match_settings(name: str):
+    """CLAUDE.md-Settings-Tabelle (Aufteilen von Stapel-Scans) = config.py."""
+    text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    documented = _table_default(text, name)
+    assert documented is not None, f"CLAUDE.md dokumentiert {name} nicht"
+    default = _default(name)
+    expected = str(default).lower() if isinstance(default, bool) else str(default)
+    assert documented == expected
+
+
+@pytest.mark.parametrize(
+    ("example", "pattern"),
+    [
+        (".env.example", r"^#?\s*{name}=(\S+)"),
+        ("config.toml.example", r"^#?\s*{name}\s*=\s*(\S+)"),
+    ],
+)
+def test_example_configs_use_split_defaults(example: str, pattern: str):
+    text = (REPO_ROOT / example).read_text(encoding="utf-8")
+    for name in SPLIT_SETTINGS:
+        match = re.search(pattern.format(name=name), text, re.MULTILINE)
+        if match:
+            default = _default(name)
+            expected = str(default).lower() if isinstance(default, bool) else str(default)
+            assert match.group(1).strip('"') == expected, f"{example}: {name}"

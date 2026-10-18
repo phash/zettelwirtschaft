@@ -18,8 +18,10 @@ export type DocumentType =
   | 'BEDIENUNGSANLEITUNG' | 'SONSTIGES';
 export type DocumentStatus = 'ACTIVE' | 'ARCHIVED' | 'DELETED';
 export type ReviewStatus = 'OK' | 'NEEDS_REVIEW' | 'REVIEWED';
-export type JobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'NEEDS_REVIEW';
-export type JobSource = 'UPLOAD' | 'WATCH_FOLDER' | 'EMAIL';
+export type JobStatus =
+  | 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'NEEDS_REVIEW'
+  | 'AWAITING_SPLIT' | 'SPLIT';
+export type JobSource = 'UPLOAD' | 'WATCH_FOLDER' | 'EMAIL' | 'SPLIT_REQUEST';
 export type ComponentState = 'ok' | 'warning' | 'error';
 
 // --- /api/health ---------------------------------------------------------
@@ -47,6 +49,17 @@ export interface SystemHealthComponent extends ComponentStatus {
   /** Ollama-Version laut /api/version (null = nicht ermittelbar) und Mindestversion. */
   version?: string | null;
   min_version?: string;
+  /** watch_folder / export_folder: Erreichbarkeit (nur Pfad + Benutzername). */
+  mode?: 'lokal' | 'netzwerk' | null;
+  state?: 'ok' | 'verbinde' | 'getrennt' | 'fehler';
+  path?: string | null;
+  user?: string | null;
+  reason?: string | null;
+  last_ok_at?: IsoDateTime | null;
+  next_retry_at?: IsoDateTime | null;
+  poll_interval?: number | null;
+  /** Zeitpunkt der letzten Pruefung (Export: nur beim Archivieren). */
+  checked_at?: IsoDateTime | null;
 }
 export interface SystemHealthResponse {
   status: ComponentState;
@@ -68,6 +81,17 @@ export interface SystemHealthResponse {
 export interface BackupItem { filename: string; size_bytes: number; created_at: IsoDateTime; is_full: boolean }
 export interface BackupListResponse { backups: BackupItem[] }
 
+/** (B) Lokale Scanner-Freigabe des Eingangsordners — nie ein Passwort. */
+export interface ScannerShareStatus {
+  configured: boolean;
+  exists: boolean;
+  unc_path: string;
+  user: string;
+  path: string;
+  matches_watch_dir: boolean;
+}
+
+/** GET/PUT-Antwort /api/system/settings (Passwoerter werden nie ausgeliefert). */
 export interface FolderSettings {
   watch_dir: string;
   export_dir: string;
@@ -75,6 +99,40 @@ export interface FolderSettings {
   export_dir_host: string;
   restart_required?: boolean;
   deployment_mode?: 'native' | 'docker' | 'dev';
+  watch_dir_net_user?: string;
+  export_dir_net_user?: string;
+  watch_dir_net_password_set?: boolean;
+  export_dir_net_password_set?: boolean;
+  watch_poll_interval?: number;
+  network_folders_supported?: boolean;
+  scanner_share?: ScannerShareStatus | null;
+}
+
+/** PUT-Body /api/system/settings: Passwoerter write-only (null = unveraendert). */
+export interface FolderSettingsUpdate {
+  watch_dir: string;
+  export_dir: string;
+  watch_dir_host?: string;
+  export_dir_host?: string;
+  watch_dir_net_user?: string;
+  watch_dir_net_password?: string | null;
+  export_dir_net_user?: string;
+  export_dir_net_password?: string | null;
+  watch_poll_interval?: number | null;
+}
+
+/** POST /api/system/settings/test-folder */
+export interface TestFolderRequest {
+  target: 'watch' | 'export';
+  path: string;
+  net_user?: string;
+  net_password?: string | null;
+}
+export interface TestFolderResponse {
+  ok: boolean;
+  kind: 'local' | 'unc' | 'network_drive' | 'subst' | 'missing_drive' | 'unsuitable' | 'unsupported';
+  message: string;
+  suggested_paths: string[];
 }
 
 // --- /api/auth -----------------------------------------------------------
@@ -100,6 +158,12 @@ export interface JobStatusResponse {
   error_code?: string | null;
   retry_count: number;
   document_id?: Id | null;
+  // Aufteilung (Spezifikation 12)
+  split_batch_id?: Id | null;
+  split_role?: 'SOURCE' | 'PART' | null;
+  page_from?: number | null;
+  page_to?: number | null;
+  split_progress?: { pages_done: number; page_count: number } | null;
   created_at: IsoDateTime;
   updated_at: IsoDateTime;
 }
@@ -174,6 +238,14 @@ export interface DocumentResponse extends DocumentListItem {
   scanned_at?: IsoDateTime | null;
   warranty_info: WarrantyInfoResponse | null;
   review_questions: ReviewQuestionResponse[];
+  // Herkunft aus einem aufgeteilten Stapel (Spezifikation 12)
+  split_batch_id?: Id | null;
+  split_part_index?: number | null;
+  split_part_count?: number | null;
+  split_source_filename?: string | null;
+  source_pages?: string | null;
+  can_undo_split?: boolean;
+  split_undo_blocked_reason?: string | null;  // warum "Aufteilung rückgängig" gesperrt ist
 }
 
 // --- /api/review ---------------------------------------------------------
@@ -208,7 +280,12 @@ export interface ReviewDetailResponse {
     filing_scope: string | null;
   };
 }
-export interface ReviewStats { open_documents: number; open_questions: number; answered_questions: number }
+export interface ReviewStats {
+  open_documents: number;
+  open_questions: number;
+  answered_questions: number;
+  split_batches: number;  // Stapel in PROPOSED (Spezifikation 12)
+}
 
 // --- /api/search ---------------------------------------------------------
 export interface SearchResultItem {
@@ -279,7 +356,7 @@ export interface ChatHistoryResponse {
 }
 
 // --- /api/notifications --------------------------------------------------
-export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM';
+export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM' | 'SPLIT_NEEDED';
 export interface NotificationResponse {
   id: Id;
   type: NotificationType;
@@ -349,4 +426,91 @@ export interface TaskResponse {
   started_at: IsoDateTime | null;
   finished_at: IsoDateTime | null;
   done: boolean;
+}
+
+// --- /api/split (Aufteilen von Stapel-Scans, Spezifikation 12) ------------
+export type SplitBatchStatus =
+  | 'DETECTING' | 'PROPOSED' | 'SPLITTING' | 'DONE' | 'DONE_WITH_ERRORS'
+  | 'KEPT_WHOLE' | 'DISCARDED' | 'UNDONE' | 'FAILED';
+export interface SplitPage {
+  n: number;
+  w: number;
+  h: number;
+  rot: number;
+  blank: boolean;
+  ink: number;
+  source: 'ocr' | 'digital' | 'none' | 'skipped';
+  conf: number;
+  counter?: (number | null)[] | null;
+  blank_kind?: 'back' | 'separator' | null;
+}
+export interface SplitBoundary {
+  after_page: number;
+  decision: 'cut' | 'uncertain' | 'none';
+  score?: number | null;
+  p?: number | null;
+  reasons: string[];
+  llm: boolean;
+}
+export interface SplitPartInfo {
+  index: number;
+  pages: number[];
+  job_id: Id | null;
+  job_status: JobStatus | null;
+  document_id: Id | null;
+  error_message: string | null;
+  error_code: string | null;
+}
+export interface SplitBatchResponse {
+  id: Id;
+  origin: 'AUTO' | 'MANUAL';
+  status: SplitBatchStatus;
+  version: number;
+  original_filename: string;
+  job_source: JobSource;
+  source_job_id: Id | null;
+  source_document_id: Id | null;
+  page_count: number;
+  pages_done: number;
+  pages: SplitPage[];
+  boundaries: SplitBoundary[];
+  duplex: boolean;
+  duplex_conf: number;
+  partial_from: number | null;
+  llm_used: boolean;
+  llm_unavailable: boolean;
+  excluded: number[];
+  parts: SplitPartInfo[];
+  error_message: string | null;
+  error_code: string | null;
+  can_undo: boolean;
+  undo_blocked_reason: string | null;
+  created_at: IsoDateTime;
+  updated_at: IsoDateTime;
+  confirmed_at: IsoDateTime | null;
+  finished_at: IsoDateTime | null;
+}
+export interface SplitBatchListItem {
+  id: Id;
+  origin: 'AUTO' | 'MANUAL';
+  status: SplitBatchStatus;
+  original_filename: string;
+  job_source: JobSource;
+  page_count: number;
+  pages_done: number;
+  proposed_parts: number;
+  uncertain: number;
+  created_at: IsoDateTime;
+}
+export interface PaginatedSplitBatches { items: SplitBatchListItem[]; total: number; page: number; page_size: number }
+export interface SplitSettingsBody { auto_enabled: boolean; min_pages: number; use_llm?: boolean | null }
+export interface SplitSettingsResponse { auto_enabled: boolean; min_pages: number; use_llm: boolean; max_pages: number }
+export interface SplitConfirmRequest { version: number; parts: { pages: number[] }[]; excluded: number[] }
+export interface SplitConfirmResponse { batch_id: Id; job_ids: Id[] }
+export interface SplitRequestResponse { batch_id: Id; job_id: Id }
+export interface SplitUndoResponse {
+  batch_id: Id;
+  status: SplitBatchStatus;
+  removed_document_ids: Id[];
+  restored_document_id: Id | null;
 }

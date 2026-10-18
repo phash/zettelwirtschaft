@@ -32,11 +32,18 @@ UPLOAD_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/uploads"
 ARCHIVE_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/archive"
 THUMBNAIL_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/thumbnails"
 WATCH_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/watch"
-EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-Sync.
-# Netzwerkpfade (\\server\freigabe) als Watch-/Export-Ordner in der Web-UI erlauben.
-# Standard aus: der Dienst laeuft als LocalSystem und meldet das Maschinenkonto beim
-# angegebenen Server an. Nur mit einer vertrauenswuerdigen Freigabe einschalten.
+EXPORT_DIR = ""  # leer = deaktiviert. z.B. "D:/Steuerberater/Eingang" (lokaler Ordner).
+# Netzwerkordner (NAS): in der Web-UI unter Einstellungen > Ordner den Pfad
+# \\server\freigabe\ordner mit Benutzer und Passwort der Freigabe eintragen. Der
+# Dienst verbindet sich dann selbst. Netzlaufwerke (V:) sieht der Dienst nicht.
+# Experten-Override: UNC OHNE Zugangsdaten erlauben (der Dienst meldet dann das
+# Computerkonto am Server an - nur mit einer vertrauenswuerdigen Freigabe).
 # ALLOW_NETWORK_FOLDERS = false
+# Pruefintervall fuer Netzwerk-Watch-Ordner in Sekunden (10-600), falls in der UI
+# nichts gespeichert ist.
+# WATCH_POLL_INTERVAL = 30
+# Auch lokale Watch-Ordner per Polling ueberwachen (z.B. Docker mit CIFS-Volume).
+# WATCH_FORCE_POLLING = false
 
 # ---- KI / Ollama ----
 OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)
@@ -64,6 +71,17 @@ OLLAMA_MAX_RETRIES = 2
 OCR_LANGUAGES = "deu+eng"
 CONFIDENCE_THRESHOLD = 0.7
 MAX_OCR_PAGES = 10
+
+# Mehrdokument-Scans aufteilen (automatische Pruefung, Upload-Option, "Dokument aufteilen")
+# SPLIT_AUTO_ENABLED = true      # PDFs vor der Analyse auf mehrere Dokumente pruefen (UI: System -> Verarbeitung)
+# SPLIT_MIN_PAGES = 3            # ab dieser Seitenzahl automatisch pruefen (mindestens 2)
+# SPLIT_USE_LLM = true           # unsichere Uebergaenge zusaetzlich per KI pruefen (ein Aufruf je Stapel)
+# SPLIT_MAX_PAGES = 100          # darueber keine Aufteilung (normale Verarbeitung)
+# SPLIT_TIME_BUDGET_S = 1200     # Zeitbudget der Seitenerkennung je Stapel
+# SPLIT_BLANK_INK = 0.005        # Anteil dunkler Pixel, unter dem eine Seite leer ist
+# SPLIT_MAX_PARTS = 50           # hoechstens so viele Teile je Stapel
+# SPLIT_KEEP_SOURCE_DAYS = 30    # Stapeldatei nach Abschluss so lange aufbewahren
+# SPLIT_THUMBNAIL_WIDTH = 200    # Breite der Seiten-Vorschaubilder (px)
 
 # ---- Upload-Limits ----
 MAX_UPLOAD_SIZE_MB = 50

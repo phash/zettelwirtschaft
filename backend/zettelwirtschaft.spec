@@ -9,7 +9,7 @@
 
 # noqa - PyInstaller-Spec ist kein normales Python-Modul
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 # --- Data-Files: nicht-Python-Assets in das Bundle packen ---
 datas = [
@@ -74,6 +74,10 @@ hiddenimports = [
     "pdf2image",
     "pdfplumber",
     "pytesseract",
+    # Aufteilen von Stapel-Scans (app/services/pdf_split_service.py): Python-
+    # Bindings + pdfium.dll (binaries unten). build-native.ps1 prueft die DLL.
+    "pypdfium2",
+    "pypdfium2_raw",
 
     # Crypto / Email
     "cryptography.hazmat.primitives.kdf.pbkdf2",
@@ -109,7 +113,7 @@ hiddenimports += collect_submodules("app")
 a = Analysis(
     ["app/entrypoint.py"],
     pathex=["."],
-    binaries=[],
+    binaries=collect_dynamic_libs("pypdfium2_raw"),
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

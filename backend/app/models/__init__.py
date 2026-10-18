@@ -17,6 +17,7 @@ from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.models.processed_email import EmailStatus, ProcessedEmail
 from app.models.review_question import ReviewQuestion
 from app.models.saved_search import SavedSearch
+from app.models.split_batch import SplitBatch, SplitBatchStatus, SplitOrigin
 from app.models.system_setting import SystemSetting
 from app.models.chat_message import ChatMessage, MessageRole
 from app.models.warranty_info import WarrantyInfo, WarrantyType
@@ -42,6 +43,9 @@ __all__ = [
     "ReviewQuestion",
     "ReviewStatus",
     "SavedSearch",
+    "SplitBatch",
+    "SplitBatchStatus",
+    "SplitOrigin",
     "ScheduleType",
     "Tag",
     "TaxCategory",

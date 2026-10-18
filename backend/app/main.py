@@ -9,6 +9,8 @@ from app.bin_paths import configure_bundled_binaries
 configure_bundled_binaries()
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -22,6 +24,7 @@ from app.api.jobs import router as jobs_router
 from app.api.notifications import router as notifications_router
 from app.api.review import router as review_router
 from app.api.search import router as search_router
+from app.api.split import router as split_router, split_error_handler
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router, task_conflict_handler
 from app.api.tax import router as tax_router
@@ -29,6 +32,7 @@ from app.api.warranties import router as warranties_router
 from app.config import get_settings, settings_for_request
 from app.core.version import read_app_version
 from app.database import async_session_factory
+from app.services.split_service import SplitError
 from app.services.task_service import TaskConflictError
 
 
@@ -43,19 +47,14 @@ async def lifespan(app: FastAPI):
     )
     logger = logging.getLogger("zettelwirtschaft")
 
-    # Verzeichnisse erstellen
-    for dir_path in [
-        settings.UPLOAD_DIR,
-        settings.WATCH_DIR,
-        settings.ARCHIVE_DIR,
-        settings.THUMBNAIL_DIR,
-    ]:
-        Path(dir_path).mkdir(parents=True, exist_ok=True)
-        logger.info("Verzeichnis bereit: %s", dir_path)
+    # Verzeichnisse erstellen — Watch-/Export-Ordner auf einer Freigabe NICHT:
+    # ohne eigene Verbindung meldete sich der Dienst mit dem Computerkonto am
+    # Server an (NET-SEC-06). Die legt der Watch-Task bzw. der Export erst nach
+    # dem Verbinden an.
+    from app.core.data_dirs import ensure_startup_dirs
 
-    if settings.EXPORT_DIR:
-        Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
-        logger.info("Export-Verzeichnis bereit: %s", settings.EXPORT_DIR)
+    for dir_path in ensure_startup_dirs(settings, logger):
+        logger.info("Verzeichnis bereit: %s", dir_path)
 
     # DB-Schema wird vor dem App-Start migriert: Docker ueber entrypoint.sh ->
     # migrate.py, Native ueber app/entrypoint.py (beide Alembic).
@@ -84,6 +83,14 @@ async def lifespan(app: FastAPI):
 
     async with async_session_factory() as session:
         await recover_interrupted_jobs(session, settings)
+
+    # Aufzuteilende Stapel (Spezifikation 12): DETECTING ohne Job -> FAILED,
+    # halb geschriebene Aufteilungen zurueck auf PROPOSED bzw. fehlende
+    # Teil-Jobs anlegen. Nach recover_interrupted_jobs (PROCESSING -> PENDING).
+    from app.services.split_service import recover_interrupted_batches
+
+    async with async_session_factory() as session:
+        await recover_interrupted_batches(session, settings)
 
     # Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) laufen nur
     # in-process: beim Start verwaiste PENDING/RUNNING-Eintraege auf FAILED
@@ -131,6 +138,7 @@ async def lifespan(app: FastAPI):
 
     # Task-Referenz und Session-Factory in app.state (fuer Watch-Task-Neustart via API)
     app.state.watch_task = watch_task
+    app.state.shutting_down = False
     app.state.session_factory = async_session_factory
 
     # Garantie-Reminder
@@ -157,6 +165,14 @@ async def lifespan(app: FastAPI):
     )
     background_tasks.append(email_task)
 
+    # Aufbewahrungsfrist aufgeteilter Stapel (SPLIT_KEEP_SOURCE_DAYS): beim Start
+    # und danach taeglich Stapeldateien + Vorschaubilder abgeschlossener Stapel.
+    from app.services.split_service import run_split_cleanup
+
+    background_tasks.append(asyncio.create_task(
+        run_split_cleanup(async_session_factory, settings)
+    ))
+
     # Initiale Vektorisierung (wenn ChromaDB leer) — Count-Retry und Schutz vor
     # Leer-Fehlinterpretation in vectorize_service.run_initial_vectorize; der
     # Rebuild selbst laeuft als Hintergrund-Vorgang "rebuild_vectors".
@@ -169,19 +185,40 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Background-Tasks beenden
-    for task in background_tasks:
-        task.cancel()
-    await asyncio.gather(*background_tasks, return_exceptions=True)
+    await _shutdown_background(app, background_tasks)
     logger.info("Background-Tasks beendet")
-
-    # Laufende Hintergrund-Vorgaenge abbrechen (werden als FAILED markiert).
-    from app.services.task_service import shutdown_tasks
-    await shutdown_tasks()
 
     # H-BE-1: Singleton-LLM-Client sauber schliessen.
     from app.services.ollama_client import aclose_client as aclose_ollama_client
     await aclose_ollama_client()
+
+
+async def _shutdown_background(app: FastAPI, background_tasks: list[asyncio.Task]) -> None:
+    """Hintergrundarbeit in der richtigen Reihenfolge beenden (NET-SEC-04, R1).
+
+    1. Alle Tasks abbrechen und abwarten — auch einen ueber die Einstellungen
+       neu gestarteten Watch-Task (er steht nur in ``app.state.watch_task``).
+    2. Hintergrund-Vorgaenge abbrechen (werden als FAILED markiert).
+    3. Erst dann die Netzwerkordner-Verbindungen trennen: ``shutdown`` nimmt
+       keine neuen Verbindungen mehr an und wartet auf laufende Zugriffe
+       (Leases), sonst liefen Threads ohne Verbindung (Computerkonto) weiter.
+    """
+    app.state.shutting_down = True
+    tasks = list(background_tasks)
+    current_watch = getattr(app.state, "watch_task", None)
+    if current_watch is not None and current_watch not in tasks:
+        tasks.append(current_watch)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    from app.services.task_service import shutdown_tasks
+    await shutdown_tasks()
+
+    # Netzwerkordner-Verbindungen (Watch/Export) trennen — sonst blieben sie
+    # in der LocalSystem-Sitzung bis zum Neustart bestehen.
+    from app.core import network_share
+    await asyncio.to_thread(network_share.connections.shutdown)
 
 
 # Globales Rate-Limit: 200 Requests/Minute pro Client-IP als App-weite
@@ -213,6 +250,17 @@ app = FastAPI(
 )
 
 app.add_exception_handler(TaskConflictError, task_conflict_handler)
+app.add_exception_handler(SplitError, split_error_handler)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 wie FastAPI-Standard, aber OHNE das Feld ``input``: Pydantic spiegelt
+    dort den gesendeten Wert (bei fehlenden Feldern den ganzen Body) zurueck -
+    samt Passwoertern (Netzwerkordner, IMAP). Das Frontend nutzt nur
+    ``type``/``loc``/``msg``/``ctx``."""
+    errors = [{k: v for k, v in err.items() if k not in ("input", "url")} for err in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 @app.exception_handler(Exception)
@@ -293,6 +341,7 @@ app.include_router(review_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
+app.include_router(split_router, prefix="/api")
 
 
 # Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.

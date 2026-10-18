@@ -11,10 +11,13 @@ const uploading = ref(false)
 const uploadProgress = ref(0)
 const uploadedJobs = ref([])
 const fileInput = ref(null)
+// "Enthält mehrere Dokumente": PDFs vor der Analyse in den Aufteilungs-Editor.
+const splitCheck = ref(false)
 
 // Endzustaende eines Jobs — danach wird nicht mehr gepollt. NOT_FOUND ist ein
 // reiner Frontend-Status (Job per 404 verschwunden, z.B. verworfen).
-const TERMINAL_STATUSES = ['COMPLETED', 'FAILED', 'NEEDS_REVIEW', 'NOT_FOUND']
+// AWAITING_SPLIT wartet auf den Benutzer (Aufteilungs-Editor), SPLIT ist fertig.
+const TERMINAL_STATUSES = ['COMPLETED', 'FAILED', 'NEEDS_REVIEW', 'NOT_FOUND', 'AWAITING_SPLIT', 'SPLIT']
 
 async function handleFiles(files) {
   if (!files.length) return
@@ -27,7 +30,7 @@ async function handleFiles(files) {
       if (event.total) {
         uploadProgress.value = Math.round((event.loaded / event.total) * 100)
       }
-    })
+    }, { splitCheck: splitCheck.value })
 
     const { uploaded } = reportUploadResult(result, notify)
     // UploadResponse liefert die ID des ProcessingJobs (job_id) — NICHT die des
@@ -36,6 +39,8 @@ async function handleFiles(files) {
       uploadedJobs.value.unshift({
         jobId: item.job_id,
         documentId: null,
+        splitBatchId: null,
+        splitProgress: null,
         filename: item.original_filename,
         status: item.status,
       })
@@ -73,6 +78,8 @@ async function pollJobs() {
         const status = await getJobStatus(job.jobId)
         job.status = status.status
         job.documentId = status.document_id || null
+        job.splitBatchId = status.split_batch_id || null
+        job.splitProgress = status.split_progress || null
       } catch (err) {
         if (err?.response?.status === 404) {
           job.status = 'NOT_FOUND'
@@ -106,6 +113,8 @@ const statusLabels = {
   COMPLETED: 'Fertig',
   FAILED: 'Fehlgeschlagen',
   NEEDS_REVIEW: 'Prüfung nötig',
+  AWAITING_SPLIT: 'Wartet auf Aufteilung',
+  SPLIT: 'Aufgeteilt',
   NOT_FOUND: 'Nicht gefunden',
 }
 
@@ -115,7 +124,17 @@ const statusColors = {
   COMPLETED: 'bg-green-100 text-green-700',
   FAILED: 'bg-red-100 text-red-700',
   NEEDS_REVIEW: 'bg-orange-100 text-orange-700',
+  AWAITING_SPLIT: 'bg-orange-100 text-orange-700',
+  SPLIT: 'bg-green-100 text-green-700',
   NOT_FOUND: 'bg-red-100 text-red-700',
+}
+
+function statusLabel(job) {
+  if (job.status === 'PROCESSING' && job.splitProgress) {
+    const { pages_done: done, page_count: count } = job.splitProgress
+    return `Seite ${Math.min(done + 1, count)} von ${count} wird erkannt …`
+  }
+  return statusLabels[job.status] || job.status
 }
 
 onUnmounted(stopPolling)
@@ -160,6 +179,14 @@ onUnmounted(stopPolling)
       />
     </div>
 
+    <label class="flex items-start gap-3 text-sm text-gray-700">
+      <input v-model="splitCheck" type="checkbox" class="mt-0.5 rounded border-gray-300" />
+      <span>
+        Enthält mehrere Dokumente – vor der Analyse aufteilen
+        <span class="block text-xs text-gray-500">Für Stapel-Scans (PDF): Du legst die Schnitte selbst fest, danach wird jeder Teil einzeln archiviert.</span>
+      </span>
+    </label>
+
     <!-- Upload progress -->
     <div v-if="uploading" class="card">
       <div class="flex items-center gap-3">
@@ -183,10 +210,10 @@ onUnmounted(stopPolling)
         >
           <div class="flex min-w-0 items-center gap-3">
             <div v-if="['PENDING', 'PROCESSING'].includes(job.status)" class="h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-primary-200 border-t-primary-600"></div>
-            <svg v-else-if="job.status === 'COMPLETED'" class="h-5 w-5 flex-shrink-0 text-green-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <svg v-else-if="['COMPLETED', 'SPLIT'].includes(job.status)" class="h-5 w-5 flex-shrink-0 text-green-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
             </svg>
-            <svg v-else-if="job.status === 'NEEDS_REVIEW'" class="h-5 w-5 flex-shrink-0 text-orange-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <svg v-else-if="['NEEDS_REVIEW', 'AWAITING_SPLIT'].includes(job.status)" class="h-5 w-5 flex-shrink-0 text-orange-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
             </svg>
             <svg v-else class="h-5 w-5 flex-shrink-0 text-red-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -196,8 +223,15 @@ onUnmounted(stopPolling)
           </div>
           <div class="flex items-center gap-3">
             <span :class="['badge', statusColors[job.status]]">
-              {{ statusLabels[job.status] || job.status }}
+              {{ statusLabel(job) }}
             </span>
+            <router-link
+              v-if="job.splitBatchId && ['AWAITING_SPLIT', 'SPLIT'].includes(job.status)"
+              :to="`/aufteilen/${job.splitBatchId}`"
+              class="text-sm text-primary-600 hover:text-primary-700"
+            >
+              {{ job.status === 'AWAITING_SPLIT' ? 'Aufteilen' : 'Anzeigen' }}
+            </router-link>
             <router-link
               v-if="job.documentId && ['COMPLETED', 'NEEDS_REVIEW'].includes(job.status)"
               :to="`/dokumente/${job.documentId}`"

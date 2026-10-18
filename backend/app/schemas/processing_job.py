@@ -19,6 +19,11 @@ class MultiUploadResponse(BaseModel):
     rejected: list[dict]
 
 
+class SplitProgress(BaseModel):
+    pages_done: int
+    page_count: int
+
+
 class JobListItem(BaseModel):
     """Schlanke Job-Darstellung fuer Listen (Dashboard pollt alle 3 s) — ohne
     OCR-Volltext und Analyse-JSON."""
@@ -40,6 +45,13 @@ class JobListItem(BaseModel):
     # Erzeugtes Dokument (ab Archivierung: COMPLETED/NEEDS_REVIEW) — Ziel fuer
     # den "Anzeigen"/"Prüfen"-Link.
     document_id: str | None = None
+    # Aufteilung (Spezifikation 12): Stapel- und Teil-Jobs. split_progress nur
+    # bei PROCESSING mit Stapel in der Erkennung ("Seite 17 von 44").
+    split_batch_id: str | None = None
+    split_role: str | None = None
+    page_from: int | None = None
+    page_to: int | None = None
+    split_progress: SplitProgress | None = None
     created_at: datetime
     updated_at: datetime
 

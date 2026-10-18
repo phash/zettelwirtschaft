@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Enum, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db_types import UTCDateTime
@@ -13,6 +13,8 @@ class JobSource(str, enum.Enum):
     UPLOAD = "UPLOAD"
     WATCH_FOLDER = "WATCH_FOLDER"
     EMAIL = "EMAIL"
+    # Stapel-Job aus "Dokument aufteilen" an einem archivierten Dokument.
+    SPLIT_REQUEST = "SPLIT_REQUEST"
 
 
 class JobStatus(str, enum.Enum):
@@ -21,14 +23,44 @@ class JobStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+    # Stapel-PDF wartet auf die Bestaetigung der Aufteilung (Editor).
+    # native_enum=False -> VARCHAR ohne CHECK, die laengeren Werte brauchen
+    # keine DDL (SQLite erzwingt die VARCHAR-Laenge nicht).
+    AWAITING_SPLIT = "AWAITING_SPLIT"
+    # Stapel-Job wurde aufgeteilt (terminal, document_id bleibt NULL).
+    SPLIT = "SPLIT"
 
 
 # Maschinenlesbare Fehlerursache auf FAILED-Jobs (error_code).
 JOB_ERROR_DUPLICATE = "DUPLICATE"
+# Stapeldatei fehlt beim Bestaetigen der Aufteilung (Stapel bleibt PROPOSED).
+JOB_ERROR_SPLIT_SOURCE_MISSING = "SPLIT_SOURCE_MISSING"
+
+
+class SplitRole(str, enum.Enum):
+    SOURCE = "SOURCE"  # Stapel-Job (die ganze PDF)
+    PART = "PART"  # ein Teil nach der Aufteilung
+
+
+class SplitMode(str, enum.Enum):
+    AUTO = "AUTO"  # automatische Pruefung (ab Etappe 2 aktiv)
+    FORCE = "FORCE"  # Upload-Option bzw. "Dokument aufteilen": immer in den Editor
+    OFF = "OFF"  # nie pruefen (Teil-Jobs, "Als ein Dokument behalten")
 
 
 class ProcessingJob(Base):
     __tablename__ = "processing_jobs"
+    __table_args__ = (
+        # Macht das Anlegen der Teil-Jobs idempotent (Recovery nach Absturz
+        # zwischen Teildateien und Teil-Jobs, Doppelklick).
+        Index(
+            "ux_processing_jobs_split_part",
+            "split_batch_id",
+            "split_part_index",
+            unique=True,
+            sqlite_where=text("split_role = 'PART'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36),
@@ -73,6 +105,26 @@ class ProcessingJob(Base):
     document_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Aufteilung (Spezifikation 12): Stapel- und Teil-Jobs verweisen auf ihren
+    # Stapel. Nur diese Richtung hat einen FK (kein Zyklus mit split_batches).
+    split_batch_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("split_batches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    split_role: Mapped[str | None] = mapped_column(String(10), nullable=True)  # SplitRole
+    split_part_index: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-basiert
+    # Nur Anzeige — massgeblich ist SplitBatch.final_parts.
+    page_from: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_to: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    split_mode: Mapped[str] = mapped_column(
+        String(10), nullable=False, default=SplitMode.AUTO.value, server_default=SplitMode.AUTO.value
+    )
+    # JSON [{page, text, confidence, source}] — Seitentext aus der Erkennung.
+    # Liegt waehrend der Erkennung am Stapel-Job, wird beim Bestaetigen auf die
+    # Teil-Jobs verteilt und nach der Archivierung eines Teils geleert (der Text
+    # steht dann in Document.ocr_text) — keine dauerhafte zweite Textkopie. Am
+    # AUTO-Stapel-Job bleibt er bis zum Ende der Aufbewahrungsfrist (fuer
+    # "Aufteilung rückgängig" + erneutes Bestaetigen ohne zweite OCR).
+    page_ocr: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     analysis_result: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -5,7 +5,8 @@ import { setupDashboardMocks, MOCK_STATS } from '../helpers/mock.helpers';
 // playwright.config.ts, weil SW-Requests an page.route() vorbeigehen).
 // Prueft die Runtime-Caching-Regeln aus frontend/vite.config.js:
 //   - /api/*-JSON: NetworkFirst (Fallback auf Cache, wenn das Netz weg ist)
-//   - /api/.../file|thumbnail und Backup-Downloads: NetworkOnly (nie im Cache)
+//   - /api/.../file|thumbnail, Seitenbilder des Aufteilungs-Editors und
+//     Backup-Downloads: NetworkOnly (nie im Cache)
 // SW-Requests sieht nur context.route() — daher hier keine page.route()-Mocks
 // fuer die geprueften Pfade.
 
@@ -51,11 +52,18 @@ test.describe('PWA service worker caching', () => {
     await context.route('**/api/system/backups/backup_db_1.zip', (route) =>
       online ? route.fulfill({ status: 200, contentType: 'application/zip', body: 'zip' }) : offline(route)
     );
+    // Absichtlich als JSON ausgeliefert: die NetworkFirst-Regel wuerde JSON
+    // cachen — nur die eigene NetworkOnly-Regel verhindert das.
+    const splitPreview = '/api/split/b1/pages/1/preview';
+    await context.route(`**${splitPreview}`, (route) =>
+      online ? route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }) : offline(route)
+    );
 
     // Online: alles kommt vom Netz
     expect((await pageFetch(page, '/api/stats')).ok).toBe(true);
     expect((await pageFetch(page, '/api/documents/doc-1/file')).ok).toBe(true);
     expect((await pageFetch(page, '/api/system/backups/backup_db_1.zip')).ok).toBe(true);
+    expect((await pageFetch(page, splitPreview)).ok).toBe(true);
 
     online = false;
 
@@ -67,5 +75,6 @@ test.describe('PWA service worker caching', () => {
     // NetworkOnly: Datei und Backup wurden nicht zwischengespeichert
     expect((await pageFetch(page, '/api/documents/doc-1/file')).ok).toBe(false);
     expect((await pageFetch(page, '/api/system/backups/backup_db_1.zip')).ok).toBe(false);
+    expect((await pageFetch(page, splitPreview)).ok).toBe(false);
   });
 });

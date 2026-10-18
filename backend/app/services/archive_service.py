@@ -4,11 +4,12 @@ import json
 import logging
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import DataError, IntegrityError
@@ -25,6 +26,9 @@ from app.services.analysis_service import AnalysisResult
 from app.services.ocr_service import OcrResult
 from app.services.search_service import reindex_document_fts
 from app.services.tax_year import ensure_tax_year
+
+if TYPE_CHECKING:
+    from app.services.network_folder_service import FolderConfig
 
 logger = logging.getLogger("zettelwirtschaft.archive")
 
@@ -45,6 +49,23 @@ class DuplicateDocumentError(ValueError):
         self.existing_title = existing_title
         title = existing_title or "ohne Titel"
         super().__init__(f"Diese Datei ist bereits archiviert („{title}“).")
+
+
+@dataclass(frozen=True)
+class SplitProvenance:
+    """Herkunft eines Teildokuments aus einem aufgeteilten Stapel."""
+
+    batch_id: str
+    part_index: int
+    part_count: int
+    source_pages: str  # z.B. "3-11,13-44"
+    source_filename: str
+    # Manuelle Tags des Originaldokuments (nur "Dokument aufteilen")
+    inherited_tags: tuple[str, ...] = ()
+
+    def audit_text(self) -> str:
+        pages = self.source_pages.replace("-", "–")
+        return f"Teil {self.part_index}/{self.part_count}, Seiten {pages} aus {self.source_filename}"
 
 
 class ArchiveDataError(Exception):
@@ -110,9 +131,9 @@ def _copy_file(source: Path, dest: Path) -> None:
 
 
 def remove_created_files(paths: list[Path]) -> None:
-    """Entfernt die von archive_document angelegten Kopien (Archiv + Export),
-    wenn die Transaktion danach scheitert — sonst bleiben verwaiste Dateien
-    ohne DB-Eintrag zurueck."""
+    """Entfernt die von archive_document angelegten Archiv-Kopien, wenn die
+    Transaktion danach scheitert — sonst bleiben verwaiste Dateien ohne
+    DB-Eintrag zurueck."""
     for path in paths:
         try:
             path.unlink(missing_ok=True)
@@ -289,14 +310,20 @@ async def find_active_duplicate(file_hash: str, session: AsyncSession) -> Docume
     return result.scalars().first()
 
 
-async def check_duplicate(file_path: Path, session: AsyncSession) -> Document | None:
-    """Prueft ob eine Datei bereits als aktives Dokument archiviert wurde (via SHA-256).
+async def file_sha256(file_path: Path) -> str:
+    """SHA-256 einer Datei (blockierendes Lesen in einem Thread)."""
+    return await asyncio.to_thread(_compute_file_hash, file_path)
 
-    Wird vom Worker VOR Thumbnail/OCR/LLM aufgerufen, damit Duplikate nicht
-    erst nach der teuren Analyse auffallen.
-    """
-    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
-    return await find_active_duplicate(file_hash, session)
+
+async def _find_active_split_part(split_part: SplitProvenance, session: AsyncSession) -> Document | None:
+    result = await session.execute(
+        select(Document).where(
+            Document.split_batch_id == split_part.batch_id,
+            Document.split_part_index == split_part.part_index,
+            Document.status != DocumentStatus.DELETED,
+        )
+    )
+    return result.scalars().first()
 
 
 def _truncate(value, max_len: int) -> str | None:
@@ -438,6 +465,73 @@ def build_scope_question(
     )
 
 
+@dataclass(frozen=True)
+class ExportRequest:
+    """Export-Kopie eines archivierten Dokuments — ausgefuehrt NACH dem Commit."""
+
+    archive_path: Path
+    document_type: str
+    document_date: date | None
+    stored_filename: str
+    scope_slug: str | None
+    config: "FolderConfig"
+
+
+async def export_copy(request: ExportRequest, settings: Settings) -> Path | None:
+    """Kopiert ein archiviertes Dokument in den Export-Ordner (best effort).
+
+    R2: laeuft nach dem Commit — Verbindungsaufbau zu einer (evtl.
+    ausgeschalteten) NAS und die Kopie halten so keine SQLite-Schreibsperre.
+    Netzwerk-Export: erst die eigene Verbindung (``prepare_export``), dann
+    die Kopie samt Aufraeumen unter einer Lease (NET-SEC-03) — ein
+    Einstellungswechsel trennt erst nach dem Ende der Kopie, und ohne
+    Verbindung wird der UNC-Pfad nie angefasst. Lokaler Export: keine
+    Verknuepfung auf eine Freigabe (NET-SEC-07). Fehler werden geloggt und im
+    Status gemeldet; das Dokument bleibt archiviert.
+    """
+    from app.core import network_share
+    from app.services import network_folder_service as nfs
+
+    config = request.config
+    if not config.path:
+        return None
+    leased = nfs.uses_own_connection(config)
+    if config.network and not await asyncio.to_thread(nfs.prepare_export, config, settings):
+        return None
+
+    def _copy() -> Path:
+        lease = network_share.connections.open_lease(nfs.EXPORT) if leased else network_share.NO_LEASE
+        with lease:
+            base = network_share.connections.access_path(nfs.EXPORT, config.path) if leased else config.path
+            if not config.network:
+                link = network_share.find_remote_link(base)
+                if link:
+                    raise OSError(0, network_share.remote_link_message(link))
+            dest = _build_archive_path(
+                base, request.document_type, request.document_date, request.stored_filename,
+                scope_slug=request.scope_slug,
+            )
+            try:
+                _copy_file(request.archive_path, dest)
+            except BaseException:
+                remove_created_files([dest])
+                raise
+            return dest
+
+    try:
+        dest = await asyncio.to_thread(_copy)
+    except Exception as exc:
+        logger.warning("Export-Kopie fehlgeschlagen fuer %s", request.stored_filename, exc_info=True)
+        if config.network:
+            reason = str(exc) if isinstance(exc, network_share.ShareError) else (
+                f"Netzwerkordner: Kopie fehlgeschlagen ({type(exc).__name__})."
+            )
+            nfs.status.update(nfs.EXPORT, state="getrennt", reason=reason)
+        return None
+    logger.info("Export-Kopie erstellt: %s", dest)
+    return dest
+
+
 async def archive_document(
     file_path: Path,
     original_filename: str,
@@ -452,16 +546,23 @@ async def archive_document(
     filing_scopes: list[dict] | None = None,
     forced_scope_id: str | None = None,
     created_files: list[Path] | None = None,
+    split_part: SplitProvenance | None = None,
+    export_requests: list[ExportRequest] | None = None,
 ) -> Document:
     """Archiviert ein Dokument: DB-Eintrag erstellen, Datei ins Archiv kopieren.
 
     Die Datei wird erst kopiert, nachdem alle DB-Eintraege erfolgreich geflusht
     sind. Die angelegten Kopien werden an ``created_files`` angehaengt, damit
-    der Aufrufer sie entfernen kann, falls sein Commit scheitert.
+    der Aufrufer sie entfernen kann, falls sein Commit scheitert. Eine
+    Export-Kopie wird nur geplant (``export_requests``) — der Aufrufer fuehrt
+    sie NACH seinem Commit mit ``export_copy`` aus (R2).
 
     Args:
         forced_scope_id: Ablagebereich, der Keyword-/LLM-Zuordnung uebersteuert
-            (Ablagebereich des E-Mail-Kontos).
+            (Ablagebereich des E-Mail-Kontos bzw. des aufgeteilten Originals).
+        split_part: Herkunft eines Teils aus einem aufgeteilten Stapel —
+            setzt split_batch_id/split_part_index/source_pages, uebernimmt die
+            manuellen Tags des Originals und schreibt AuditAction.SPLIT_CREATED.
 
     Returns:
         Das erstellte Document-Objekt.
@@ -471,7 +572,7 @@ async def archive_document(
         ArchiveDataError: Daten liessen sich nicht speichern (nicht wiederholbar).
     """
     # Hash berechnen + Duplikatcheck (geloeschte Dokumente zaehlen nicht)
-    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
+    file_hash = await file_sha256(file_path)
     existing = await find_active_duplicate(file_hash, session)
     if existing is not None:
         raise DuplicateDocumentError(existing.id, existing.title)
@@ -504,11 +605,15 @@ async def archive_document(
     )
 
     # Export-Verzeichnis vorab ermitteln (benoetigt DB-Session)
+    from app.services import network_folder_service
+
     try:
-        from app.services.settings_service import get_db_setting
-        export_dir = await get_db_setting(session, "export_dir", settings.EXPORT_DIR)
+        export_config = await network_folder_service.load_folder_config(
+            session, network_folder_service.EXPORT, settings,
+        )
     except Exception:
-        export_dir = settings.EXPORT_DIR
+        export_config = network_folder_service.FolderConfig(settings.EXPORT_DIR, "", "")
+    export_dir = export_config.path
 
     # Review-Status bestimmen
     review_status = ReviewStatus.OK
@@ -543,6 +648,9 @@ async def archive_document(
         review_status=review_status,
         ai_confidence=analysis.confidence,
         scanned_at=datetime.now(timezone.utc),
+        split_batch_id=split_part.batch_id if split_part else None,
+        split_part_index=split_part.part_index if split_part else None,
+        source_pages=split_part.source_pages if split_part else None,
     )
     # Steuerrelevant ohne Jahr (LLM liefert keins) -> Jahr ableiten, sonst taucht
     # der Beleg in keiner Steuer-Abfrage auf (die alle auf tax_year filtern).
@@ -556,13 +664,20 @@ async def archive_document(
             await session.flush()
     except IntegrityError as exc:
         existing = await find_active_duplicate(file_hash, session)
+        if existing is None and split_part is not None:
+            # ux_documents_split_part_active: dieser Teil ist schon archiviert
+            existing = await _find_active_split_part(split_part, session)
         if existing is not None:
             raise DuplicateDocumentError(existing.id, existing.title) from exc
         raise ArchiveDataError(f"Dokument konnte nicht gespeichert werden: {exc.orig}") from exc
 
-    # Tags erstellen (via junction table to avoid lazy-load issues)
-    if analysis.tags:
-        tags = await _get_or_create_tags(analysis.tags, session)
+    # Tags erstellen (via junction table to avoid lazy-load issues). Manuelle
+    # Tags des aufgeteilten Originals kommen dazu (gleicher Name -> ein Tag).
+    tag_names = list(analysis.tags or [])
+    if split_part is not None:
+        tag_names += list(split_part.inherited_tags)
+    if tag_names:
+        tags = await _get_or_create_tags(tag_names, session)
         for tag in tags:
             session.add(DocumentTag(document_id=document.id, tag_id=tag.id))
 
@@ -605,6 +720,21 @@ async def archive_document(
         ),
     )
     session.add(audit)
+    if split_part is not None:
+        session.add(AuditLog(
+            document_id=document.id,
+            action=AuditAction.SPLIT_CREATED,
+            details=json.dumps(
+                {
+                    "text": split_part.audit_text(),
+                    "split_batch_id": split_part.batch_id,
+                    "part": split_part.part_index,
+                    "parts": split_part.part_count,
+                    "source_pages": split_part.source_pages,
+                },
+                ensure_ascii=False,
+            ),
+        ))
 
     try:
         await session.flush()
@@ -624,20 +754,14 @@ async def archive_document(
         created_files.append(archive_path)
     logger.info("Datei archiviert: %s -> %s", file_path.name, archive_path)
 
-    # Export-Kopie in konfigurierten Zielordner (optional, graceful degradation)
-    if export_dir:
-        export_path = _build_archive_path(
-            export_dir, doc_type.value, doc_date, stored_filename,
-            scope_slug=scope.scope_slug,
-        )
-        try:
-            await asyncio.to_thread(_copy_file, archive_path, export_path)
-            if created_files is not None:
-                created_files.append(export_path)
-            logger.info("Export-Kopie erstellt: %s", export_path)
-        except Exception:
-            remove_created_files([export_path])
-            logger.warning("Export-Kopie fehlgeschlagen fuer %s", stored_filename, exc_info=True)
+    # Export-Kopie in den konfigurierten Zielordner (optional): erst NACH dem
+    # Commit des Aufrufers (R2) — Netzwerkverbindung und Kopie duerfen die
+    # SQLite-Schreibsperre dieser Transaktion nicht halten.
+    if export_dir and export_requests is not None:
+        export_requests.append(ExportRequest(
+            archive_path=archive_path, document_type=doc_type.value, document_date=doc_date,
+            stored_filename=stored_filename, scope_slug=scope.scope_slug, config=export_config,
+        ))
 
     # FTS-Index aktualisieren (in Savepoint, damit Fehler die Session nicht korrumpieren).
     # Werte inkl. Tags kommen aus der DB (reindex_document_fts) — identisch zu

@@ -68,3 +68,28 @@ def notify_system(
     )
     session.add(notification)
     return notification
+
+
+def notify_split_needed(
+    session: AsyncSession,
+    filename: str,
+    *,
+    parts: int,
+    uncertain: bool,
+) -> Notification:
+    """Stapel-PDF wartet im Aufteilungs-Editor (SPLIT_NEEDED, ohne Dokument —
+    das Frontend leitet auf /pruefen). ``parts``: vorgeschlagene Teilezahl."""
+    if parts >= 2:
+        message = f"„{filename}“ enthält vermutlich {parts} Dokumente – bitte prüfen."
+    elif uncertain:
+        message = f"„{filename}“ enthält möglicherweise mehrere Dokumente – bitte prüfen."
+    else:
+        message = f"Die Seiten von „{filename}“ sind erkannt – bitte aufteilen."
+    notification = Notification(
+        type=NotificationType.SPLIT_NEEDED,
+        title="Stapel aufteilen",
+        message=message,
+        document_id=None,
+    )
+    session.add(notification)
+    return notification

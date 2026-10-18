@@ -168,7 +168,12 @@ def _schema_facts(db: Path) -> dict:
             return out
 
         def fks(table):
-            return {(r[3], r[2], r[6]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
+            # split_batch_id kommt erst mit 018 (eigener Test) — der Vergleich
+            # 016 gegen create_all aus den aktuellen Models laesst es aus.
+            return {
+                (r[3], r[2], r[6]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")
+                if r[3] != "split_batch_id"
+            }
 
         def notnull(table, column):
             return next(bool(r[3]) for r in conn.execute(f"PRAGMA table_info({table})") if r[1] == column)

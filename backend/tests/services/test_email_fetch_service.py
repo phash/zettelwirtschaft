@@ -11,20 +11,17 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
-from app.config import Settings
-from app.models.email_account import EmailAccount, ScheduleType
+from app.models.email_account import EmailAccount
 from app.models.notification import Notification, NotificationType
 from app.models.processed_email import EmailStatus, ProcessedEmail
 from app.models.processing_job import JobSource, ProcessingJob
 from app.services import email_fetch_service
-from app.services.crypto_service import encrypt_password
 from app.services.email_fetch_service import (
     _connect_imap,
     fetch_emails_for_account,
     parse_email_message,
     test_imap_connection as imap_connection_test,
 )
-from tests.credentials import TEST_EMAIL_ENCRYPTION_KEY, TEST_IMAP_PASSWORD
 from tests.services.fake_imap import FakeImapServer
 
 TARGET = "Zettelwirtschaft/Verarbeitet"
@@ -191,30 +188,6 @@ def test_parse_without_message_id_uses_stable_surrogate():
 # ---------------------------------------------------------------------------
 # Abruf mit Fake-IMAP-Server
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def fernet_key() -> str:
-    return TEST_EMAIL_ENCRYPTION_KEY
-
-
-@pytest.fixture
-def mail_settings(test_settings, fernet_key) -> Settings:
-    return test_settings.model_copy(update={"EMAIL_ENCRYPTION_KEY": fernet_key, "IMAP_TIMEOUT": 2})
-
-
-@pytest.fixture
-async def account_id(db_session, fernet_key) -> int:
-    account = EmailAccount(
-        name="Test",
-        imap_host="imap.test.com",
-        username="user@test.com",
-        encrypted_password=encrypt_password(TEST_IMAP_PASSWORD, fernet_key),  # echte Verschluesselung
-        schedule_type=ScheduleType.MANUAL,
-    )
-    db_session.add(account)
-    await db_session.commit()
-    return account.id
 
 
 def _patch_imap(server: FakeImapServer):

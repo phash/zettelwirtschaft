@@ -2,7 +2,10 @@
 import { ref, onMounted, computed } from 'vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
-import { getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument } from '../services/api'
+import {
+  getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument,
+  getSplitBatches, splitPageThumbnailUrl,
+} from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
 import { typeLabels } from '../constants/documentTypes'
@@ -326,7 +329,35 @@ function suggestionsOf(q) {
   return typeof q.suggested_answers === 'string' ? q.suggested_answers.split('|') : q.suggested_answers
 }
 
-onMounted(loadReviewDocs)
+// --- Stapel zum Aufteilen (Spezifikation 12) ------------------------------
+// Stapel-PDFs, die im Aufteilungs-Editor auf eine Entscheidung warten. Ein
+// Fehler hier blockiert die Rückfragen nicht.
+const splitBatches = ref([])
+const splitTotal = ref(0)
+
+const SPLIT_SOURCE_LABELS = { UPLOAD: 'Upload', WATCH_FOLDER: 'Watch-Ordner', EMAIL: 'E-Mail', SPLIT_REQUEST: 'Dokument' }
+
+async function loadSplitBatches() {
+  try {
+    const data = await getSplitBatches({ status: 'PROPOSED', page_size: 50 })
+    splitBatches.value = data.items || []
+    splitTotal.value = data.total ?? splitBatches.value.length
+  } catch {
+    splitBatches.value = []
+    splitTotal.value = 0
+  }
+}
+
+function splitProposalLabel(batch) {
+  if (batch.proposed_parts > 1) return `Vorschlag: ${pluralize(batch.proposed_parts, 'Dokument', 'Dokumente')}`
+  if (batch.uncertain > 0) return 'Möglicherweise mehrere Dokumente'
+  return 'Noch nicht aufgeteilt'
+}
+
+onMounted(() => {
+  loadReviewDocs()
+  loadSplitBatches()
+})
 </script>
 
 <template>
@@ -338,6 +369,34 @@ onMounted(loadReviewDocs)
       </span>
     </div>
 
+    <!-- Stapel zum Aufteilen -->
+    <section v-if="splitBatches.length > 0" class="card space-y-3" data-testid="review-split-batches" aria-labelledby="review-split-heading">
+      <h2 id="review-split-heading" class="text-lg font-semibold text-gray-900">Stapel zum Aufteilen ({{ splitTotal }})</h2>
+      <ul class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <li v-for="batch in splitBatches" :key="batch.id">
+          <router-link
+            :to="`/aufteilen/${batch.id}`"
+            class="flex items-center gap-3 rounded-lg border border-gray-200 p-3 hover:border-primary-300 hover:bg-primary-50/40"
+            :data-testid="`review-split-${batch.id}`"
+          >
+            <img
+              :src="splitPageThumbnailUrl(batch.id, 1)"
+              alt=""
+              loading="lazy"
+              class="h-20 w-14 flex-shrink-0 rounded border border-gray-200 bg-white object-contain"
+            />
+            <span class="min-w-0">
+              <span class="block truncate text-sm font-medium text-gray-900">„{{ batch.original_filename }}“</span>
+              <span class="block text-xs text-gray-500">
+                {{ pluralize(batch.page_count, 'Seite', 'Seiten') }} · {{ SPLIT_SOURCE_LABELS[batch.job_source] || batch.job_source }}
+              </span>
+              <span class="mt-1 block text-xs font-medium text-primary-700">{{ splitProposalLabel(batch) }}</span>
+            </span>
+          </router-link>
+        </li>
+      </ul>
+    </section>
+
     <!-- Loading -->
     <div v-if="loading" class="flex items-center justify-center py-20">
       <div class="h-10 w-10 animate-spin rounded-full border-4 border-primary-200 border-t-primary-600"></div>
@@ -348,7 +407,7 @@ onMounted(loadReviewDocs)
       <svg class="mx-auto h-16 w-16 text-green-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <p class="mt-4 text-lg font-medium text-gray-600">Alles geprüft!</p>
+      <p class="mt-4 text-lg font-medium text-gray-600">{{ splitBatches.length ? 'Keine offenen Rückfragen' : 'Alles geprüft!' }}</p>
       <p class="mt-1 text-sm text-gray-400">Keine Dokumente mit offenen Rückfragen.</p>
     </div>
 

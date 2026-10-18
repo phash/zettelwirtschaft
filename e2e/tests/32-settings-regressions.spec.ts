@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
-import { setupBaseMocks, makeMockTask, mockBackgroundTaskPolling, MOCK_SYSTEM_HEALTH } from '../helpers/mock.helpers';
+import { setupBaseMocks, makeMockTask, mockBackgroundTaskPolling, mockSplitSettings, MOCK_SYSTEM_HEALTH } from '../helpers/mock.helpers';
 import type { TaskResponse } from '../helpers/api-types';
 
 // Regressionstests System-Seite: Ordner je Betriebsmodus, Vektor-Rebuild-
@@ -54,6 +54,7 @@ async function setupSettings(page: Page, opts: { folder?: Record<string, unknown
     route.fulfill({ json: { timezone: 'Europe/Berlin', unseen_only: true, max_per_run: 25, idle_interval_minutes: 5 } })
   );
   await page.route('**/api/email/accounts', (route) => route.fulfill({ json: [ACCOUNT] }));
+  await mockSplitSettings(page);
   await page.route('**/api/email/accounts/7', (route) => {
     if (route.request().method() === 'PUT') {
       state.accountPuts.push(route.request().postDataJSON() as Record<string, unknown>);

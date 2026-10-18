@@ -25,6 +25,12 @@ import type {
   ReviewStats,
   SavedSearchResponse,
   SearchResponse,
+  SplitBatchResponse,
+  SplitBatchListItem,
+  SplitPage,
+  SplitSettingsBody,
+  SplitSettingsResponse,
+  PaginatedSplitBatches,
   SuggestResponse,
   SystemHealthResponse,
   TagListItem,
@@ -126,7 +132,7 @@ export const MOCK_JOBS_EMPTY = {
   page_size: 20,
 } satisfies Paginated<JobStatusResponse>;
 
-function makeJob(overrides: Partial<JobStatusResponse> & Pick<JobStatusResponse, 'id' | 'original_filename' | 'status'>): JobStatusResponse {
+export function makeJob(overrides: Partial<JobStatusResponse> & Pick<JobStatusResponse, 'id' | 'original_filename' | 'status'>): JobStatusResponse {
   return {
     file_type: 'pdf',
     file_size_bytes: 120_000,
@@ -434,6 +440,7 @@ export const MOCK_REVIEW_STATS = {
   open_documents: 2,
   open_questions: 3,
   answered_questions: 40,
+  split_batches: 0,
 } satisfies ReviewStats;
 
 // Treffer-Markierung wie im Backend (search_service.HIGHLIGHT_START/END).
@@ -1067,6 +1074,10 @@ export async function setupReviewMocks(
   await page.route('**/api/review/stats', (route) =>
     route.fulfill({ json: MOCK_REVIEW_STATS })
   );
+  // Stapel zum Aufteilen: standardmaessig keine (Tests ueberschreiben per page.route)
+  await page.route('**/api/split?*', (route) =>
+    route.fulfill({ json: makeSplitBatchList([]) })
+  );
   // Mock the document file for preview
   await page.route('**/api/documents/*/file', (route) =>
     route.fulfill({
@@ -1219,6 +1230,28 @@ export async function setupSettingsMocks(page: Page) {
     return route.fallback();
   });
   await setupEmailMocks(page);
+  await mockSplitSettings(page);
+}
+
+/**
+ * Einstellungen der automatischen Stapel-Pruefung (System -> Verarbeitung).
+ * PUT echo't den Body; die empfangenen Bodies landen in der Rueckgabe.
+ */
+export async function mockSplitSettings(
+  page: Page,
+  initial: SplitSettingsResponse = { auto_enabled: true, min_pages: 3, use_llm: true, max_pages: 100 },
+) {
+  const state = { ...initial };
+  const puts: SplitSettingsBody[] = [];
+  await page.route('**/api/system/split-settings', (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as SplitSettingsBody;
+      puts.push(body);
+      Object.assign(state, body, { use_llm: body.use_llm ?? state.use_llm });
+    }
+    return route.fulfill({ json: state satisfies SplitSettingsResponse });
+  });
+  return puts;
 }
 
 /**
@@ -1387,4 +1420,105 @@ export async function mockBackgroundTaskPolling(
     return route.fulfill({ json: makeMockTask({ id: taskId, ...state }) });
   });
   return () => polls;
+}
+
+// ============================================================
+// Aufteilen von Stapel-Scans (Spezifikation 12)
+// ============================================================
+
+/** 1x1-PNG fuer Seiten-Vorschaubilder. */
+export const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+  'base64',
+);
+
+export function makeSplitPages(count: number, blank: number[] = []): SplitPage[] {
+  return Array.from({ length: count }, (_, i) => ({
+    n: i + 1,
+    w: 591.1,
+    h: 841.9,
+    rot: 0,
+    blank: blank.includes(i + 1),
+    ink: blank.includes(i + 1) ? 0.003 : 0.04,
+    source: blank.includes(i + 1) ? 'none' : 'ocr',
+    conf: blank.includes(i + 1) ? 0 : 0.78,
+  }));
+}
+
+export function makeSplitBatch(overrides: Partial<SplitBatchResponse> = {}): SplitBatchResponse {
+  const pageCount = overrides.page_count ?? 6;
+  return {
+    id: 'split-1',
+    origin: 'AUTO',
+    status: 'PROPOSED',
+    version: 1,
+    original_filename: 'scan_0427.pdf',
+    job_source: 'UPLOAD',
+    source_job_id: 'job-300',
+    source_document_id: null,
+    page_count: pageCount,
+    pages_done: pageCount,
+    pages: makeSplitPages(pageCount, [4]),
+    boundaries: [],
+    duplex: false,
+    duplex_conf: 0,
+    partial_from: null,
+    llm_used: false,
+    llm_unavailable: false,
+    excluded: [],
+    parts: [],
+    error_message: null,
+    error_code: null,
+    can_undo: false,
+    undo_blocked_reason: null,
+    created_at: '2026-10-18T09:00:00Z',
+    updated_at: '2026-10-18T09:03:00Z',
+    confirmed_at: null,
+    finished_at: null,
+    ...overrides,
+  };
+}
+
+export const MOCK_SPLIT_BATCH = makeSplitBatch();
+
+export function makeSplitListItem(overrides: Partial<SplitBatchListItem> = {}): SplitBatchListItem {
+  return {
+    id: 'split-1',
+    origin: 'AUTO',
+    status: 'PROPOSED',
+    original_filename: 'scan_0427.pdf',
+    job_source: 'WATCH_FOLDER',
+    page_count: 44,
+    pages_done: 44,
+    proposed_parts: 2,
+    uncertain: 0,
+    created_at: '2026-10-18T09:00:00Z',
+    ...overrides,
+  };
+}
+
+export function makeSplitBatchList(items: SplitBatchListItem[]): PaginatedSplitBatches {
+  return { items, total: items.length, page: 1, page_size: 50 };
+}
+
+/**
+ * Aufteilungs-Editor: GET /api/split/{id} liefert ``batch`` (bzw. die
+ * Antworten aus ``sequence`` nacheinander, die letzte bleibt stehen),
+ * Seitenbilder ein 1x1-PNG. Aktionen (confirm/keep-whole/discard) mockt der Test.
+ */
+export async function setupSplitEditorMocks(
+  page: Page,
+  batch: SplitBatchResponse = MOCK_SPLIT_BATCH,
+  sequence: SplitBatchResponse[] = [],
+) {
+  await setupBaseMocks(page);
+  const responses = sequence.length ? [...sequence] : [batch];
+  await page.route(`**/api/split/${batch.id}`, (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const next = responses.length > 1 ? responses.shift()! : responses[0];
+    return route.fulfill({ json: next });
+  });
+  await page.route(`**/api/split/${batch.id}/pages/*/*`, (route) =>
+    route.fulfill({ status: 200, contentType: 'image/png', body: TINY_PNG })
+  );
 }

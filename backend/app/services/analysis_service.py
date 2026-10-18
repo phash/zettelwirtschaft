@@ -17,7 +17,7 @@ from app.core.normalize import (
     normalize_tax_category,
 )
 from app.services.llm_service import call_llm, chat_json, fill_prompt, load_prompt_template
-from app.services.ocr_service import OcrResult, extract_text
+from app.services.ocr_service import OcrResult, PageText, extract_text, ocr_result_from_pages
 from app.services.ollama_client import OllamaError, OllamaErrorKind
 
 logger = logging.getLogger("zettelwirtschaft.analysis")
@@ -724,7 +724,8 @@ async def _try_sequential_analysis(
 
 
 # AVAIL-06: Prozessweit hoechstens ANALYSIS_CONCURRENCY Analysen (OCR + LLM)
-# gleichzeitig — Queue-Worker und Re-Analysen teilen sich den Slot
+# gleichzeitig — Queue-Worker, Re-Analysen und der KI-Pass der Aufteilung
+# (split_llm_service) teilen sich den Slot
 # ("ein Dokument gleichzeitig", Heim-Hardware). Frueher liefen beliebig viele
 # Re-Analysen parallel zum Worker; Ollama-Timeouts kaskadierten und neue Uploads
 # fielen in NEEDS_REVIEW. Ein Semaphore pro Event-Loop (asyncio-Primitive binden
@@ -735,7 +736,8 @@ _analysis_slots: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.S
 )
 
 
-def _analysis_slot() -> asyncio.Semaphore:
+def analysis_slot() -> asyncio.Semaphore:
+    """Prozessweiter Slot fuer OCR + LLM (auch der KI-Pass der Aufteilung)."""
     loop = asyncio.get_running_loop()
     slot = _analysis_slots.get(loop)
     if slot is None:
@@ -750,13 +752,15 @@ async def analyze_document(
     filing_scopes: list[dict] | None = None,
     session=None,
     pre_ocr_text: str | None = None,
+    pre_ocr_pages: tuple[list[PageText], int] | None = None,
 ) -> tuple[OcrResult | None, AnalysisResult | None]:
     """Dokumentenanalyse mit prozessweitem Concurrency-Slot (AVAIL-06), siehe
     :func:`_analyze_document_unlimited`."""
-    async with _analysis_slot():
+    async with analysis_slot():
         return await _analyze_document_unlimited(
             file_path, file_type, settings,
             filing_scopes=filing_scopes, session=session, pre_ocr_text=pre_ocr_text,
+            pre_ocr_pages=pre_ocr_pages,
         )
 
 
@@ -767,6 +771,7 @@ async def _analyze_document_unlimited(
     filing_scopes: list[dict] | None = None,
     session=None,
     pre_ocr_text: str | None = None,
+    pre_ocr_pages: tuple[list[PageText], int] | None = None,
 ) -> tuple[OcrResult | None, AnalysisResult | None]:
     """Fuehrt die vollstaendige Dokumentenanalyse durch.
 
@@ -790,6 +795,9 @@ async def _analyze_document_unlimited(
         pre_ocr_text: F-07: vorher bekannter Text (z.B. E-Mail-Body). Wenn
             gesetzt, wird OCR uebersprungen und der Text direkt verwendet.
             Konfidenz wird auf 1.0 angenommen.
+        pre_ocr_pages: Seitentext aus der Aufteilungs-Erkennung als
+            ``(Seiten, Seitenzahl)`` (Teil-Jobs, "Als ein Dokument behalten").
+            OCR wird uebersprungen; Konfidenz = Mittelwert der Seiten.
 
     Returns:
         Tuple aus (OcrResult, AnalysisResult). OcrResult kann None sein.
@@ -799,7 +807,12 @@ async def _analyze_document_unlimited(
         ocr_result = OcrResult(full_text=pre_ocr_text, average_confidence=1.0, pages=[])
         logger.info("OCR uebersprungen (pre_ocr_text vorhanden, %d Zeichen)", len(pre_ocr_text))
     else:
-        ocr_result = await extract_text(file_path, file_type, settings)
+        if pre_ocr_pages is not None:
+            pages, page_count = pre_ocr_pages
+            ocr_result = ocr_result_from_pages(pages, page_count)
+            logger.info("OCR uebersprungen (Seitentext aus der Aufteilung, %d Seiten)", page_count)
+        else:
+            ocr_result = await extract_text(file_path, file_type, settings)
         if not ocr_result or not ocr_result.full_text.strip():
             logger.warning("OCR hat keinen Text extrahiert fuer: %s", file_path.name)
             return ocr_result, AnalysisResult(

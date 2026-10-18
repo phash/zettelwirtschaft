@@ -25,6 +25,14 @@ import app.models.chat_message  # noqa: F401
 import app.models.email_account  # noqa: F401
 import app.models.processed_email  # noqa: F401
 import app.models.background_task  # noqa: F401
+import app.models.split_batch  # noqa: F401
+
+# Gemeinsame Fixtures, die mehrere Testmodule nutzen (statt Fixture-Importen
+# aus anderen Testmodulen). autouse-Fixtures sind dort bewusst NICHT autouse.
+pytest_plugins = [
+    "tests.support.split_fixtures",
+    "tests.support.email_fixtures",
+]
 
 
 @pytest.fixture
@@ -78,19 +86,56 @@ def _reset_process_caches():
     Ergebnis eines Tests (Health-Cache, Rate-Limit-Zaehler, Login-Versuche)
     von der Reihenfolge ab."""
     from app.api import auth, system
-    from app.core.rate_limit import limiter
-    from app.services import ollama_client, vectorize_service
+    from app.core.rate_limit import limiter, network_folder_limiter
+    from app.services import network_folder_service, ollama_client, vectorize_service
 
     def _reset():
         ollama_client.reset_health_cache()
         vectorize_service._reachable_cache = None
         system._reset_system_info_cache()
         limiter.reset()
+        network_folder_limiter.reset()
         auth.reset_login_state()
+        network_folder_service.status.clear()
+        network_folder_service._reset_export_backoff()
 
     _reset()
     yield
     _reset()
+
+
+FAKE_OWN_ADDRESS = "192.0.2.250"       # TEST-NET-1: "eigene" Adresse in Tests
+FAKE_FOREIGN_ADDRESS = "198.51.100.1"  # TEST-NET-2: fremder Server
+
+
+@pytest.fixture(autouse=True)
+def fake_share_api(monkeypatch):
+    """Keine echten SMB-Verbindungen, Freigaben oder Registry-Abfragen in Tests:
+    gefaelschte Windows-Netzwerk-API, frischer Connection-Manager und eine
+    DNS-Aufloesung ohne Netz. Tests setzen ``resolve_map`` bei Bedarf
+    (``[]`` = nicht aufloesbar); unbekannte Hosts loesen auf eine fremde
+    Testadresse auf, der eigene Rechnername auf eine eigene."""
+    import socket
+
+    from app.core import network_share
+    from tests.fake_share import FakeShareApi
+
+    api = FakeShareApi()
+    monkeypatch.setattr(network_share, "_api", api)
+    monkeypatch.setattr(network_share, "connections", network_share.ShareConnections())
+    resolve_map = api.resolve_map
+    own = socket.gethostname().lower()
+
+    def fake_resolve(host: str) -> list[str]:
+        h = host.lower()
+        if h in resolve_map:
+            return list(resolve_map[h])
+        if h in (own, own.split(".")[0]):
+            return [FAKE_OWN_ADDRESS]
+        return [FAKE_FOREIGN_ADDRESS]
+
+    monkeypatch.setattr(network_share, "_resolve_addresses", fake_resolve)
+    yield api
 
 
 @pytest.fixture

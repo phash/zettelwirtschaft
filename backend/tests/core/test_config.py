@@ -92,6 +92,20 @@ class TestDeploymentMode:
         assert [str(n) for n in Settings().trusted_proxy_networks] == ["172.16.0.0/12"]
 
 
+class TestSplitSettings:
+    @pytest.mark.parametrize("name", ["SPLIT_MAX_PAGES", "SPLIT_MAX_PARTS"])
+    def test_limits_above_the_confirm_body_caps_are_rejected(self, name):
+        """Der Bestaetigen-Request begrenzt Seiten je Teil/Ausschluesse und
+        Teile (schemas/split.py). Lagen die Grenzen darueber, liesse sich ein
+        erlaubter Stapel nicht mehr bestaetigen (422)."""
+        from app.schemas.split import SPLIT_PAGES_HARD_LIMIT, SPLIT_PARTS_HARD_LIMIT
+
+        limit = SPLIT_PAGES_HARD_LIMIT if name == "SPLIT_MAX_PAGES" else SPLIT_PARTS_HARD_LIMIT
+        assert getattr(Settings(**{name: limit}), name) == limit
+        with pytest.raises(ValidationError, match=name):
+            Settings(**{name: limit + 1})
+
+
 class TestEmailSettings:
     @pytest.mark.parametrize("name", ["IMAP_TIMEOUT", "EMAIL_MAX_PER_RUN"])
     def test_non_positive_values_are_rejected(self, name):

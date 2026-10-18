@@ -28,6 +28,14 @@ DeploymentMode = Literal["native", "docker", "dev"]
 # Marker-Dateien, die Docker bzw. Podman in jedem Container anlegen.
 _CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
 
+# Obergrenzen der Aufteilung: der Bestaetigen-Request (schemas/split.py)
+# begrenzt Seiten je Teil/Ausschluesse bzw. Teile auf diese Werte, damit
+# ueberlange Bodies abgewiesen werden. SPLIT_MAX_PAGES/SPLIT_MAX_PARTS duerfen
+# nicht darueber liegen — sonst liesse sich ein erlaubter Stapel nicht
+# bestaetigen.
+SPLIT_PAGES_HARD_LIMIT = 1000
+SPLIT_PARTS_HARD_LIMIT = 500
+
 
 def _is_frozen() -> bool:
     """True im PyInstaller-Bundle (Native-Windows-Setup)."""
@@ -88,7 +96,18 @@ class Settings(BaseSettings):
     # LocalSystem — schon die Pfadpruefung wuerde das Maschinenkonto am
     # angegebenen Server anmelden (NTLM-Relay), der Export ginge dorthin.
     # Nur auf einem Host mit vertrauenswuerdiger Freigabe einschalten.
+    # Seit 1.7 fuer den normalen Ablauf nicht mehr noetig: in den Einstellungen
+    # \\server\freigabe mit Benutzer + Passwort der Freigabe eintragen — das
+    # Backend verbindet sich dann selbst (core/network_share.py). Der Schalter
+    # bleibt Experten-Override fuer UNC OHNE Zugangsdaten (Computerkonto).
     ALLOW_NETWORK_FOLDERS: bool = False
+    # Pruefintervall (Sekunden, 10-600) fuer Netzwerk-Watch-Ordner, falls in
+    # der UI nichts gespeichert ist (SMB-Aenderungsbenachrichtigungen sind
+    # ueber das Netz unzuverlaessig -> Polling).
+    WATCH_POLL_INTERVAL: int = 30
+    # Auch lokale Watch-Ordner per Polling statt Dateisystem-Ereignissen
+    # ueberwachen (z.B. Docker mit CIFS-Volume: inotify sieht dort nichts).
+    WATCH_FORCE_POLLING: bool = False
     # Optional: Pfad zum Frontend-Build (Native: vom Installer gesetzt).
     # Leer = nicht serven (Docker-Pfad ueber nginx).
     FRONTEND_DIST_DIR: str = ""
@@ -129,6 +148,28 @@ class Settings(BaseSettings):
     OCR_LANGUAGES: str = "deu+eng"
     CONFIDENCE_THRESHOLD: float = 0.7
     MAX_OCR_PAGES: int = 10
+
+    # Mehrdokument-Scans aufteilen (Spezifikation 12). Die Erkennung braucht
+    # den Text JEDER Seite (MAX_OCR_PAGES gilt dort bewusst nicht) — daher die
+    # eigenen Grenzen: hoechstens SPLIT_MAX_PAGES Seiten (darueber normale
+    # Pipeline), hoechstens SPLIT_MAX_PARTS Teile pro Stapel.
+    SPLIT_MAX_PAGES: int = 100
+    # Automatische Pruefung: PDFs ab SPLIT_MIN_PAGES Seiten aus Upload,
+    # Watch-Ordner und E-Mail werden vor der Analyse auf mehrere Dokumente
+    # geprueft. Defaults — in der Oberflaeche (System -> Verarbeitung)
+    # ueberschreibbar (DB-Einstellungen split_auto_enabled/split_min_pages).
+    SPLIT_AUTO_ENABLED: bool = True
+    SPLIT_MIN_PAGES: int = 3
+    # Optionaler KI-Pass (ein LLM-Aufruf je Stapel) fuer unsichere Uebergaenge;
+    # per UI ueberschreibbar (DB-Einstellung split_use_llm).
+    SPLIT_USE_LLM: bool = True
+    SPLIT_TIME_BUDGET_S: int = 1200
+    # Anteil dunkler Pixel, unter dem eine Seite als Leerseite gilt (ohne OCR).
+    SPLIT_BLANK_INK: float = 0.005
+    SPLIT_MAX_PARTS: int = 50
+    # Aufbewahrung der Stapeldatei nach Abschluss (fuer "rueckgaengig").
+    SPLIT_KEEP_SOURCE_DAYS: int = 30
+    SPLIT_THUMBNAIL_WIDTH: int = 200
 
     MAX_UPLOAD_SIZE_MB: int = 50
     ALLOWED_FILE_TYPES: str = "pdf,jpg,jpeg,png,tiff,bmp"
@@ -232,6 +273,23 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_split_settings(self) -> "Settings":
+        for name in ("SPLIT_MAX_PAGES", "SPLIT_TIME_BUDGET_S", "SPLIT_MAX_PARTS", "SPLIT_THUMBNAIL_WIDTH"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} muss groesser als 0 sein")
+        if self.SPLIT_MAX_PAGES > SPLIT_PAGES_HARD_LIMIT:
+            raise ValueError(f"SPLIT_MAX_PAGES darf hoechstens {SPLIT_PAGES_HARD_LIMIT} sein")
+        if self.SPLIT_MAX_PARTS > SPLIT_PARTS_HARD_LIMIT:
+            raise ValueError(f"SPLIT_MAX_PARTS darf hoechstens {SPLIT_PARTS_HARD_LIMIT} sein")
+        if self.SPLIT_MIN_PAGES < 2:
+            raise ValueError("SPLIT_MIN_PAGES muss mindestens 2 sein")
+        if self.SPLIT_KEEP_SOURCE_DAYS < 0:
+            raise ValueError("SPLIT_KEEP_SOURCE_DAYS darf nicht negativ sein")
+        if not 0.0 <= self.SPLIT_BLANK_INK < 1.0:
+            raise ValueError("SPLIT_BLANK_INK muss zwischen 0 und 1 liegen")
+        return self
+
+    @model_validator(mode="after")
     def _validate_email_settings(self) -> "Settings":
         # IMAP_TIMEOUT=0 wuerde den Socket non-blocking schalten, ein Limit 0
         # wuerde nie eine Mail abholen.
@@ -284,6 +342,17 @@ class Settings(BaseSettings):
         """Datenordner (Elternordner von ARCHIVE_DIR) — Basis fuer backups/,
         .host-mounts.json, .install-path usw."""
         return Path(self.ARCHIVE_DIR).parent
+
+    @property
+    def split_dir(self) -> Path:
+        """Ablage aufzuteilender Stapel (``<data>/split/<batch_id>/``): Stapel-
+        und Teildateien. Liegt im Datenordner — Vollbackup enthaelt sie."""
+        return self.data_dir / "split"
+
+    @property
+    def split_thumbnail_dir(self) -> Path:
+        """Seiten-Vorschaubilder der Stapel (``THUMBNAIL_DIR/split/<batch_id>/``)."""
+        return Path(self.THUMBNAIL_DIR) / "split"
 
     @property
     def sqlite_db_path(self) -> Path:

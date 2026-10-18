@@ -76,8 +76,11 @@ export default defineConfig({
             // Backup-Downloads (ZIP mit kompletter DB, bei /full auch allen
             // Dokumenten) duerfen NIE in Cache Storage landen.
             // NetworkOnly MUSS vor der breiten /api/-Regel stehen.
+            // Seitenbilder des Aufteilungs-Editors (/api/split/<id>/pages/<n>/
+            // thumbnail|preview) sind ebenfalls Binaerdaten.
             urlPattern: ({ url }) =>
               /\/api\/.*\/(file|thumbnail)$/.test(url.pathname) ||
+              /^\/api\/split\/[^/]+\/pages\//.test(url.pathname) ||
               url.pathname.startsWith('/api/system/backups/'),
             handler: 'NetworkOnly',
           },
