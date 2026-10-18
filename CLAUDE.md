@@ -54,11 +54,18 @@ cd e2e && npx playwright test     # baut Frontend + vite preview auf :4181 (E2E_
 #   - Python 3.13, Node 22, NSIS 3.x (makensis im PATH)
 #   - tools/tesseract/, tools/poppler/, tools/nssm/win64/nssm.exe vorbereitet
 
-pip install -r backend/requirements.txt -r backend/requirements-build.txt
+pip install -r backend/requirements.txt -r backend/requirements-build.txt  # chromadb-client wird vom Build-Skript ersetzt
 pwsh scripts/build-native.ps1
 
 # Output: Zettelwirtschaft-<version>-Native-Setup.exe + dist/native/
 ```
+
+**Release** (Branch-Regel verlangt ein Review → Merge per `gh pr merge --admin` nur nach OK des Owners):
+`release/<v>` → PR auf main → GitGuardian grün → Merge → `git tag -a v<v>` + push (release.yml:
+Tests, GHCR-Images, GitHub-Release) → Native bauen und
+`gh release upload v<v> Zettelwirtschaft-<v>-Native-Setup.exe Zettelwirtschaft-<v>-native-update.zip`.
+GitGuardian scannt ALLE Commits des PR — ein Passwort-Literal in einem frühen Commit bleibt rot,
+auch wenn es später entfernt wurde. Webseiten-Deploy: siehe Memory `release-deployment.md`.
 
 **Lokale CI** (GitHub Actions deaktiviert, siehe `.github/workflows/ci.yml.disabled`):
 
@@ -90,39 +97,12 @@ Die Modelle (`OLLAMA_MODEL` + `EMBEDDING_MODEL`) zieht das Backend beim Start se
 
 Logs: `~/Documents/Zettelwirtschaft/logs/backend.log` (NSSM-Rotation bei 10 MB).
 
-**Migration Docker → Native** (Bestandskunden, getestet 2026-05):
-
-1. **Backup** (Pflicht vor Migration):
-   ```powershell
-   $bak = "$env:USERPROFILE\Documents\Zettelwirtschaft-Backups"
-   Compress-Archive "$env:LOCALAPPDATA\Zettelwirtschaft\data","$env:LOCALAPPDATA\Zettelwirtschaft\.env" `
-       -DestinationPath "$bak\pre-native_$(Get-Date -f yyyyMMdd_HHmmss).zip"
-   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v "${bak}:/dst" alpine `
-       tar czf /dst/chromadb-volume.tar.gz -C /src .
-   ```
-2. **Daten kopieren** in Native-Datenordner (`robocopy` mit `/E`):
-   `robocopy %LOCALAPPDATA%\Zettelwirtschaft\data ~/Documents/Zettelwirtschaft/data /E`
-3. **config.toml generieren** aus alter `.env`:
-   `pwsh scripts/Convert-Env-To-Config.ps1 -EnvPath ... -OutPath ... -DataDir ...`
-4. **Docker stoppen**: `docker compose down` im alten AppData-Ordner.
-5. **ChromaDB-Volume migrieren** ueber `C:\Temp`-Zwischenstation (Docker kann User-Pfade auf Windows nicht direkt mounten):
-   ```
-   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v C:\Temp\chroma:/dst alpine cp -r /src/. /dst/
-   robocopy C:\Temp\chroma ~/Documents/Zettelwirtschaft/data/chromadb /E
-   ```
-   Alternativ: leerer Ordner → Backend re-indexiert beim ersten Start (~ 30s pro 1000 Docs).
-6. **Service installieren:** `Zettelwirtschaft-<version>-Native-Setup.exe` ausführen und als
-   Datenordner den Ordner mit der neuen `config.toml` wählen (bestehende config.toml bleibt,
-   PIN/Keys werden nicht neu erzeugt). Früher manuell per
-   `scripts/service-install.bat <install-dir> <config> <log-dir>` (Admin) — solche
-   Installationen übernimmt das Setup ab v1.6.1 (siehe „Manuell eingerichtete Installation“).
-7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder neu ziehen lassen: das Backend
-   pullt fehlende Modelle beim Start automatisch. Manuell: `ollama pull <EMBEDDING_MODEL>` +
-   `ollama pull <OLLAMA_MODEL>` — **exakt** die Tags aus `config.toml` (`gemma4:12b` ist ein
-   anderer Tag als `gemma4:12b-it-qat`). `Convert-Env-To-Config.ps1` uebernimmt die Modelle der
-   alten `.env`; fehlt dort ein Eintrag, lief die Installation mit dem alten Default — der
-   Konverter setzt dann bewusst `qwen2.5:7b-instruct` / `bge-m3` (nicht die neuen Defaults).
-   Ollama muss **>= 0.30.3** sein (gemma4/qwen3-embedding; getestet 0.40.5).
+**Migration Docker → Native** (Bestandskunden): Runbook in
+`planung/native-windows-konzept.md` Abschnitt 7.5 (Backup → robocopy → `Convert-Env-To-Config.ps1`
+→ `docker compose down` → ChromaDB-Volume oder Re-Index → Setup.exe mit vorhandener config.toml).
+Ollama-Modelle: **exakt** die Tags aus `config.toml` (`gemma4:12b` ≠ `gemma4:12b-it-qat`); der
+Konverter uebernimmt die Modelle der alten `.env` bzw. setzt die alten Defaults
+`qwen2.5:7b-instruct`/`bge-m3`. Ollama >= 0.30.3 (getestet 0.40.5).
 
 **Manuell eingerichtete Installation** (Dienst per `service-install.bat`, kein
 `HKLM\SOFTWARE\Zettelwirtschaft`, ab v1.6.1): einfach die neue Setup.exe starten. Sie
@@ -345,10 +325,21 @@ zettelwirtschaft/
         install_dir.py           # native_install_dir(): <install> aus sys.executable (nur PyInstaller-Bundle)
         sqlite_migration.py      # Idempotenz-Helfer fuer Rebuild-Migrationen
         text_utils.py            # Slugs + Dateinamen mit deutscher Transliteration (ä -> ae)
+        data_dirs.py             # ensure_startup_dirs: Datenordner beim Start anlegen (Lifespan + Native-Entrypoint)
+        network_share.py         # UNC + Zugangsdaten: WNetAddConnection2W, Laufwerks-/subst-Aufloesung (Native)
+        host_guard.py            # Host-/Origin-Pruefung gegen DNS-Rebinding und CSRF
+        security_headers.py      # CSP & Co. im Native-Betrieb (Docker: nginx)
+        image_safety.py          # open_image: Decompression-Bomb-Limit fuer alle Pillow-Pfade
+        prompt_safety.py         # gemeinsamer Delimiter-Sanitizer fuer LLM-Prompts
+        public_errors.py         # internal_error_message: Client-Fehlertexte ohne Exception-Details
+        version.py               # read_app_version: einzige Quelle der App-Version im Backend
       prompts/                   # LLM-Prompt-Templates (Textdateien, inkl. rag_answer.txt, email_relevance.txt)
     alembic/                     # DB-Migrationen (siehe ### Alembic-Migrationen)
     requirements.txt
     Dockerfile
+    tests/                       # api/ services/ core/ models/ (+ Migrations-Tests im Wurzelordner); support/ = Fixture-Plugins, fake_share.py (WNet-Fake)
+  scripts/                       # build-native.ps1, fetch-build-tools.ps1, service-install.bat, legacy-install.ps1,
+                                 # freigabe-einrichten.ps1, model-tiers.ps1, update-wizard.ps1, ci-local.*, test-scripts.ps1
   frontend/
     src/
       components/
@@ -599,6 +590,9 @@ User-Frage
   (nicht bei Lese-Timeout/4xx).
 - Decimal fuer Geldbetraege (`Document.amount`, Tax-Aggregation). Pydantic-Schemas
   serialisieren mit `@field_serializer` als float zurueck (API-Stabilitaet).
+- SQLAlchemy 2.1: `noload` deprecated (-> `raiseload`/`lazy="raise"`); Autoflush auch vor
+  `text()`/Core-Statements -> nach Flush expired `onupdate`-Spalten (updated_at) vor der
+  Response-Validierung `refresh()`en, sonst MissingGreenlet.
 
 ### Frontend (Vue.js)
 - Composition API mit `<script setup>` (keine Options API)
@@ -630,7 +624,7 @@ User-Frage
 - **Programmordner-Rechte (INFRA-03):** `scripts/secure-install-dir.ps1` setzt `<install>` auf SYSTEM/Administratoren F,
   Benutzer RX (Setup vor dem Entpacken aus `$PLUGINSDIR`, Update-Wizard vor dem Backup aus dem Update-Paket). Setup
   installiert ausserhalb von `$PROGRAMFILES64` nur in neue/leere Ordner.
-- **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit). Bundle ist ~187 MB / 1842 Files.
+- **PyInstaller-Spec:** `backend/zettelwirtschaft.spec` (Onedir, kein UPX, kein onefile-Mode wegen Antivirus + Startup-Zeit). Setup.exe ~170 MB (Stand 1.7.0).
 - **Entrypoint:** `backend/app/entrypoint.py` mit `--config`, `--migrate-only`, `--version`. Bei `frozen` Bundle Alembic via Public-API (`alembic.command.upgrade`), kein subprocess.
 - **bin_paths.py** wird in `main.py` SEHR FRUEH importiert (vor pdf2image/pytesseract), setzt PATH+TESSDATA_PREFIX+pytesseract.tesseract_cmd auf gebundeltes `<install>/bin/`. No-op im Dev/Docker.
 - **ChromaDB embedded:** `_get_chroma_client` schaltet via `CHROMADB_MODE` zwischen `PersistentClient(path=...)` (native) und `HttpClient` (docker).
@@ -639,7 +633,7 @@ User-Frage
 - **Migration aus Docker:** `scripts/Convert-Env-To-Config.ps1` mapt `.env`-Keys auf TOML.
 
 **Kritische Build-Gotchas:**
-- **chromadb vs chromadb-client:** PyInstaller braucht `chromadb` (full mit `PersistentClient`), NICHT `chromadb-client` (HTTP-only). Beide nutzen den `chromadb`-Namespace — Konflikt. `build-native.ps1` deinstalliert chromadb-client und installiert `chromadb` aus `requirements-build.txt`. Symptom bei Fehler: `RuntimeError: Chroma is running in http-only client mode`.
+- **chromadb vs chromadb-client:** PyInstaller braucht `chromadb` (full mit `PersistentClient`), NICHT `chromadb-client` (HTTP-only). Beide nutzen den `chromadb`-Namespace — Konflikt. `build-native.ps1` deinstalliert chromadb-client, installiert danach die `chromadb`-Zeile aus `requirements-build.txt` per `--force-reinstall --no-deps` neu (der Uninstall loescht geteilte Dateien) und bricht ab, wenn kein `PersistentClient` angelegt werden kann. Falle: `pip install -r requirements-dev.txt` im Build-venv zieht chromadb-client wieder hinein. Symptom: `RuntimeError: Chroma is running in http-only client mode`.
 - **PRAGMA foreign_keys=ON:** siehe Alembic-Sektion oben. Ohne den Event-Listener sind FK-Constraints zur Laufzeit wirkungslos.
 - **pypdfium2 (Aufteilen, v1.7):** `pypdfium2` + `pypdfium2_raw` in den `hiddenimports`, `collect_dynamic_libs("pypdfium2_raw")` als `binaries` (die `version.json`-Daten sammeln die Hooks aus pyinstaller-hooks-contrib). `build-native.ps1` bricht ab, wenn `pdfium.dll` oder eine der beiden `version.json` fehlt, und ruft danach `zettelwirtschaft-backend.exe --self-test-pdfium` (laedt die DLL, schneidet im Speicher, braucht keine Config). Docker: Wheel bringt die `.so` mit, kein Systempaket noetig.
 - **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. Docker (`migrate.py:main`) und Native (`entrypoint.py:_run_migrations`) nutzen dieselben Helfer aus `migrate.py`: `is_fresh_db` → `create_fresh_schema` (create_all) + Stamp auf head; danach `ensure_default_filing_scope` (seedet "Privat", das sonst nur Migration 005 anlegt).
@@ -681,54 +675,9 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   ausserhalb des Repos, keine Personendaten). Offen (optional): Seiten-Fingerprint, um
   denselben Teil aus einem anderen Stapel zu erkennen.
 
-**Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27 + Phasen 1-6 + Re-Review):
-
-- 3 BLOCKER + 13 HIGH + 11 MEDIUM aus initialem Code-Review gefixt
-- 7 von 8 SECURITY-Findings (NEW-001..009) aus alten Audits gefixt
-- **Phasen 1-6 (internes Code-Review):** Top-7 Blocker + 12 High + 7 Mid +
-  alle Re-Review-Findings bis Mid (R-01 PDF-Bug, K-2 PRAGMA foreign_keys=ON,
-  K-3 Decimal-Serializer, R-06 Email-FAILED-Pfad, ChromaDB-Scope-Fallback,
-  RAG-Prompt-Injection-Sanitizer, Heartbeat fuer Stuck-Job-Recovery,
-  LLM-Service-Singleton-Client + Backoff, useFilingScopes-Composable,
-  Migration 013 FK+Indexes, Decimal-Umstellung).
-- **PIN-Schutz**: Default-PIN beim Install (auto-generierter 6-stelliger Code),
-  UI-Banner via `pin_warning`-Flag wenn deaktiviert, Cookie `Secure`+`SameSite=strict`
-- LLM-Pipeline: gemma4 + qwen3-embedding (v1.6, vorher qwen2.5 + bge-m3), JSON-Schema-Mode, Few-Shot, Hybrid-RRF, OCR-Preprocess,
-  optional Reranker + Verifier
-- Lib-Stand (Frontend/E2E aktualisiert in v1.6.0): Vite 8.3, vite-plugin-pwa 2.0,
-  Vue 3.5.44, Pinia 4.1, vue-router 5.4, Tailwind 4.3.3, axios 1.20, Playwright 1.64,
-  TypeScript 7 (e2e, nur `npm run typecheck`), Node 24 (Docker `node:24-alpine`,
-  nginx `1.30-alpine`); Backend (v1.6.0): Python 3.13, FastAPI 0.143, Starlette 1.8,
-  uvicorn 0.54, SQLAlchemy 2.1.5, alembic 1.20, pydantic-settings 2.16, Pillow 13.0,
-  reportlab 5.0, cryptography 50, ChromaDB 1.5.9 (Client+Server), pyinstaller 6.22,
-  pytest 9.1 / pytest-asyncio 1.4 (nur `requirements-dev.txt`), limits 5.x (statt slowapi),
-  Ollama-Image gepinnt `0.40.5`.
-  SQLAlchemy-2.1-Gotchas: `noload` deprecated (-> `raiseload`/`lazy="raise"`);
-  Autoflush jetzt auch vor `text()`/Core-Statements -> nach Flush expired
-  `onupdate`-Spalten (updated_at) vor Response-Validierung `refresh()`en, sonst
-  MissingGreenlet.
-
-**Native-Windows (Phasen 1+2 abgeschlossen + Migrations-Pfad verifiziert, ab v1.3):**
-
-Foundation (siehe `### Native-Windows`-Sektion oben und
-`planung/native-windows-konzept.md`):
-- Settings via TOML, ChromaDB embedded-Modus, Frontend StaticFiles + SPA-Catch-All,
-  bin_paths.py fuer Tesseract+poppler, programmatischer uvicorn-Start,
-  Fresh-DB-create_all, PRAGMA foreign_keys=ON Event-Listener.
-
-Build + Install:
-- `scripts/build-native.ps1` end-to-end getestet: 187 MB Bundle, alle Endpoints OK.
-- `scripts/fetch-build-tools.ps1` idempotenter Tool-Download (poppler, NSSM, Tesseract).
-- `setup-native.nsi` NSIS-Installer mit Datenordner-Wahl, Auto-PIN, Firewall-Rule.
-- Service-Install via `scripts/service-install.bat` (NSSM, Admin) — registriert
-  `ZettelwirtschaftBackend` mit AutoStart + Log-Rotation (+ Dependency auf einen
-  `Ollama`-Dienst, falls vorhanden).
-
-Migration aus Docker (auf echter Installation mit 35 Dokumenten + 29 MB Archive
-durchgespielt): siehe `## Native-Service-Ops` oben.
-
-Naechste Phasen (3-4 laut Konzept): Migrations-Wizard im NSIS-Installer integrieren
-(aktuell manueller PowerShell-Flow), Tray-Icon, Code-Signing (Authenticode-Cert).
+**Historie** (Review-/Hardening-Phasen, Lib-Stände, Native-Phasen 1+2): siehe Changelog in
+`README.md` und `planung/native-windows-konzept.md`. Offen laut Konzept (Phasen 3-4):
+Tray-Icon, Code-Signing (Authenticode-Cert).
 
 ### Architektur-Details: Version-Tracking
 > Read `memory/release-deployment.md` before working on releases, installer, or Docker.
@@ -789,6 +738,10 @@ Keine festen Testzahlen hier (veralten mit jedem Test) — aktuell:
   Gemeinsame Factories in `tests/factories.py` (`make_document`, UUID-`file_hash`), HTTP-Client
   ueber `tests/conftest.make_test_client(settings, session_factory)` — Varianten bauen nur
   andere Settings (`test_settings.model_copy(update=...)`). Ollama/ChromaDB werden immer gemockt.
+  Gemeinsame Fixtures als Plugins in `tests/support/` (`split_fixtures.py`, `email_fixtures.py`,
+  geladen per `pytest_plugins` in `conftest.py`) — nie Fixtures zwischen Testmodulen importieren
+  (Ruff F811). Tests, die `EphemeralClient`/`PersistentClient` brauchen, nutzen die Fixture
+  `requires_full_chromadb` (ueberspringt mit `chromadb-client`, also in release.yml/Docker).
 - **E2E** (Playwright + TypeScript), zwei Projekte: chromium (Desktop) + mobile (Pixel 5),
   beide laufen in `ci-local`. API-Response-Mocking via `page.route()` — kein Backend noetig.
   - **Ziel ist immer ein eigener Preview-Server** des aktuellen Builds: ohne `BASE_URL`
@@ -891,24 +844,11 @@ Detaillierte Anforderungen und Prompts liegen unter `planung/`:
 
 Die Prompts sind sequenziell zu verwenden. Jeder Prompt hat Akzeptanzkriterien die erfuellt sein muessen bevor der naechste begonnen wird.
 
-## PindeX – Codebase Navigation
+## PindeX – Codebase Navigation (nur wenn das PindeX-MCP verbunden ist)
 
-Dieses Projekt ist mit PindeX indexiert.
-
-**PFLICHT-WORKFLOW** – bei jeder Codebase-Aufgabe:
-1. **Unbekannte Datei?** → `mcp__pindex__get_file_summary` ZUERST, dann ggf. `get_context`
-2. **Symbol suchen?** → `mcp__pindex__search_symbols` oder `find_symbol`
-3. **Abhängigkeiten?** → `mcp__pindex__get_dependencies`
-4. **Wo wird etwas verwendet?** → `mcp__pindex__find_usages`
-5. **Projekt-Überblick?** → `mcp__pindex__get_project_overview`
-
-**VERBOTEN** (solange PindeX verfügbar):
-- `Read` auf Quellcode-Dateien ohne vorherigen `get_file_summary`-Aufruf
-- `Glob`/`Grep` zur Symbol-Suche statt `search_symbols`
-
-**Kontext auslagern:**
-- Wichtige Entscheidungen / Muster → `mcp__pindex__save_context` speichern
-- Zu Sessionbeginn → `mcp__pindex__search_docs` für gespeicherten Kontext
-
-**Fallback:** Falls ein Tool `null` zurückgibt → `Read`/`Grep` als Fallback.
+Das Projekt ist mit PindeX indexiert. **Nur wenn `mcp__pindex__*`-Tools in der Sitzung
+verfuegbar sind:** fuer unbekannte Dateien zuerst `get_file_summary`, fuer Symbole
+`search_symbols`/`find_symbol`, fuer Verwendungen `find_usages`, fuer Abhaengigkeiten
+`get_dependencies`; Entscheidungen mit `save_context` ablegen. Fehlt das MCP oder liefert ein
+Tool `null` → normal mit `Read`/`Grep`/`Glob` arbeiten.
 <!-- pindex -->
