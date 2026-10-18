@@ -729,6 +729,17 @@ Keine festen Testzahlen hier (veralten mit jedem Test) — aktuell:
     geschuetzte Route 401 wie die echte Middleware.
   - Warten auf Requests per `page.waitForRequest`/`expect.poll`, Polling per `page.clock`
     — keine festen `waitForTimeout`-Pausen.
+- **Test-Zugangsdaten** (PIN, Dummy-IMAP-Passwoerter, Fernet-Key): **nie als Literal in Tests**
+  (GitGuardian meldet sonst "Generic Password"). Je Stack genau eine Quelle, Reihenfolge
+  Umgebungsvariable > lokale `.env.test` (gitignored) > pro Lauf zufaellig erzeugt:
+  - Backend: `from tests.credentials import TEST_PIN, TEST_WRONG_PIN, TEST_IMAP_PASSWORD,
+    TEST_IMAP_PASSWORD_2, TEST_EMAIL_ENCRYPTION_KEY` (liest `backend/.env.test`).
+  - E2E: `e2e/helpers/credentials.ts` (`TEST_PIN`, `TEST_WRONG_PIN`, `TEST_IMAP_PASSWORD(_2)`,
+    liest `e2e/.env.test`); `playwright.config.ts` ruft `ensureTestCredentials()` im
+    Hauptprozess, die Worker-Prozesse erben die Werte ueber `process.env`.
+  - Skripte: `scripts/test-scripts.ps1` (`$TestPin`, `$TestEmailKey`, liest `scripts/.env.test`).
+  - Vorlagen: `*/.env.test.example`. Absichtlich ungueltige Eingaben (zu kurzer PIN, leerer
+    PIN, falscher Key) bleiben sprechende Literale.
 - **CI lokal**: GitHub-Actions deaktiviert (`.github/workflows/ci.yml.disabled`),
   Lauf via `pwsh scripts/ci-local.ps1` bzw. `bash scripts/ci-local.sh`.
 

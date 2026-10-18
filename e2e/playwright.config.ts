@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { ensureTestCredentials } from './helpers/credentials';
 
 // Ziel der E2E-Tests ist IMMER ein eigener Preview-Server des aktuellen
 // Frontend-Builds — nie Port 8080: dort laeuft die echte Installation (Docker
@@ -11,6 +12,10 @@ import { defineConfig, devices } from '@playwright/test';
 //   BASE_URL=http://localhost:4210 npx playwright test
 //                                          -> nutzt einen bereits laufenden
 //                                             Preview-Server, kein webServer
+// PIN/Dummy-Passwoerter aus e2e/.env.test bzw. zufaellig — im Hauptprozess
+// nach process.env, damit alle Worker-Prozesse dieselben Werte erben.
+ensureTestCredentials();
+
 const E2E_PORT = Number(process.env.E2E_PORT || 4181);
 const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${E2E_PORT}`;
 

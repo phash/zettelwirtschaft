@@ -11,6 +11,7 @@ from app.api.auth import clear_all_sessions
 from app.core.security_headers import CONTENT_SECURITY_POLICY, SECURITY_HEADERS
 from app.models.processing_job import ProcessingJob
 from tests.conftest import make_test_client
+from tests.credentials import TEST_PIN
 
 HOST = "192.168.178.20:8080"
 PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
@@ -25,7 +26,7 @@ async def client(test_settings, test_engine, test_session_factory):
 @pytest.fixture
 async def pin_client(test_settings, test_engine, test_session_factory):
     clear_all_sessions()
-    s = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": "1234"})
+    s = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": TEST_PIN})
     async with make_test_client(s, test_session_factory) as ac:
         yield ac
     clear_all_sessions()
@@ -111,7 +112,7 @@ async def test_cross_site_get_still_allowed(client):
     "origin", ["http://localhost:3000", "http://192.168.1.10:8123", "http://10.0.0.5", "https://evil.example"]
 )
 async def test_no_cors_reflection(pin_client, origin):
-    login = await pin_client.post("/api/auth/login", json={"pin": "1234"}, headers={"Host": "localhost:8080"})
+    login = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN}, headers={"Host": "localhost:8080"})
     assert login.status_code == 200
     pin_client.cookies.set("zw_session", login.cookies["zw_session"])
 

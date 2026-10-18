@@ -24,6 +24,7 @@ from app.services.email_fetch_service import (
     parse_email_message,
     test_imap_connection as imap_connection_test,
 )
+from tests.credentials import TEST_EMAIL_ENCRYPTION_KEY, TEST_IMAP_PASSWORD
 from tests.services.fake_imap import FakeImapServer
 
 TARGET = "Zettelwirtschaft/Verarbeitet"
@@ -194,7 +195,7 @@ def test_parse_without_message_id_uses_stable_surrogate():
 
 @pytest.fixture
 def fernet_key() -> str:
-    return Fernet.generate_key().decode()
+    return TEST_EMAIL_ENCRYPTION_KEY
 
 
 @pytest.fixture
@@ -208,7 +209,7 @@ async def account_id(db_session, fernet_key) -> int:
         name="Test",
         imap_host="imap.test.com",
         username="user@test.com",
-        encrypted_password=encrypt_password("geheim", fernet_key),  # echte Verschluesselung
+        encrypted_password=encrypt_password(TEST_IMAP_PASSWORD, fernet_key),  # echte Verschluesselung
         schedule_type=ScheduleType.MANUAL,
     )
     db_session.add(account)

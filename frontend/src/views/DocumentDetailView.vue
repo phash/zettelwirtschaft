@@ -220,6 +220,11 @@ async function quickAddScope() {
 // Review questions
 const reviewAnswers = ref({})
 
+function suggestionsOf(q) {
+  const raw = typeof q.suggested_answers === 'string' ? q.suggested_answers.split('|') : (q.suggested_answers || [])
+  return raw.map((s) => s.trim()).filter(Boolean)
+}
+
 async function submitAnswer(question) {
   const answer = reviewAnswers.value[question.id]?.trim()
   if (!answer) return
@@ -523,7 +528,26 @@ onMounted(async () => {
               <div v-if="q.is_answered" class="mt-1 rounded bg-green-50 p-2 text-sm text-green-700">
                 {{ q.answer }}
               </div>
-              <div v-else class="mt-2 flex gap-2">
+              <div
+                v-if="!q.is_answered && suggestionsOf(q).length"
+                class="mt-2 flex flex-wrap gap-2"
+                data-testid="question-suggestions"
+              >
+                <button
+                  v-for="suggestion in suggestionsOf(q)"
+                  :key="suggestion"
+                  type="button"
+                  class="badge cursor-pointer transition-colors"
+                  :class="suggestion.startsWith('NEU: ')
+                    ? 'bg-green-50 text-green-700 hover:bg-green-100 border border-dashed border-green-300'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
+                  @click="reviewAnswers[q.id] = suggestion; submitAnswer(q)"
+                >
+                  <template v-if="suggestion.startsWith('NEU: ')">{{ suggestion.substring(5) }} (neu erstellen)</template>
+                  <template v-else>{{ suggestion }}</template>
+                </button>
+              </div>
+              <div v-if="!q.is_answered" class="mt-2 flex gap-2">
                 <input
                   v-model="reviewAnswers[q.id]"
                   class="input flex-1"

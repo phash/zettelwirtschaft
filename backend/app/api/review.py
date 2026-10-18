@@ -159,7 +159,9 @@ async def answer_question(
     doc = await _get_document_or_404(session, question.document_id)
 
     try:
-        outcome = await apply_answer(session, doc, question.field_affected, answer)
+        outcome = await apply_answer(
+            session, doc, question.field_affected, answer, question.suggested_answers
+        )
     except AnswerError as exc:
         raise HTTPException(422, str(exc))
 

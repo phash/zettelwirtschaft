@@ -52,6 +52,34 @@ $MakeNsis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
 if (-not $MakeNsis -and (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { $MakeNsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
 $Docker = (Get-Command docker -ErrorAction SilentlyContinue).Source
 
+# Test-Zugangsdaten: keine PIN-/Key-Literale im Repo (Secret-Scanner). Quelle:
+# Umgebungsvariable > scripts\.env.test (gitignored, Vorlage .env.test.example)
+# > pro Lauf zufaellig erzeugt.
+function New-TestRandomBytes([int]$count) {
+    $bytes = New-Object byte[] $count
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return , $bytes
+}
+$TestEnvFile = Join-Path $PSScriptRoot '.env.test'
+$TestEnvValues = @{}
+if (Test-Path -LiteralPath $TestEnvFile) {
+    foreach ($line in [System.IO.File]::ReadAllLines($TestEnvFile)) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') { $TestEnvValues[$Matches[1]] = $Matches[2].Trim('"', "'") }
+    }
+}
+function Get-TestCredential([string]$name, [scriptblock]$generate) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ([string]::IsNullOrWhiteSpace($value)) { $value = $TestEnvValues[$name] }
+    if ([string]::IsNullOrWhiteSpace($value)) { $value = & $generate }
+    return $value.Trim()
+}
+# PIN wie vom Installer: 6 Ziffern. Fernet-Key: 32 Zufallsbytes, URL-safe Base64.
+$TestPin = Get-TestCredential 'TEST_PIN' { -join ((New-TestRandomBytes 6) | ForEach-Object { $_ % 10 }) }
+$TestEmailKey = Get-TestCredential 'TEST_EMAIL_ENCRYPTION_KEY' { [Convert]::ToBase64String((New-TestRandomBytes 32)).Replace('+', '-').Replace('/', '_') }
+if ($TestPin -notmatch '^\d{4,}$') { throw "TEST_PIN muss aus mindestens 4 Ziffern bestehen (Umgebung oder $TestEnvFile)" }
+if ($TestEmailKey -notmatch '^[A-Za-z0-9_-]{43}=$') { throw "TEST_EMAIL_ENCRYPTION_KEY ist kein Fernet-Key (Umgebung oder $TestEnvFile)" }
+
 # Windows PowerShell 5.1 ausfuehren (das einzige PowerShell auf Kundenrechnern).
 function Invoke-WinPS([string]$file, [string[]]$arguments) {
     $out = & $WinPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $file @arguments 2>&1
@@ -210,14 +238,14 @@ Invoke-Test 'new-secret.ps1 (5.1): PIN 6 Ziffern, Fernet-Key 44 Zeichen URL-safe
 Invoke-Test 'New-NativeConfig.ps1 (5.1): gueltige TOML ohne BOM, Umlaut-Pfad, Fernet-Key' {
     $dataRoot = Join-Path $Temp "native\$umlautDir"
     $cfg = Join-Path $dataRoot 'config.toml'
-    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg, '-DataDir', "$dataRoot\", '-FrontendDistDir', 'C:\Program Files\Zettelwirtschaft\frontend', '-Port', '8090', '-PinCode', '123456', '-Version', '9.9.9')
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg, '-DataDir', "$dataRoot\", '-FrontendDistDir', 'C:\Program Files\Zettelwirtschaft\frontend', '-Port', '8090', '-PinCode', $TestPin, '-Version', '9.9.9')
     Assert-True ($r.Code -eq 0) "Exit $($r.Code): $($r.Output)"
     Assert-True (-not (Test-HasBom $cfg)) 'config.toml hat eine BOM'
     $d = Read-Toml $cfg
     $expectedData = ($dataRoot -replace '\\', '/') + '/data'
     Assert-True ($d.DATABASE_URL -eq "sqlite+aiosqlite:///$expectedData/zettelwirtschaft.db") "DATABASE_URL: $($d.DATABASE_URL)"
     Assert-True ($d.FRONTEND_DIST_DIR -eq 'C:/Program Files/Zettelwirtschaft/frontend') "FRONTEND_DIST_DIR: $($d.FRONTEND_DIST_DIR)"
-    Assert-True ($d.SERVER_PORT -eq 8090 -and $d.PIN_ENABLED -eq $true -and $d.PIN_CODE -eq '123456') 'Port/PIN falsch'
+    Assert-True ($d.SERVER_PORT -eq 8090 -and $d.PIN_ENABLED -eq $true -and $d.PIN_CODE -eq $TestPin) 'Port/PIN falsch'
     Assert-True ($d.EMAIL_ENCRYPTION_KEY -match '^[A-Za-z0-9_-]{43}=$') "EMAIL_ENCRYPTION_KEY: $($d.EMAIL_ENCRYPTION_KEY)"
 
     $cfg2 = Join-Path $Temp 'native\noui.toml'
@@ -300,11 +328,11 @@ Invoke-Test 'secure-acl.ps1 (5.1): Datenordner + config.toml nur SYSTEM/Administ
 
     # New-NativeConfig: config.toml (PIN, EMAIL_ENCRYPTION_KEY) im breiten Ordner.
     $cfg = Join-Path $root 'config.toml'
-    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg, '-DataDir', $root, '-PinCode', '123456')
+    $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\New-NativeConfig.ps1') @('-OutPath', $cfg, '-DataDir', $root, '-PinCode', $TestPin)
     Assert-True ($r.Code -eq 0) "New-NativeConfig Exit $($r.Code): $($r.Output)"
     $sids = Get-AclSids $cfg
     foreach ($b in $ZwBroadSids) { Assert-True ($sids -notcontains $b) "config.toml lesbar fuer $b" }
-    Assert-True ((Read-Toml $cfg).PIN_CODE -eq '123456') 'config.toml nach dem Einschraenken nicht lesbar/geschrieben'
+    Assert-True ((Read-Toml $cfg).PIN_CODE -eq $TestPin) 'config.toml nach dem Einschraenken nicht lesbar/geschrieben'
 }
 
 # INFRA-03: frei gewaehlter Programmordner (C:\Zettelwirtschaft) darf nicht
@@ -510,15 +538,15 @@ Invoke-Test 'update.bat + Add-ZwLegacyModelDefaults (5.1): bisherige Modelle vor
 Invoke-Test 'Convert-Env-To-Config.ps1 (5.1): .env -> gueltige TOML, Werte uebernommen' {
     $dir = Join-Path $Temp "convert\$umlautDir"
     New-Item -ItemType Directory -Force -Path (Join-Path $dir 'data') | Out-Null
-    $key = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa='
+    $key = $TestEmailKey
     $envPath = Join-Path $dir '.env'
-    [System.IO.File]::WriteAllText($envPath, "FRONTEND_PORT=8081`r`nPIN_ENABLED=true`r`nPIN_CODE=4711`r`nOLLAMA_MODEL=llama3.2`r`nEMAIL_ENCRYPTION_KEY=$key`r`n")
+    [System.IO.File]::WriteAllText($envPath, "FRONTEND_PORT=8081`r`nPIN_ENABLED=true`r`nPIN_CODE=$TestPin`r`nOLLAMA_MODEL=llama3.2`r`nEMAIL_ENCRYPTION_KEY=$key`r`n")
     $out = Join-Path $dir 'config.toml'
     $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\Convert-Env-To-Config.ps1') @('-EnvPath', $envPath, '-OutPath', $out, '-DataDir', (Join-Path $dir 'data'), '-FrontendDistDir', 'C:\ZW\frontend')
     Assert-True ($r.Code -eq 0) "Exit $($r.Code): $($r.Output)"
     Assert-True (-not (Test-HasBom $out)) 'config.toml hat eine BOM (Out-File -Encoding utf8 unter 5.1)'
     $d = Read-Toml $out
-    Assert-True ($d.SERVER_PORT -eq 8081 -and $d.PIN_CODE -eq '4711' -and $d.OLLAMA_MODEL -eq 'llama3.2' -and $d.EMAIL_ENCRYPTION_KEY -eq $key) 'Werte nicht uebernommen'
+    Assert-True ($d.SERVER_PORT -eq 8081 -and $d.PIN_CODE -eq $TestPin -and $d.OLLAMA_MODEL -eq 'llama3.2' -and $d.EMAIL_ENCRYPTION_KEY -eq $key) 'Werte nicht uebernommen'
     # Fehlendes EMBEDDING_MODEL: die alte Installation lief mit dem alten Default.
     Assert-True ($d.EMBEDDING_MODEL -eq 'bge-m3') "EMBEDDING_MODEL ohne Eintrag: $($d.EMBEDDING_MODEL) (erwartet bisheriger Default bge-m3)"
 
@@ -568,7 +596,7 @@ function New-ZwLegacyStub([string]$name, [switch]$DataInOldDir) {
         "DATABASE_URL = `"sqlite+aiosqlite:///$d/zettelwirtschaft.db`"", "UPLOAD_DIR = `"$d/uploads`"",
         "ARCHIVE_DIR = `"$d/archive`"", "THUMBNAIL_DIR = `"$d/thumbnails`"", "WATCH_DIR = `"$d/watch`"",
         'EXPORT_DIR = ""', "FRONTEND_DIST_DIR = `"$($old.Replace('\', '/'))/frontend`"",
-        'PIN_ENABLED = true', 'PIN_CODE = "123456"', 'CHROMADB_MODE = "embedded"', "CHROMADB_PATH = `"$d/chromadb`""
+        'PIN_ENABLED = true', "PIN_CODE = `"$TestPin`"", 'CHROMADB_MODE = "embedded"', "CHROMADB_PATH = `"$d/chromadb`""
     ) -join "`r`n"
     [System.IO.File]::WriteAllText($cfg, $toml + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
@@ -703,7 +731,7 @@ Invoke-Test 'legacy-install.ps1 (5.1): SetFrontendDir aendert nur FRONTEND_DIST_
     $cfg = Join-Path $dir 'config.toml'
     $ini = Join-Path $dir 'r.ini'
     $newFe = "C:\Program Files\Zettelwirtschaft $umlautDir\frontend"
-    $orig = "# Kopf $umlautDir`r`nSERVER_PORT = 8080`r`nPIN_CODE = `"123456`"`r`nFRONTEND_DIST_DIR = `"C:/Users/x/AppData/Local/Zettelwirtschaft-Native/frontend`"  # alt`r`nLOG_LEVEL = `"INFO`"`r`n"
+    $orig = "# Kopf $umlautDir`r`nSERVER_PORT = 8080`r`nPIN_CODE = `"$TestPin`"`r`nFRONTEND_DIST_DIR = `"C:/Users/x/AppData/Local/Zettelwirtschaft-Native/frontend`"  # alt`r`nLOG_LEVEL = `"INFO`"`r`n"
     $expected = $orig.Replace('"C:/Users/x/AppData/Local/Zettelwirtschaft-Native/frontend"', ('"' + $newFe.Replace('\', '/') + '"'))
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     foreach ($variant in @(@{ Bom = $false; Eol = "`r`n" }, @{ Bom = $true; Eol = "`n" })) {

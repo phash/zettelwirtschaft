@@ -21,6 +21,8 @@ env/
 
 # Environment
 .env
+# Lokale Test-Zugangsdaten (backend/, e2e/, scripts/) — Vorlagen *.env.test.example bleiben versioniert
+.env.test
 docker-compose.override.yml
 
 # Data directories

@@ -99,7 +99,8 @@ def _set(doc: Document, outcome: AnswerOutcome, name: str, value) -> None:
 
 
 async def apply_answer(
-    session: AsyncSession, doc: Document, field_name: str | None, answer: str
+    session: AsyncSession, doc: Document, field_name: str | None, answer: str,
+    suggested_answers: str | None = None,
 ) -> AnswerOutcome:
     """Wendet die Antwort auf ``doc`` an (ohne Commit).
 
@@ -139,7 +140,7 @@ async def apply_answer(
         ensure_tax_year(doc)
 
     elif field_name == "filing_scope":
-        outcome.new_scope = await _resolve_scope_answer(session, doc, answer)
+        outcome.new_scope = await _resolve_scope_answer(session, doc, answer, suggested_answers)
 
     else:
         logger.info("Rueckfrage zu unbekanntem Feld '%s' — nur als beantwortet markiert", field_name)
@@ -147,7 +148,28 @@ async def apply_answer(
     return outcome
 
 
-async def _resolve_scope_answer(session: AsyncSession, doc: Document, answer: str) -> FilingScope | None:
+def _suggested_new_scope(suggested_answers: str | None) -> str | None:
+    """Name aus der Option "NEU: <Name>" der Rueckfrage (archive_service)."""
+    for option in (suggested_answers or "").split("|"):
+        option = option.strip()
+        if option.upper().startswith(NEW_SCOPE_PREFIX):
+            return option[len(NEW_SCOPE_PREFIX):].strip() or None
+    return None
+
+
+async def _resolve_scope_answer(
+    session: AsyncSession, doc: Document, answer: str, suggested_answers: str | None = None,
+) -> FilingScope | None:
+    # Die Vorschlags-Frage lautet "... Soll dieser erstellt werden?" — ein
+    # getipptes "Ja"/"Nein" ist dort die natuerliche Antwort. Ein Bereich, der
+    # tatsaechlich so heisst, hat Vorrang.
+    value = answer.strip().lower()
+    suggestion = _suggested_new_scope(suggested_answers)
+    if suggestion and value in _YES | _NO and await find_scope_by_name(session, answer) is None:
+        if value in _NO:
+            return None
+        answer = f"{NEW_SCOPE_PREFIX} {suggestion}"
+
     if answer.upper().startswith(NEW_SCOPE_PREFIX):
         name = answer[len(NEW_SCOPE_PREFIX):].strip()
         if not name:

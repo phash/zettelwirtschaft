@@ -2,7 +2,6 @@
 Server/Benutzer umgebogen werden, ohne es neu einzugeben."""
 
 import pytest
-from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from app.config import get_settings
@@ -10,14 +9,14 @@ from app.main import app
 from app.models.email_account import EmailAccount
 from app.models.notification import Notification
 from app.services.crypto_service import decrypt_password
+from tests.credentials import TEST_EMAIL_ENCRYPTION_KEY, TEST_IMAP_PASSWORD, TEST_IMAP_PASSWORD_2
 
-KEY = Fernet.generate_key().decode()
-ACCOUNT = {"name": "GMX", "imap_host": "imap.gmx.net", "username": "victim@gmx.de", "password": "Geheim-1"}
+ACCOUNT = {"name": "GMX", "imap_host": "imap.gmx.net", "username": "victim@gmx.de", "password": TEST_IMAP_PASSWORD}
 
 
 @pytest.fixture(autouse=True)
 def _email_key(client, test_settings):
-    s = test_settings.model_copy(update={"EMAIL_ENCRYPTION_KEY": KEY})
+    s = test_settings.model_copy(update={"EMAIL_ENCRYPTION_KEY": TEST_EMAIL_ENCRYPTION_KEY})
     app.dependency_overrides[get_settings] = lambda: s
     yield
     app.dependency_overrides[get_settings] = lambda: test_settings
@@ -60,14 +59,14 @@ async def test_retarget_with_new_password_is_allowed_and_notified(client, db_ses
 
     resp = await client.put(
         f"/api/email/accounts/{account_id}",
-        json={"imap_host": "imap.web.de", "password": "Neu-2"},
+        json={"imap_host": "imap.web.de", "password": TEST_IMAP_PASSWORD_2},
     )
 
     assert resp.status_code == 200, resp.text
     account = await db_session.get(EmailAccount, account_id)
     await db_session.refresh(account)
     assert account.imap_host == "imap.web.de"
-    assert decrypt_password(account.encrypted_password, KEY) == "Neu-2"
+    assert decrypt_password(account.encrypted_password, TEST_EMAIL_ENCRYPTION_KEY) == TEST_IMAP_PASSWORD_2
     notes = (await db_session.execute(select(Notification))).scalars().all()
     assert any("imap.gmx.net" in n.message and "imap.web.de" in n.message for n in notes)
 

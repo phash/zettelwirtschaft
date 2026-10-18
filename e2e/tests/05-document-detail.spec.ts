@@ -195,6 +195,31 @@ test.describe('Document Detail', () => {
     }
   });
 
+  test('Suggested answers are offered as buttons and send the exact option', async ({ page }) => {
+    // Vorschlags-Frage wie archive_service sie stellt — getipptes "ja" lief
+    // frueher als Bereichsname ins Leere ("Ablagebereich „ja“ existiert nicht").
+    const scopeQuestion = {
+      ...MOCK_DOCUMENT_WITH_QUESTIONS.review_questions[0],
+      id: 'q-scope',
+      question: "Die KI schlägt einen neuen Ablagebereich 'Versicherung' vor. Soll dieser erstellt werden?",
+      field_affected: 'filing_scope',
+      suggested_answers: 'NEU: Versicherung|Privat',
+    };
+    const doc = { ...MOCK_DOCUMENT_WITH_QUESTIONS, review_questions: [scopeQuestion] };
+    await setupDocumentDetailMocks(page, doc);
+    await page.route('**/api/review/questions/*/answer', (route) =>
+      route.fulfill({ json: { ok: true, all_answered: true } }),
+    );
+    await page.goto(`/dokumente/${doc.id}`);
+
+    const suggestions = page.getByTestId('question-suggestions');
+    await expect(suggestions.getByRole('button')).toHaveText(['Versicherung (neu erstellen)', 'Privat']);
+
+    const answer = page.waitForRequest((r) => r.url().endsWith('/api/review/questions/q-scope/answer'));
+    await suggestions.getByRole('button', { name: 'Versicherung (neu erstellen)' }).click();
+    expect((await answer).postDataJSON()).toEqual({ answer: 'NEU: Versicherung' });
+  });
+
   test('Filing scope dropdown lists all scopes with the current one selected', async ({ page }) => {
     await page.goto(DOC_URL);
     const scopeSelect = page.getByLabel('Ablagebereich');

@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { TEST_PIN, TEST_WRONG_PIN } from '../helpers/credentials';
 import {
   setupBaseMocks,
   setupDashboardMocks,
@@ -29,7 +30,7 @@ async function expectPinRedirect(page: Page, target: string) {
 
 /** PIN aktiv, nicht angemeldet (gemeinsamer Mock: 401 fuer alles ausser
  *  auth/* und /health, wie die echte PIN-Middleware). */
-const setupLockedBackend = (page: Page) => setupPinAuthMocks(page, { pin: '123456' });
+const setupLockedBackend = (page: Page) => setupPinAuthMocks(page, { pin: TEST_PIN });
 
 test.describe('PIN-Seite und Session-Ablauf', () => {
   test('PIN-Seite ohne App-Shell, keine Poller, kein verschachtelter Redirect; nach Login zum Ziel', async ({ page }) => {
@@ -54,7 +55,7 @@ test.describe('PIN-Seite und Session-Ablauf', () => {
     // Nach dem Login antworten die Endpunkte normal
     await setupBaseMocks(page);
     await page.route('**/api/review/stats', (route) => route.fulfill({ json: { open_documents: 0 } }));
-    await page.locator('#pin').fill('123456');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: 'Anmelden' }).click();
     await expect(page).toHaveURL(/\/hilfe$/);
     await expect(page.locator('#pin')).toHaveCount(0);
@@ -68,7 +69,7 @@ test.describe('PIN-Seite und Session-Ablauf', () => {
     await expect(page.locator('#pin')).toBeVisible();
     await setupDashboardMocks(page);
     await page.route('**/api/review/stats', (route) => route.fulfill({ json: { open_documents: 0 } }));
-    await page.locator('#pin').fill('123456');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: 'Anmelden' }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.locator('#pin')).toHaveCount(0);
@@ -81,7 +82,7 @@ test.describe('PIN-Seite und Session-Ablauf', () => {
       return route.fulfill({ status: 401, json: { detail: 'Falscher PIN' } });
     });
     await page.goto('/pin');
-    await page.locator('#pin').fill('0000');
+    await page.locator('#pin').fill(TEST_WRONG_PIN);
     await page.getByRole('button', { name: 'Anmelden' }).click();
     await expect(page.getByRole('button', { name: 'Prüfen…' })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveText('Falscher PIN');
