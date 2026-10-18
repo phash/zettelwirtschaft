@@ -38,6 +38,15 @@ const FIELD_LABELS = {
   question: 'Frage',
   pin: 'PIN',
   filing_scope_id: 'Ablagebereich',
+  watch_dir: 'Eingangsordner',
+  export_dir: 'Zielordner',
+  watch_dir_net_user: 'Benutzer der Freigabe (Eingangsordner)',
+  watch_dir_net_password: 'Passwort (Eingangsordner)',
+  export_dir_net_user: 'Benutzer der Freigabe (Zielordner)',
+  export_dir_net_password: 'Passwort (Zielordner)',
+  watch_poll_interval: 'Prüfintervall',
+  net_user: 'Benutzer der Freigabe',
+  net_password: 'Passwort',
 }
 
 function fieldLabel(loc) {

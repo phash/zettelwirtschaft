@@ -22,6 +22,8 @@ const COMPONENT_LABELS = {
   ollama: 'KI-Modelle (Ollama)',
   chromadb: 'Vektor-Datenbank',
   storage: 'Speicher',
+  watch_folder: 'Eingangsordner',
+  export_folder: 'Zielordner',
 }
 
 // Gleiches Vokabular wie /api/health und /api/system/health: ok | warning | error
@@ -43,7 +45,11 @@ function componentLabel(name) {
   return COMPONENT_LABELS[name] || name
 }
 
-function statusText(comp) {
+const FOLDER_COMPONENTS = ['watch_folder', 'export_folder']
+
+function statusText(comp, name) {
+  // Ordner: "erreichbar" / "nicht erreichbar: <Grund>" statt nur "OK"
+  if (FOLDER_COMPONENTS.includes(name) && comp.message) return comp.message
   if (comp.status === 'ok') return STATUS_LABELS.ok
   return comp.message || STATUS_LABELS[comp.status] || comp.status
 }
@@ -189,7 +195,7 @@ onUnmounted(() => {
             </div>
             <div class="text-sm text-right">
               <span :class="comp.status === 'ok' ? 'text-green-600' : (comp.status === 'error' ? 'text-red-600' : 'text-amber-700')">
-                {{ statusText(comp) }}
+                {{ statusText(comp, name) }}
               </span>
             </div>
           </div>
@@ -211,6 +217,20 @@ onUnmounted(() => {
             Ollama-Version <code class="font-mono text-gray-600">{{ comp.version }}</code>
             <span v-if="comp.min_version" class="text-gray-400">(mindestens {{ comp.min_version }})</span>
           </p>
+          <!-- Eingangs-/Zielordner: Pfad (nie Zugangsdaten), letzter Erfolg, naechster Versuch -->
+          <div v-if="FOLDER_COMPONENTS.includes(name)" class="ml-5 space-y-0.5 text-xs text-gray-500" :data-testid="`folder-status-${name}`">
+            <p v-if="comp.path">
+              {{ comp.mode === 'netzwerk' ? 'Netzwerkpfad' : 'Ordner' }}:
+              <code class="font-mono text-gray-600 break-all">{{ comp.path }}</code>
+              <span v-if="comp.user" class="text-gray-400">(Benutzer {{ comp.user }})</span>
+            </p>
+            <p v-if="comp.last_ok_at">Zuletzt erreichbar: {{ formatDateTime(comp.last_ok_at) }}</p>
+            <p v-if="comp.status !== 'ok' && comp.next_retry_at">Nächster Versuch: {{ formatDateTime(comp.next_retry_at) }}</p>
+            <!-- Der Zielordner wird nur beim Archivieren geprueft (R11) -->
+            <p v-if="name === 'export_folder' && comp.checked_at" :data-testid="`folder-checked-${name}`">
+              Zuletzt geprüft: {{ formatDateTime(comp.checked_at) }} (beim letzten Export)
+            </p>
+          </div>
           <!-- ChromaDB Fehler-Hilfe -->
           <div v-if="name === 'chromadb' && comp.status !== 'ok'" class="ml-5 rounded-lg bg-red-50 border border-red-100 p-3 text-xs text-red-700 space-y-2">
             <p class="font-medium">Die Vektor-Datenbank ist nicht erreichbar. Der KI-Assistent ist dadurch deaktiviert.</p>

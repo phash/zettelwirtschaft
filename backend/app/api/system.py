@@ -6,20 +6,26 @@ import logging
 import os
 import socket
 import time
+import uuid
 from contextlib import contextmanager
-from functools import lru_cache
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.core import network_share
 from app.core.install_dir import native_install_dir
+from app.core.network_share import NetworkCredential, ShareError, UncPathError
+from app.core.rate_limit import check_network_folder_rate
+from app.services import network_folder_service as nfs
 from app.core.version import read_app_version
 from app.database import SQLITE_BUSY_TIMEOUT_MS, get_db, get_session_factory
 from app.models.document import Document, DocumentStatus
@@ -41,18 +47,65 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
 
+_NET_USER_MAX = 256
+_NET_PASSWORD_MAX = 256
+
+
+class ScannerShareStatus(BaseModel):
+    """(B) Lokale Scanner-Freigabe des Eingangsordners — nie ein Passwort."""
+
+    configured: bool = False
+    exists: bool = False
+    unc_path: str = ""
+    user: str = ""
+    path: str = ""
+    matches_watch_dir: bool = False
+
+
 class FolderSettings(BaseModel):
     watch_dir: str
     export_dir: str
     watch_dir_host: str = ""
     export_dir_host: str = ""
     restart_required: bool = False
+    # Zugangsdaten fuer Netzwerkordner (\\server\freigabe) — nur Native/Dev.
+    # Passwoerter sind write-only: None = unveraendert, "" = loeschen.
+    watch_dir_net_user: str = Field("", max_length=_NET_USER_MAX)
+    # Laenge wird im Handler geprueft (eine 422-Antwort wuerde den Wert zurueckspiegeln).
+    watch_dir_net_password: str | None = None
+    export_dir_net_user: str = Field("", max_length=_NET_USER_MAX)
+    export_dir_net_password: str | None = None
+    # Pruefintervall fuer Netzwerk-Watch-Ordner (Sekunden); None = unveraendert.
+    watch_poll_interval: int | None = Field(None, ge=10, le=600)
 
 
 class FolderSettingsResponse(FolderSettings):
     # "docker" | "native" | "dev" — das Frontend zeigt danach entweder die
     # Host-Mount-Felder (Docker) oder die Ordnerpfade direkt (Native/Dev).
     deployment_mode: str
+    # Passwoerter werden NIE ausgeliefert (exclude), nur ob eines gespeichert ist.
+    watch_dir_net_password: str | None = Field(None, exclude=True)
+    export_dir_net_password: str | None = Field(None, exclude=True)
+    watch_dir_net_password_set: bool = False
+    export_dir_net_password_set: bool = False
+    watch_poll_interval: int = 30
+    network_folders_supported: bool = False
+    scanner_share: ScannerShareStatus | None = None
+
+
+class TestFolderRequest(BaseModel):
+    target: Literal["watch", "export"]
+    path: str = Field(max_length=1024)
+    net_user: str = Field("", max_length=_NET_USER_MAX)
+    net_password: str | None = None
+
+
+class TestFolderResponse(BaseModel):
+    ok: bool
+    # local | unc | network_drive | subst | missing_drive | unsuitable
+    kind: str
+    message: str
+    suggested_paths: list[str] = []
 
 
 # Liest generate-mounts.ps1 (start.bat) im Docker-Betrieb und erzeugt daraus
@@ -132,42 +185,51 @@ def _is_network_path(path_str: str) -> bool:
     return _strip_device_prefix(path_str).startswith(("\\\\", "//"))
 
 
-@lru_cache(maxsize=1)
-def _local_host_names() -> frozenset[str]:
-    """Namen/Adressen, unter denen dieser Rechner sich selbst per SMB erreicht."""
-    names = {"localhost", ".", "::1", "0.0.0.0"}
-    try:
-        name = socket.gethostname().lower()
-        names |= {name, name.split(".")[0], socket.getfqdn().lower()}
-        names |= {a.lower() for a in socket.gethostbyname_ex(name)[2]}
-    except OSError:
-        pass
-    return frozenset(names)
-
-
 def _reject_local_or_admin_share(path_str: str, label: str) -> None:
     r"""INFRA-02: Auch mit ALLOW_NETWORK_FOLDERS keine Freigabe auf DIESEM
-    Rechner (``\\localhost\C$\...``, ``\\127.0.0.1\...``, ``\\<PC-Name>\...``)
-    und keine administrativen Freigaben (``C$``, ``ADMIN$``): darueber erreicht
-    der LocalSystem-Dienst jeden lokalen Pfad an der Systemordner-, Profil- und
-    Programmordner-Pruefung vorbei. Reine String-Pruefung (kein Netzwerkzugriff).
+    Rechner (``\\localhost\C$\...``, ``\\127.0.0.1\...``, ``\\<PC-Name>\...``,
+    DNS-Alias auf eine eigene Adresse) und keine administrativen Freigaben
+    (``C$``, ``ADMIN$``): darueber erreicht der LocalSystem-Dienst jeden lokalen
+    Pfad an der Systemordner-, Profil- und Programmordner-Pruefung vorbei.
+    Namens-/DNS-Pruefung, keine SMB-Anmeldung.
     """
     parts = [p for p in _strip_device_prefix(path_str).replace("/", "\\").split("\\") if p]
     host = parts[0].lower().strip("[]") if parts else ""
     share = parts[1].lower() if len(parts) > 1 else ""
-    is_local = host in _local_host_names() or host.startswith("127.") or host.endswith(".localhost")
-    if is_local or share.endswith("$"):
+    try:
+        if network_share.is_admin_share(share):
+            raise UncPathError("administrative Freigabe")
+        network_share.check_host_not_local(host)
+    except network_share.HostNotFound as exc:
+        # Fail closed (NET-SEC-08): nicht pruefbar -> nicht verwenden.
+        raise HTTPException(400, f"{label}: {network_share.MESSAGE_PREFIX}{exc}") from None
+    except UncPathError:
         raise HTTPException(
             400,
             f"{label}: Freigaben auf diesem Rechner und administrative Freigaben (C$, ADMIN$) "
             f"sind nicht erlaubt — bitte den lokalen Pfad angeben: {path_str}",
-        )
+        ) from None
 
 
-def _canonical(path: Path | str) -> Path:
+def _canonical(path: Path | str, *, allow_unc: bool = False) -> Path:
     r"""Vergleichsform: Links/Junctions/8.3-Namen aufgeloest, ohne ``\\?\``,
-    unter Windows klein geschrieben (NTFS ist case-insensitive)."""
+    unter Windows klein geschrieben (NTFS ist case-insensitive).
+
+    NET-SEC-01: ``realpath`` oeffnet den Pfad (CreateFileW). Auf einem
+    Netzwerkpfad meldete sich der Dienst ohne eigene Verbindung mit dem
+    Computerkonto an — deshalb nur mit ``allow_unc`` (Experten-Override),
+    sonst ``ValueError`` statt Netzwerkzugriff.
+    """
+    if _is_network_path(str(path)) and not allow_unc:
+        raise ValueError("Netzwerkpfad ohne Verbindung wird nicht aufgelöst")
     return Path(os.path.normcase(_strip_device_prefix(os.path.realpath(str(path)))))
+
+
+def _canonical_or_lexical(path: Path | str) -> Path:
+    """Wie ``_canonical``, Netzwerkpfade aber nur textuell (kein Zugriff)."""
+    if _is_network_path(str(path)):
+        return Path(os.path.normcase(_strip_device_prefix(str(path))))
+    return _canonical(path)
 
 
 def _normalize_path_input(value: str | None) -> str:
@@ -282,18 +344,26 @@ def _validate_local_dir(value: str, label: str, settings: Settings) -> str:
     _reject_device_prefix(path_str, label)
     network = _is_network_path(path_str)
     if network and not settings.ALLOW_NETWORK_FOLDERS:
-        raise HTTPException(
-            400,
-            f"{label}: Netzwerkpfade (\\\\server\\freigabe) sind nicht freigeschaltet "
-            f"(Einstellung ALLOW_NETWORK_FOLDERS): {path_str}",
-        )
+        if settings.deployment_mode == "docker":
+            hint = "im Docker-Betrieb bitte als CIFS-Volume einbinden (siehe Hilfe)"
+        else:
+            hint = "brauchen Benutzer und Passwort der Freigabe – bitte beide angeben"
+        raise HTTPException(400, f"{label}: Netzwerkpfade (\\\\server\\freigabe) {hint}: {path_str}")
     if network:
         _reject_local_or_admin_share(path_str, label)
+    else:
+        path_str = _resolve_drive_letter(path_str, label)
     _reject_dangerous(path_str, label)
     path = Path(path_str)
     if not path.is_absolute():
         raise HTTPException(400, f"{label} muss ein absoluter Pfad sein: {path_str}")
-    resolved = _canonical(path)
+    if not network:
+        # Vor realpath: eine Verknuepfung auf eine Freigabe wuerde sonst schon
+        # beim Aufloesen geoeffnet (Computerkonto, NET-SEC-07).
+        link = network_share.find_remote_link(str(path))
+        if link and not settings.ALLOW_NETWORK_FOLDERS:
+            raise HTTPException(400, f"{label}: {network_share.remote_link_message(link)}")
+    resolved = _canonical(path, allow_unc=network or settings.ALLOW_NETWORK_FOLDERS)
     if _is_network_path(str(resolved)) and not settings.ALLOW_NETWORK_FOLDERS:
         # Lokaler Pfad, der per Link auf eine Freigabe zeigt.
         raise HTTPException(400, f"{label} zeigt auf einen Netzwerkpfad: {path_str}")
@@ -301,7 +371,7 @@ def _validate_local_dir(value: str, label: str, settings: Settings) -> str:
     if resolved.parent == resolved and not network:
         raise HTTPException(400, f"{label} darf kein Laufwerks- oder Wurzelverzeichnis sein: {path_str}")
 
-    data_dir = _canonical(settings.data_dir)
+    data_dir = _canonical_or_lexical(settings.data_dir)
     if resolved == data_dir or data_dir.is_relative_to(resolved):
         raise HTTPException(400, f"{label} darf nicht der Datenordner oder einer seiner Elternordner sein: {path_str}")
     managed = [settings.ARCHIVE_DIR, settings.UPLOAD_DIR, settings.THUMBNAIL_DIR, str(settings.data_dir / "backups")]
@@ -309,10 +379,258 @@ def _validate_local_dir(value: str, label: str, settings: Settings) -> str:
     if install_dir is not None:
         managed.append(str(install_dir))
     for managed_dir in managed:
-        if resolved.is_relative_to(_canonical(managed_dir)):
+        if resolved.is_relative_to(_canonical_or_lexical(managed_dir)):
             raise HTTPException(400, f"{label} darf nicht in einem Programm- oder Ablageordner liegen: {path_str}")
     _reject_foreign_profile(resolved, settings, label, path_str)
     return str(path)
+
+
+def _resolve_drive_letter(path_str: str, label: str) -> str:
+    r"""Laufwerksbuchstaben pruefen, bevor irgendetwas aufgeloest wird.
+
+    Der Dienst (LocalSystem) sieht weder die Netzlaufwerke noch die
+    subst-Laufwerke der Benutzersitzung. Netzlaufwerke werden abgelehnt (mit
+    UNC-Vorschlag, falls aufloesbar), subst-Laufwerke auf das echte Ziel
+    umgeschrieben (gespeichert wird das Ziel). Lokale feste und wechselbare
+    Laufwerke bleiben unveraendert erlaubt.
+    """
+    info = network_share.classify_drive(path_str)
+    if info.kind in ("none", "local"):
+        return path_str
+    if info.kind == "subst" and info.target:
+        return info.target
+    raise HTTPException(400, f"{label}: {network_share.drive_message(info)}")
+
+
+def _network_supported(settings: Settings) -> bool:
+    """Netzwerkordner mit eigenen Zugangsdaten: nur Native/Dev unter Windows."""
+    return settings.deployment_mode != "docker" and network_share.supported()
+
+
+def _validate_network_dir(path_str: str, label: str) -> str:
+    r"""UNC-Pfad fuer den Zugangsdaten-Ablauf pruefen — OHNE Dateisystemzugriff.
+
+    Form ``\\host\share[\sub...]``, keine Geraete-Praefixe, WebDAV-Formen,
+    IPv6/Ports, administrativen Freigaben und keine Freigaben dieses Rechners
+    (auch nicht per DNS-Alias). Liefert die normalisierte Form.
+    """
+    try:
+        unc = network_share.parse_unc(path_str)
+    except UncPathError as exc:
+        raise HTTPException(400, f"{label}: {exc}") from None
+    _reject_local_or_admin_share(unc.path, label)
+    _reject_dangerous(unc.path, label)
+    return unc.path
+
+
+@dataclass
+class _FolderPlan:
+    """Ergebnis der Validierung eines Ordners (noch nichts gespeichert)."""
+
+    target: str
+    label: str
+    path: str
+    user: str = ""
+    token: str = ""  # Fernet-Token, das gespeichert wird
+    credential: NetworkCredential | None = None  # nur im Speicher, nie ausgeliefert
+    # Passwort aus dem Speicher wiederverwendet (nicht neu eingegeben) — wird
+    # nie mit einem eingegebenen verglichen (SEC-NF-01).
+    stored_password: bool = False
+
+    @property
+    def network(self) -> bool:
+        return network_share.is_unc(self.path)
+
+    @property
+    def uses_credentials(self) -> bool:
+        return self.network and self.credential is not None
+
+
+_RETYPE_PASSWORD = (
+    "Server, Freigabe oder Benutzer wurden geändert – bitte das Passwort der Freigabe erneut eingeben."
+)
+
+
+def _encryption_unavailable() -> HTTPException:
+    from app.services.email_fetch_service import ENCRYPTION_KEY_MISSING_MESSAGE
+
+    return HTTPException(503, ENCRYPTION_KEY_MISSING_MESSAGE)
+
+
+def _resolve_credential(
+    path_str: str, user_in: str, password_in: str | None, stored: nfs.FolderConfig, settings: Settings, label: str,
+) -> tuple[str, str, NetworkCredential | None, bool]:
+    r"""(Benutzer, Token, Zugangsdaten, aus dem Speicher?) fuer einen UNC-Pfad.
+
+    SEC-DATA-02: Das gespeicherte Passwort wird nur wiederverwendet, wenn
+    ``\\host\share`` UND Benutzer unveraendert sind — sonst liesse sich das
+    NAS-Passwort per Pfadwechsel an einen beliebigen Server schicken.
+    """
+    user = (user_in or "").strip()
+    if password_in is not None and len(password_in) > _NET_PASSWORD_MAX:
+        raise HTTPException(400, f"{label}: Das Passwort ist zu lang (höchstens {_NET_PASSWORD_MAX} Zeichen).")
+    if password_in and not user:
+        return user, "", None, False
+    if password_in:
+        try:
+            token = nfs.encrypt_secret(password_in, settings)
+        except nfs.CredentialKeyMissing:
+            raise _encryption_unavailable() from None
+        return user, token, (NetworkCredential(user, password_in) if user else None), False
+    if password_in == "" or not stored.token:
+        return user, "", None, False
+    same_share = network_share.share_key(path_str) is not None and (
+        network_share.share_key(path_str) == network_share.share_key(stored.path)
+    )
+    if not (same_share and user.casefold() == stored.user.casefold() and user):
+        if user:
+            raise HTTPException(400, f"{label}: {_RETYPE_PASSWORD}")
+        return user, "", None, False
+    try:
+        password = nfs.decrypt_secret(stored.token, settings)
+    except nfs.CredentialKeyMissing:
+        raise _encryption_unavailable() from None
+    except nfs.CredentialDecryptFailed:
+        raise HTTPException(400, f"{label}: {nfs.DECRYPT_FAILED_MESSAGE}") from None
+    return user, stored.token, NetworkCredential(user, password), True
+
+
+def _plan_folder(
+    target: str, value: str, user_in: str, password_in: str | None,
+    stored: nfs.FolderConfig, settings: Settings,
+) -> _FolderPlan:
+    label = "Watch-Ordner" if target == nfs.WATCH else "Export-Ordner"
+    path_str = _normalize_path_input(value)
+    default = settings.WATCH_DIR if target == nfs.WATCH else settings.EXPORT_DIR
+    if not path_str or (path_str == default and not _is_network_path(path_str)):
+        # Der konfigurierte lokale Standard braucht keine Pruefung. Ein UNC-
+        # Standard aus config.toml dagegen schon (NET-SEC-06): ohne
+        # Zugangsdaten wird er abgelehnt bzw. nie ohne Verbindung angefasst.
+        if not path_str and target == nfs.WATCH and _is_network_path(settings.WATCH_DIR):
+            path_str = settings.WATCH_DIR
+        else:
+            return _FolderPlan(target, label, settings.WATCH_DIR if target == nfs.WATCH else path_str)
+    _reject_device_prefix(path_str, label)
+    if not _is_network_path(path_str):
+        return _FolderPlan(target, label, _validate_local_dir(path_str, label, settings))
+
+    user, token, credential, from_storage = _resolve_credential(
+        path_str, user_in, password_in, stored, settings, label,
+    )
+    if credential is None:
+        if user or password_in:
+            raise HTTPException(400, f"{label}: Bitte Benutzer und Passwort der Freigabe angeben.")
+        # Ohne Zugangsdaten: nur mit Experten-Override (bisheriges Verhalten),
+        # sonst die bekannte Ablehnung — beides vor jedem Dateisystemzugriff.
+        return _FolderPlan(target, label, _validate_local_dir(path_str, label, settings))
+    if not _network_supported(settings):
+        raise HTTPException(400, f"{label}: {network_share.NetworkShareUnsupported()}")
+    return _FolderPlan(
+        target, label, _validate_network_dir(path_str, label), user=user, token=token, credential=credential,
+        stored_password=from_storage,
+    )
+
+
+def _check_same_host(watch: _FolderPlan, export: _FolderPlan) -> None:
+    """SMB: pro Server nur EIN Satz Zugangsdaten je Anmeldesitzung (Fehler 1219).
+
+    SEC-NF-01: Ein gespeichertes Passwort wird NIE mit einem eingegebenen
+    verglichen — die Antwort verriete sonst, ob die Eingabe dem gespeicherten
+    NAS-Passwort entspricht (Raten ohne Anmeldeversuch an der NAS). Ist eine
+    Seite neu eingegeben und die andere gespeichert, gelten die eingegebenen
+    Zugangsdaten fuer beide; die Verbindungsprobe prueft sie dann an der NAS.
+    """
+    if not (watch.uses_credentials and export.uses_credentials):
+        return
+    host_w = network_share.parse_unc(watch.path).host.casefold()
+    host_e = network_share.parse_unc(export.path).host.casefold()
+    if host_w != host_e:
+        return
+    conflict = HTTPException(400, network_share.message_for(network_share.ERROR_SESSION_CREDENTIAL_CONFLICT))
+    if watch.credential.user.casefold() != export.credential.user.casefold():
+        raise conflict
+    if watch.stored_password != export.stored_password:
+        fresh, stored = (export, watch) if watch.stored_password else (watch, export)
+        stored.credential, stored.token, stored.stored_password = fresh.credential, fresh.token, False
+        return
+    if not watch.credential.same_as(export.credential):
+        raise conflict
+
+
+def _probe_network_folder(path_str: str, credential: NetworkCredential, create: bool) -> str:
+    r"""Verbinden, (anlegen,) Schreibtest — blockierend.
+
+    Erst NACH dem Verbinden wird der Pfad angefasst, und zwar ueber die beim
+    Verbinden gepruefte Adresse (``\\<ip>\share``, NET-SEC-08). DFS-Freigaben
+    erkennt und verweigert schon ``connect`` — ohne der Weiterleitung zu folgen
+    (NET-SEC-09). Die Verbindung wird erst nach dem letzten Zugriff dieses
+    Threads freigegeben (auch wenn der wartende Request schon abgelaufen ist).
+    Liefert eine Meldung fuer die UI.
+    """
+    unc = network_share.parse_unc(path_str)
+    probe_target = f"probe:{uuid.uuid4().hex}"
+    access_root = network_share.connections.acquire(probe_target, unc.root, credential)
+    try:
+        folder = _fs_path("\\".join([access_root, *unc.rest]))
+        if not os.path.isdir(folder):
+            if not create:
+                return "Verbindung erfolgreich. Der Ordner existiert noch nicht und wird beim Speichern angelegt."
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError:
+                raise ShareError(0, message="Netzwerkordner: Verbindung erfolgreich, aber der Ordner kann nicht angelegt werden.") from None
+        probe_file = os.path.join(folder, f".zw-test-{uuid.uuid4().hex}")
+        try:
+            with open(probe_file, "wb") as fh:
+                fh.write(b"zettelwirtschaft")
+        except OSError:
+            raise ShareError(0, message="Netzwerkordner: Verbindung erfolgreich, aber der Benutzer darf in diesem Ordner nicht schreiben.") from None
+        finally:
+            try:
+                os.remove(probe_file)
+            except OSError:
+                pass
+        return "Verbindung erfolgreich – Ordner lesbar und beschreibbar."
+    finally:
+        network_share.connections.release(probe_target)
+
+
+def _fs_path(unc_path: str) -> str:
+    """Dateisystempfad zu einem UNC-Pfad — in Produktion identisch. Tests
+    bilden Freigaben hierueber auf lokale Ordner ab (kein echtes SMB)."""
+    return unc_path
+
+
+# R8: Probe + Planung bleiben deutlich unter dem Zeitlimit der Oberflaeche.
+_PROBE_TIMEOUT = 20.0
+_VALIDATION_TIMEOUT = 15.0
+
+
+async def _validate_in_thread(fn, *args):
+    """Validierung im Thread (SEC-NF-02): Namensaufloesung (DNS/LLMNR/NetBIOS),
+    realpath und Registry blockieren — nie den Event-Loop."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), _VALIDATION_TIMEOUT)
+    except TimeoutError:
+        raise HTTPException(
+            400, "Zeitüberschreitung bei der Prüfung des Ordners (Namensauflösung) – bitte den Servernamen prüfen.",
+        ) from None
+
+
+async def _probe_or_400(plan: _FolderPlan, create: bool) -> str:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_probe_network_folder, plan.path, plan.credential, create), _PROBE_TIMEOUT,
+        )
+    except TimeoutError:
+        raise HTTPException(400, f"{plan.label}: {network_share.message_for(network_share.ERROR_SEM_TIMEOUT)}") from None
+    except (ShareError, UncPathError) as exc:
+        raise HTTPException(400, f"{plan.label}: {exc}") from None
+    except OSError as exc:
+        code = getattr(exc, "winerror", None) or 0
+        raise HTTPException(
+            400, f"{plan.label}: {network_share.message_for(code) if code else 'Netzwerkordner: Zugriff fehlgeschlagen.'}",
+        ) from None
 
 
 def _effective_watch_dir(value: str, settings: Settings) -> str:
@@ -331,21 +649,81 @@ def _effective_export_dir(value: str, settings: Settings) -> str:
     return _validate_local_dir(path_str, "Export-Ordner", settings)
 
 
+SCANNER_SHARE_DEFAULT_NAME = "Zettelwirtschaft-Eingang"
+
+
+def _scanner_share_status(watch_dir: str) -> ScannerShareStatus:
+    """(B) Status der lokalen Scanner-Freigabe aus der Registry (vom Setup bzw.
+    freigabe-einrichten.ps1 geschrieben), geprueft ueber NetShareGetInfo."""
+    reg = network_share.scanner_share_registry()
+    name = reg.get("ScannerShareName", "")
+    exists, share_path = network_share.scanner_share_info(name or SCANNER_SHARE_DEFAULT_NAME)
+    if not name and not exists:
+        return ScannerShareStatus()
+    name = name or SCANNER_SHARE_DEFAULT_NAME
+    path = share_path or reg.get("ScannerSharePath", "")
+    # Die Scanner-Freigabe ist immer ein LOKALER Ordner. Ein Netzwerk-Watch-
+    # Ordner kann nicht derselbe sein — und wird nie ohne Verbindung
+    # aufgeloest (realpath meldete das Computerkonto an, NET-SEC-01).
+    if not path or network_share.is_unc(watch_dir) or network_share.is_unc(path):
+        matches = False
+    else:
+        try:
+            matches = _canonical(path) == _canonical(watch_dir)
+        except (OSError, ValueError):
+            matches = False
+    computer = os.environ.get("COMPUTERNAME") or socket.gethostname()
+    return ScannerShareStatus(
+        configured=bool(reg.get("ScannerShareName")),
+        exists=exists,
+        unc_path=f"\\\\{computer}\\{name}",
+        user=reg.get("ScannerShareUser", ""),
+        path=path,
+        matches_watch_dir=matches,
+    )
+
+
+async def _folder_settings_response(
+    session: AsyncSession, settings: Settings, restart_required: bool = False,
+) -> FolderSettingsResponse:
+    docker = settings.deployment_mode == "docker"
+    watch = await nfs.load_folder_config(session, nfs.WATCH, settings)
+    export = await nfs.load_folder_config(session, nfs.EXPORT, settings)
+    from app.services.watch_folder_service import POLL_INTERVAL_KEY, clamp_poll_interval
+
+    interval = clamp_poll_interval(await get_db_setting(session, POLL_INTERVAL_KEY, "") or settings.WATCH_POLL_INTERVAL)
+    supported = _network_supported(settings)
+    scanner = None
+    if supported:
+        try:
+            scanner = await asyncio.to_thread(_scanner_share_status, watch.path)
+        except Exception:
+            logger.warning("Status der Scanner-Freigabe nicht lesbar", exc_info=True)
+    return FolderSettingsResponse(
+        watch_dir=watch.path,
+        export_dir=export.path,
+        # Host-Mounts gibt es nur im Docker-Betrieb.
+        watch_dir_host=await get_db_setting(session, "watch_dir_host", "") if docker else "",
+        export_dir_host=await get_db_setting(session, "export_dir_host", "") if docker else "",
+        restart_required=restart_required,
+        deployment_mode=settings.deployment_mode,
+        watch_dir_net_user="" if docker else watch.user,
+        export_dir_net_user="" if docker else export.user,
+        watch_dir_net_password_set=not docker and bool(watch.token),
+        export_dir_net_password_set=not docker and bool(export.token),
+        watch_poll_interval=interval,
+        network_folders_supported=supported,
+        scanner_share=scanner,
+    )
+
+
 @router.get("/system/settings", response_model=FolderSettingsResponse)
 async def get_folder_settings(
     session: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    """Liest die konfigurierten Ordner-Einstellungen."""
-    docker = settings.deployment_mode == "docker"
-    return FolderSettingsResponse(
-        watch_dir=await get_db_setting(session, "watch_dir", settings.WATCH_DIR),
-        export_dir=await get_db_setting(session, "export_dir", settings.EXPORT_DIR),
-        # Host-Mounts gibt es nur im Docker-Betrieb.
-        watch_dir_host=await get_db_setting(session, "watch_dir_host", "") if docker else "",
-        export_dir_host=await get_db_setting(session, "export_dir_host", "") if docker else "",
-        deployment_mode=settings.deployment_mode,
-    )
+    """Liest die konfigurierten Ordner-Einstellungen (ohne Passwoerter)."""
+    return await _folder_settings_response(session, settings)
 
 
 @router.put("/system/settings", response_model=FolderSettingsResponse)
@@ -355,15 +733,25 @@ async def update_folder_settings(
     session: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ):
-    """Aktualisiert Watch-Ordner und Export-Ordner. Startet Watch-Task bei Pfadaenderung neu.
+    """Aktualisiert Watch-Ordner und Export-Ordner. Startet den Watch-Task neu,
+    wenn sich Pfad, Zugangsdaten oder Pruefintervall aendern.
 
     Docker: die *_host-Felder sind Host-Ordner, die per Bind-Mount unter
     /app/external/* erscheinen (wirksam nach Neustart via start.bat).
     Native/Dev: das Backend greift direkt auf die Ordner zu — ein Host-Pfad
     (falls die UI ihn schickt) wird direkt als Ordnerpfad uebernommen.
+    Netzwerkordner (\\\\server\\freigabe) brauchen Benutzer + Passwort; vor dem
+    Speichern wird damit verbunden und ein Schreibtest gemacht.
     """
     mode = settings.deployment_mode
-    old_watch_dir = await get_db_setting(session, "watch_dir", settings.WATCH_DIR)
+    from app.services.watch_folder_service import POLL_INTERVAL_KEY, clamp_poll_interval
+
+    old_watch = await nfs.load_folder_config(session, nfs.WATCH, settings)
+    old_export = await nfs.load_folder_config(session, nfs.EXPORT, settings)
+    old_interval_raw = await get_db_setting(session, POLL_INTERVAL_KEY, "")
+    old_interval = clamp_poll_interval(old_interval_raw or settings.WATCH_POLL_INTERVAL)
+    interval = body.watch_poll_interval if body.watch_poll_interval is not None else old_interval
+    watch_task_stopped = False
 
     # Erst ALLES validieren, dann speichern.
     if mode == "docker":
@@ -384,6 +772,9 @@ async def update_folder_settings(
         old_watch_host = await get_db_setting(session, "watch_dir_host", "")
         old_export_host = await get_db_setting(session, "export_dir_host", "")
         restart_required = watch_host != old_watch_host or export_host != old_export_host
+        # Docker: keine eigenen SMB-Verbindungen (CIFS-Volume) — Zugangsdaten bleiben leer.
+        watch_plan = _FolderPlan(nfs.WATCH, "Watch-Ordner", watch_dir)
+        export_plan = _FolderPlan(nfs.EXPORT, "Export-Ordner", export_dir)
     else:
         watch_host = export_host = ""
         watch_value = _normalize_path_input(body.watch_dir_host) or _normalize_path_input(body.watch_dir)
@@ -394,23 +785,68 @@ async def update_folder_settings(
             watch_value = ""
         if export_value == DOCKER_EXTERNAL_EXPORT:
             export_value = ""
-        watch_dir = _effective_watch_dir(watch_value, settings)
-        export_dir = _effective_export_dir(export_value, settings)
+        if any(_is_network_path(v) for v in (watch_value, export_value)) or (
+            not watch_value and _is_network_path(settings.WATCH_DIR)
+        ):
+            # Eigenes, engeres Limit VOR jeder Pruefung (SEC-NF-01/02):
+            # Verbindungsversuche, Namensaufloesung und Zugangsdaten-Vergleiche
+            # taugen sonst zum Passwortraten bzw. zum Blockieren.
+            check_network_folder_rate(request)
+
+        def _plan_both() -> tuple[_FolderPlan, _FolderPlan]:
+            w = _plan_folder(
+                nfs.WATCH, watch_value, body.watch_dir_net_user, body.watch_dir_net_password, old_watch, settings,
+            )
+            e = _plan_folder(
+                nfs.EXPORT, export_value, body.export_dir_net_user, body.export_dir_net_password, old_export, settings,
+            )
+            _check_same_host(w, e)
+            return w, e
+
+        watch_plan, export_plan = await _validate_in_thread(_plan_both)
         restart_required = False
-        # Ordner muessen existieren bzw. anlegbar sein — sonst wuerde die UI
-        # Erfolg melden, waehrend der Watcher ins Leere schaut.
-        for label, dir_path in (("Watch-Ordner", watch_dir), ("Export-Ordner", export_dir)):
-            if not dir_path:
-                continue
-            try:
-                Path(dir_path).mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise HTTPException(400, f"{label} kann nicht angelegt werden: {dir_path} ({exc.strerror or exc})")
+
+        network_plans = [p for p in (watch_plan, export_plan) if p.uses_credentials]
+        # Bestehende Verbindungen des jeweiligen Ziels vor dem Test freigeben
+        # (sonst kollidiert ein Benutzer-/Passwortwechsel mit Fehler 1219).
+        if watch_plan.uses_credentials and _watch_changed(old_watch, watch_plan):
+            await _stop_watch_task(request.app)
+            watch_task_stopped = True
+        if export_plan.uses_credentials and _folder_changed(old_export, export_plan):
+            await asyncio.to_thread(nfs.release_export)
+        try:
+            # Proben parallel (R8): die Gesamtdauer bleibt unter dem Zeitlimit der UI.
+            results = await asyncio.gather(
+                *(_probe_or_400(plan, create=True) for plan in network_plans), return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            # Lokale Ordner muessen existieren bzw. anlegbar sein — sonst wuerde
+            # die UI Erfolg melden, waehrend der Watcher ins Leere schaut. (UNC
+            # ohne Zugangsdaten nur per Experten-Override, wie bisher.)
+            for plan in (watch_plan, export_plan):
+                if not plan.path or plan.uses_credentials:
+                    continue
+                try:
+                    await asyncio.to_thread(Path(plan.path).mkdir, parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise HTTPException(400, f"{plan.label} kann nicht angelegt werden: {plan.path} ({exc.strerror or exc})")
+        except HTTPException:
+            if watch_task_stopped:
+                await _restart_watch_task(request.app, settings)  # alte Einstellungen laufen weiter
+            raise
+        watch_dir, export_dir = watch_plan.path, export_plan.path
 
     await set_db_setting(session, "watch_dir", watch_dir)
     await set_db_setting(session, "export_dir", export_dir)
     await set_db_setting(session, "watch_dir_host", watch_host)
     await set_db_setting(session, "export_dir_host", export_host)
+    for plan in (watch_plan, export_plan):
+        keep = plan.network
+        await set_db_setting(session, nfs.user_key(plan.target), plan.user if keep else "")
+        await set_db_setting(session, nfs.password_key(plan.target), plan.token if keep else "")
+    await set_db_setting(session, POLL_INTERVAL_KEY, str(interval))
     await session.commit()
 
     if mode == "docker":
@@ -421,23 +857,109 @@ async def update_folder_settings(
         except OSError:
             logger.warning("Konnte %s nicht schreiben", host_mounts_file(settings), exc_info=True)
 
-    # Watch-Task neu starten wenn sich der Pfad geaendert hat
-    if watch_dir != old_watch_dir:
-        await _restart_watch_task(request.app, settings)
-        logger.info("Watch-Ordner geaendert: %s -> %s", old_watch_dir, watch_dir)
+    if _folder_changed(old_export, export_plan):
+        await asyncio.to_thread(nfs.release_export)
 
-    return FolderSettingsResponse(
-        watch_dir=watch_dir,
-        export_dir=export_dir,
-        watch_dir_host=watch_host,
-        export_dir_host=export_host,
-        restart_required=restart_required,
-        deployment_mode=mode,
+    # Watch-Task neu starten, wenn sich Pfad, Zugangsdaten oder Intervall geaendert haben
+    if watch_task_stopped or _watch_changed(old_watch, watch_plan) or (watch_plan.network and interval != old_interval):
+        await _restart_watch_task(request.app, settings)
+        logger.info("Watch-Ordner geaendert: %s -> %s", old_watch.path, watch_dir)
+
+    return await _folder_settings_response(session, settings, restart_required=restart_required)
+
+
+def _folder_changed(old: nfs.FolderConfig, plan: _FolderPlan) -> bool:
+    return (
+        old.path != plan.path
+        or (plan.network and (old.user != plan.user or old.token != plan.token))
     )
 
 
-async def _restart_watch_task(app, settings: Settings) -> None:
-    """Stoppt den laufenden Watch-Task und startet ihn mit dem neuen Pfad neu."""
+def _watch_changed(old: nfs.FolderConfig, plan: _FolderPlan) -> bool:
+    return _folder_changed(old, plan)
+
+
+@router.post("/system/settings/test-folder", response_model=TestFolderResponse)
+async def test_folder(
+    body: TestFolderRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+):
+    """Prueft einen Ordner, ohne zu speichern.
+
+    Laufwerksbuchstaben: nur Klassifikation (Netzlaufwerk -> UNC-Vorschlag),
+    kein Netzwerkzugriff. UNC: mit den angegebenen (oder unveraendert
+    gespeicherten) Zugangsdaten verbinden, lesen, Schreibtest, trennen.
+    Antwortet immer mit 200 (ok=false + Grund); nie mit Zugangsdaten.
+    """
+    check_network_folder_rate(request)
+    label = "Watch-Ordner" if body.target == nfs.WATCH else "Export-Ordner"
+    if settings.deployment_mode == "docker":
+        return TestFolderResponse(
+            ok=False, kind="unsupported",
+            message="Im Docker-Betrieb werden Ordner als Host-Pfad bzw. CIFS-Volume eingebunden (siehe Hilfe).",
+        )
+    path_str = _normalize_path_input(body.path)
+    if not path_str:
+        return TestFolderResponse(ok=False, kind="local", message="Bitte einen Ordner angeben.")
+
+    def _fail(kind: str, exc: HTTPException) -> TestFolderResponse:
+        detail = str(exc.detail)
+        if detail.startswith(f"{label}: "):
+            detail = detail[len(label) + 2:]
+        return TestFolderResponse(ok=False, kind=kind, message=detail)
+
+    if not _is_network_path(path_str):
+        info = await _validate_in_thread(network_share.classify_drive, path_str)
+        if info.kind in ("network_drive", "missing_drive", "unsuitable"):
+            return TestFolderResponse(
+                ok=False, kind=info.kind, message=network_share.drive_message(info),
+                suggested_paths=list(info.suggestions),
+            )
+        try:
+            validated = await _validate_in_thread(_validate_local_dir, path_str, label, settings)
+        except HTTPException as exc:
+            return _fail(info.kind if info.kind == "subst" else "local", exc)
+        exists = await asyncio.to_thread(os.path.isdir, validated)
+        message = "Ordner ist gültig." if exists else "Ordner ist gültig und wird beim Speichern angelegt."
+        if info.kind == "subst":
+            message = f"Ersatzlaufwerk {info.letter}: zeigt auf {validated} – gespeichert wird dieser Pfad. " + message
+        return TestFolderResponse(ok=True, kind=info.kind if info.kind == "subst" else "local", message=message)
+
+    stored = await nfs.load_folder_config(session, body.target, settings)
+    try:
+        plan = await _validate_in_thread(
+            _plan_folder, body.target, path_str, body.net_user, body.net_password, stored, settings,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise
+        return _fail("unc", exc)
+    if not plan.uses_credentials:
+        return TestFolderResponse(
+            ok=True, kind="unc",
+            message="Netzwerkpfad ohne Zugangsdaten (Experten-Einstellung ALLOW_NETWORK_FOLDERS) – nicht getestet.",
+        )
+    if not plan.stored_password and network_share.connections.in_use(plan.path):
+        # SEC-NF-01: Die Freigabe wird schon mit gespeicherten Zugangsdaten
+        # benutzt. Ein Test mit eingegebenen Zugangsdaten verglieche sie (ohne
+        # NAS-Anmeldung) mit den gespeicherten — das Ergebnis verriete, ob das
+        # Passwort stimmt. Deshalb kein Vergleich; geprueft wird beim Speichern.
+        return TestFolderResponse(
+            ok=True, kind="unc",
+            message="Diese Freigabe wird bereits als Eingangs- bzw. Zielordner verwendet – "
+                    "die eingegebenen Zugangsdaten werden beim Speichern geprüft (nicht getestet).",
+        )
+    try:
+        message = await _probe_or_400(plan, create=False)
+    except HTTPException as exc:
+        return _fail("unc", exc)
+    return TestFolderResponse(ok=True, kind="unc", message=message)
+
+
+async def _stop_watch_task(app) -> None:
+    """Stoppt den laufenden Watch-Task (gibt dabei seine Netzwerkverbindung frei)."""
     old_task = getattr(app.state, "watch_task", None)
     if old_task and not old_task.done():
         old_task.cancel()
@@ -446,9 +968,17 @@ async def _restart_watch_task(app, settings: Settings) -> None:
         except asyncio.CancelledError:
             pass
 
+
+async def _restart_watch_task(app, settings: Settings) -> None:
+    """Stoppt den laufenden Watch-Task und startet ihn mit dem neuen Pfad neu."""
+    await _stop_watch_task(app)
+
     session_factory = getattr(app.state, "session_factory", None)
     if session_factory is None:
         logger.warning("session_factory nicht in app.state – Watch-Task kann nicht neu gestartet werden")
+        return
+    if getattr(app.state, "shutting_down", False):
+        logger.info("Dienst wird beendet – Watch-Task wird nicht neu gestartet")
         return
 
     from app.services.watch_folder_service import run_watch_folder
@@ -549,6 +1079,13 @@ async def system_health(
             )
     except Exception:
         components["chromadb"] = chroma_unreachable
+
+    # Watch-/Export-Ordner: Erreichbarkeit (Netzwerkordner mit Grund) — nur
+    # Pfad und Benutzername, nie Zugangsdaten.
+    for target, name in ((nfs.WATCH, "watch_folder"), (nfs.EXPORT, "export_folder")):
+        component = nfs.health_component(target)
+        if component is not None:
+            components[name] = component
 
     sys_info = await _cached_system_info(settings)
 

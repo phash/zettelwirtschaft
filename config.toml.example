@@ -32,11 +32,18 @@ UPLOAD_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/uploads"
 ARCHIVE_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/archive"
 THUMBNAIL_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/thumbnails"
 WATCH_DIR = "C:/Users/<USER>/Documents/Zettelwirtschaft/data/watch"
-EXPORT_DIR = ""  # leer = deaktiviert. z.B. "Z:/Steuerberater/Eingang" fuer NAS-Sync.
-# Netzwerkpfade (\\server\freigabe) als Watch-/Export-Ordner in der Web-UI erlauben.
-# Standard aus: der Dienst laeuft als LocalSystem und meldet das Maschinenkonto beim
-# angegebenen Server an. Nur mit einer vertrauenswuerdigen Freigabe einschalten.
+EXPORT_DIR = ""  # leer = deaktiviert. z.B. "D:/Steuerberater/Eingang" (lokaler Ordner).
+# Netzwerkordner (NAS): in der Web-UI unter Einstellungen > Ordner den Pfad
+# \\server\freigabe\ordner mit Benutzer und Passwort der Freigabe eintragen. Der
+# Dienst verbindet sich dann selbst. Netzlaufwerke (V:) sieht der Dienst nicht.
+# Experten-Override: UNC OHNE Zugangsdaten erlauben (der Dienst meldet dann das
+# Computerkonto am Server an - nur mit einer vertrauenswuerdigen Freigabe).
 # ALLOW_NETWORK_FOLDERS = false
+# Pruefintervall fuer Netzwerk-Watch-Ordner in Sekunden (10-600), falls in der UI
+# nichts gespeichert ist.
+# WATCH_POLL_INTERVAL = 30
+# Auch lokale Watch-Ordner per Polling ueberwachen (z.B. Docker mit CIFS-Volume).
+# WATCH_FORCE_POLLING = false
 
 # ---- KI / Ollama ----
 OLLAMA_BASE_URL = "http://localhost:11434"  # Native-Default (vom Ollama-Service auf localhost)

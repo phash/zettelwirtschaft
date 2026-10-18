@@ -9,7 +9,6 @@ import json
 import uuid
 import shutil
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from PIL import Image
@@ -30,8 +29,6 @@ from app.models.processing_job import (
 )
 from app.models.split_batch import SplitBatch, SplitBatchStatus, SplitOrigin
 from app.services import split_service
-from app.services.analysis_service import AnalysisResult
-from app.services.ocr_service import PageText
 from app.services.queue_worker_service import (
     purge_duplicate_upload_copies,
     recover_interrupted_jobs,
@@ -42,61 +39,7 @@ from tests.services.test_pdf_split_service import make_pdf
 from tests.services.test_queue_worker_service import _job_reaches, _run_worker_until
 
 
-@pytest.fixture
-def fast_settings(test_settings: Settings) -> Settings:
-    test_settings.QUEUE_POLL_INTERVAL = 0
-    return test_settings
-
-
-class OcrMock:
-    """Zaehlt OCR-Aufrufe pro Seite; ``fail_on`` wirft einmalig bei Seite n."""
-
-    def __init__(self):
-        self.calls: list[int] = []
-        self.fail_on: int | None = None
-
-    def render(self, path, n):
-        return Image.new("L", (1240, 1754), 255)
-
-    def ocr(self, image, n, languages, exclude_left=0.0):
-        self.calls.append(n)
-        if self.fail_on == n:
-            self.fail_on = None
-            raise RuntimeError("Tesseract abgestuerzt")
-        return PageText(page_number=n, text=f"Inhalt der Seite {n} mit genug Text", confidence=0.5 + n / 100)
-
-
-@pytest.fixture
-def ocr_mock():
-    mock = OcrMock()
-    with patch("app.services.ocr_service.render_pdf_page_for_ocr", side_effect=mock.render), \
-            patch("app.services.ocr_service.ocr_page_image", side_effect=mock.ocr):
-        yield mock
-
-
-@pytest.fixture(autouse=True)
-def _pipeline_mocks():
-    """LLM, Thumbnail und Vektorisierung mocken; die normale OCR darf fuer
-    aufgeteilte Teile NIE laufen (Seitentext wird wiederverwendet)."""
-    analysis = AnalysisResult(document_type="RECHNUNG", confidence=0.9, title="Teil", needs_review=False)
-    with patch(
-        "app.services.analysis_service._try_combined_analysis",
-        new_callable=AsyncMock, return_value=analysis,
-    ) as llm, patch(
-        "app.services.analysis_service.extract_text",
-        new_callable=AsyncMock, side_effect=AssertionError("normale OCR darf nicht laufen"),
-    ) as extract, patch(
-        "app.services.queue_worker_service.generate_thumbnail", new_callable=AsyncMock, return_value=None,
-    ), patch(
-        "app.services.vectorize_service.vectorize_document", new_callable=AsyncMock, return_value=0,
-    ), patch(
-        "app.services.vectorize_service.delete_document_vectors", new_callable=AsyncMock,
-    ), patch(
-        # KI-Pass der Aufteilung: Ollama "nicht erreichbar" (Tests erreichen nie
-        # einen echten Dienst); Tests zum KI-Pass setzen return_value selbst.
-        "app.services.split_llm_service.call_llm", new_callable=AsyncMock, return_value=None,
-    ) as split_llm:
-        yield {"llm": llm, "extract": extract, "split_llm": split_llm}
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 
 async def _upload(settings: Settings, factory, pdf: Path, *, split_mode=SplitMode.FORCE, **kw) -> str:

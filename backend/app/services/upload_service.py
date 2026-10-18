@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -19,6 +20,15 @@ from app.services.file_validation_service import (
 logger = logging.getLogger(__name__)
 
 _COPY_CHUNK = 1024 * 1024
+
+
+class SourceUnavailableError(Exception):
+    """Die Quelldatei liess sich gerade nicht lesen (z.B. SMB-Aussetzer) — kein
+    Grund, sie als ungueltig abzulehnen; der Aufrufer versucht es spaeter."""
+
+
+async def _to_thread(fn, *args, **kwargs):
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 def _upload_destination(original_name: str, settings: Settings) -> tuple[str, Path]:
@@ -120,6 +130,12 @@ def discard_upload(job: ProcessingJob) -> None:
         logger.warning("Upload-Kopie konnte nicht entfernt werden: %s", job.file_path, exc_info=True)
 
 
+def _copy_source(source: Path, dest: Path) -> int:
+    """Quelle nach UPLOAD_DIR kopieren; liefert die kopierte Groesse."""
+    shutil.copy2(str(source), str(dest))
+    return dest.stat().st_size
+
+
 async def process_upload(
     file_path: Path,
     original_name: str,
@@ -127,26 +143,48 @@ async def process_upload(
     source: JobSource,
     settings: Settings,
     db: AsyncSession,
+    io: Callable[..., Awaitable] | None = None,
 ) -> ProcessingJob:
     """Verarbeitet eine vorhandene Datei (Watch-Ordner, E-Mail-Anhang):
-    Validierung, Kopie nach UPLOAD_DIR, Queue-Eintrag.
+    Kopie nach UPLOAD_DIR, Validierung der Kopie, Queue-Eintrag.
+
+    R3: Die Quelle (evtl. auf einer Freigabe) wird nur einmal gelesen — beim
+    Kopieren, im Thread (``io``: z.B. mit gehaltener Netzwerkverbindung).
+    Validiert wird die lokale Kopie; genau sie wird importiert. Ein Lesefehler
+    der Quelle ist ``SourceUnavailableError`` (voruebergehend), keine
+    Ablehnung.
 
     Raises:
         FileValidationError bei ungueltiger Datei
+        SourceUnavailableError wenn die Quelle gerade nicht lesbar ist
     """
-    validate_file(file_path, original_name, file_size, settings)
+    run_io = io or _to_thread
+    validate_file_metadata(original_name, file_size, settings)
 
     stored_name, dest_path = _upload_destination(original_name, settings)
 
     # M4: IMMER kopieren (auch Watch-Ordner) und die Quelldatei erst NACH
     # erfolgreichem DB-Commit durch den Aufrufer loeschen bzw. verschieben —
     # rollback-sicher, analog zur "copy+delete"-Disziplin im archive_service.
-    # T17: copy2 in to_thread, damit grosse Dateien den Event-Loop nicht blockieren.
-    await asyncio.to_thread(shutil.copy2, str(file_path), str(dest_path))
+    # T17: Kopie im Thread, damit grosse Dateien den Event-Loop nicht blockieren.
+    try:
+        copied_size = await run_io(_copy_source, file_path, dest_path)
+    except FileNotFoundError as exc:
+        dest_path.unlink(missing_ok=True)
+        raise SourceUnavailableError(f"Datei nicht mehr vorhanden: {original_name}") from exc
+    except OSError as exc:
+        dest_path.unlink(missing_ok=True)
+        raise SourceUnavailableError(
+            f"Datei konnte nicht gelesen werden ({exc.strerror or type(exc).__name__}): {original_name}",
+        ) from exc
+    except BaseException:
+        dest_path.unlink(missing_ok=True)
+        raise
 
     try:
-        return await create_job(dest_path, stored_name, original_name, file_size, source, db)
-    except Exception:
+        await asyncio.to_thread(validate_file, dest_path, original_name, copied_size, settings)
+        return await create_job(dest_path, stored_name, original_name, copied_size, source, db)
+    except BaseException:
         dest_path.unlink(missing_ok=True)
         raise
 

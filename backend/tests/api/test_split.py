@@ -3,21 +3,21 @@
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import update
 
 from app.models.document import Document
 from app.models.processing_job import JobStatus, ProcessingJob, SplitMode
 from app.models.split_batch import SplitBatch, SplitBatchStatus
 from tests.services.test_pdf_split_service import make_pdf
-from tests.services.test_split_flow import (  # noqa: F401 (Fixtures)
+from tests.services.test_split_flow import (
     _batch,
     _detect,
     _job,
-    _pipeline_mocks,
     _run_until,
-    fast_settings,
-    ocr_mock,
 )
+
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 
 async def test_upload_split_check_sets_force_mode(client, test_session_factory, tmp_path):

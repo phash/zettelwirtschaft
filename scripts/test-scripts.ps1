@@ -847,6 +847,298 @@ Invoke-Test 'legacy-install.ps1 (5.1): WaitHealth ueber SERVER_PORT der config.t
     Assert-True ($r.Code -eq 1 -and (Read-ZwIni $ini).Reason -eq 'timeout') "Timeout: Exit $($r.Code)"
 }
 
+# ---------------------------------------------------------------- Scanner-Freigabe (B)
+# freigabe-einrichten.ps1 wird NUR mit -DryRun ausgefuehrt: jeder Systemeingriff
+# (Konto, Freigabe, Firewall, NTFS, LSA, Registry) landet als JSON-Zeile im Log,
+# nichts wird angelegt. -DryRunState simuliert den Systemzustand.
+$FreigabeScript = Join-Path $RepoRoot 'scripts\freigabe-einrichten.ps1'
+
+function Invoke-ZwFreigabe([string]$name, [hashtable]$state, [string[]]$arguments) {
+    $dir = Join-Path $Temp "freigabe-$name"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $statePath = Join-Path $dir 'state.json'
+    [System.IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Depth 4))
+    $log = Join-Path $dir 'steps.jsonl'
+    $r = Invoke-WinPS $FreigabeScript (@('-DryRun', '-DryRunLog', $log, '-DryRunState', $statePath) + $arguments)
+    $steps = @()
+    if (Test-Path $log) { $steps = @(Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json }) }
+    $logText = if (Test-Path $log) { [System.IO.File]::ReadAllText($log) } else { '' }
+    return @{ Code = $r.Code; Output = $r.Output; Steps = $steps; Names = @($steps | ForEach-Object { $_.step }); LogText = $logText; Dir = $dir }
+}
+
+function Read-ZwShareIni([string]$path) {
+    $h = @{}
+    foreach ($line in [System.IO.File]::ReadAllLines($path, [System.Text.Encoding]::Unicode)) {
+        $i = $line.IndexOf('='); if ($i -gt 0) { $h[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+    }
+    return $h
+}
+
+function New-ZwFreigabeDataDir([string]$name) {
+    $data = Join-Path $Temp "freigabe-data-$name\$umlautDir"
+    New-Item -ItemType Directory -Force -Path (Join-Path $data 'data\watch') | Out-Null
+    return $data
+}
+
+Invoke-Test 'new-secret.ps1 -Kind password: 16 Zeichen, nur A-Z a-z 2-9, keine verwechselbaren Zeichen' {
+    $seen = @{}
+    foreach ($i in 1..20) {
+        $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\new-secret.ps1') @('-Kind', 'password')
+        $pw = $r.Output.Trim()
+        Assert-True ($r.Code -eq 0 -and $pw -cmatch '^[A-HJ-NP-Za-km-np-z2-9]{16}$') "Passwort ungueltig: $pw"
+        Assert-True ($pw -cmatch '[A-Z]' -and $pw -cmatch '[a-z]' -and $pw -match '[2-9]') "Komplexitaet (F9) fehlt: $pw"
+        $seen[$pw] = $true
+    }
+    Assert-True ($seen.Count -eq 20) 'Passwoerter wiederholen sich'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1: Einrichten (DryRun) - nur Aendern fuer das Scanner-Konto, Firewall nur LocalSubnet/Privat, Passwort nur in der INI' {
+    $data = New-ZwFreigabeDataDir 'setup'
+    $ini = Join-Path $Temp 'freigabe-setup-result\share.ini'
+    $f = Invoke-ZwFreigabe 'setup' @{ UserExists = $false; SharePath = ''; FirewallRule = $false } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ResultFile', $ini)
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code):`n$($f.Output)"
+    $want = @('User.Create', 'Lsa.DenyLogon', 'Registry.Hide', 'Acl.Grant', 'Acl.Deny', 'Acl.Deny', 'Share.Create', 'Firewall.Create', 'Registry.Set')
+    Assert-True (($f.Names -join ',') -eq ($want -join ',')) "Reihenfolge: $($f.Names -join ', ')"
+    $share = ($f.Steps | Where-Object { $_.step -eq 'Share.Create' }).params
+    Assert-True ($share.ChangeAccess -eq "$env:COMPUTERNAME\zw-scanner" -and $share.FullAccess -eq '' -and $share.ReadAccess -eq '') "Freigabe-Rechte: $($share | ConvertTo-Json -Compress)"
+    Assert-True ($share.Path -eq "$data\data\watch" -and $share.FolderEnumerationMode -eq 'AccessBased') "Freigabe-Pfad: $($share.Path)"
+    $fw = ($f.Steps | Where-Object { $_.step -eq 'Firewall.Create' }).params
+    Assert-True ($fw.RemoteAddress -eq 'LocalSubnet' -and $fw.Profile -eq 'Private' -and $fw.LocalPort -eq '445' -and $fw.Protocol -eq 'TCP' -and $fw.Direction -eq 'Inbound') "Firewall: $($fw | ConvertTo-Json -Compress)"
+    $acl = ($f.Steps | Where-Object { $_.step -eq 'Acl.Grant' }).params
+    Assert-True ($acl.Inherit -eq 'None' -and $acl.Rights -notmatch 'Delete|CreateDirectories|AppendData|FullControl|Modify') "Ordnerrechte zu breit: $($acl.Rights)"
+    $deny = @($f.Steps | Where-Object { $_.step -eq 'Acl.Deny' } | ForEach-Object { Split-Path -Leaf $_.params.Path })
+    Assert-True (($deny -join ',') -eq 'verarbeitet,rejected') "Gesperrte Unterordner: $($deny -join ',')"
+    $user = ($f.Steps | Where-Object { $_.step -eq 'User.Create' }).params
+    Assert-True ($user.Groups -eq '' -and $user.Password -eq '***') 'Konto: Gruppen/Passwort im Protokoll'
+    $h = Read-ZwShareIni $ini
+    Assert-True ($h.status -eq 'ok' -and $h.unc -eq "\\$env:COMPUTERNAME\Zettelwirtschaft-Eingang" -and $h.user -eq "$env:COMPUTERNAME\zw-scanner") "INI: $($h | ConvertTo-Json -Compress)"
+    Assert-True ($h.password -cmatch '^[A-Za-z2-9]{16}$') "INI-Passwort: $($h.password)"
+    Assert-True (-not $f.Output.Contains($h.password)) 'Passwort steht in der Konsolenausgabe (ExecToStack/Protokoll)'
+    Assert-True (-not $f.LogText.Contains($h.password)) 'Passwort steht im Schritt-Protokoll'
+    $reg = ($f.Steps | Where-Object { $_.step -eq 'Registry.Set' }).params
+    Assert-True (-not (($reg | ConvertTo-Json -Compress).Contains($h.password))) 'Passwort in der Registry'
+    Assert-True ($reg.ScannerSharePath -eq "$data\data\watch" -and $reg.ScannerShareName -eq 'Zettelwirtschaft-Eingang') "Registry: $($reg | ConvertTo-Json -Compress)"
+    $sids = @((Get-Acl -LiteralPath $ini).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
+    Assert-True (-not ($sids | Where-Object { $_ -in @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545') })) "INI fuer Jeder/Benutzer lesbar: $($sids -join ', ')"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1: Konsolenmodus zeigt Zugangsdaten einmal; bestehendes Konto behaelt Passwort, -NewPassword setzt neu' {
+    $data = New-ZwFreigabeDataDir 'console'
+    $f = Invoke-ZwFreigabe 'console' @{ UserExists = $false } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($f.Code -eq 0 -and $f.Output -match 'Passwort:\s+[A-Za-z2-9]{16}') "Konsole ohne Passwort:`n$($f.Output)"
+    $f2 = Invoke-ZwFreigabe 'existing' @{ UserExists = $true; SharePath = "$data\data\watch"; FirewallRule = $true } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($f2.Code -eq 0 -and $f2.Names -notcontains 'User.Create' -and $f2.Names -notcontains 'User.SetPassword') "Bestehendes Konto: $($f2.Names -join ', ')"
+    Assert-True ($f2.Output -match 'unver' -and $f2.Names -notcontains 'Firewall.Create') "Passwort/Firewall: $($f2.Output)"
+    Assert-True ($f2.Names -contains 'Share.UpdateAccess' -and $f2.Names -notcontains 'Share.Remove') 'Freigabe wird nicht angepasst (idempotent, ohne Loeschen)'
+    Assert-True ($f.Output -match 'Alle Ger') 'Hinweis auf das gemeinsame Scanner-Konto fehlt (F10)'
+    $f3 = Invoke-ZwFreigabe 'newpw' @{ UserExists = $true } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-NewPassword')
+    Assert-True ($f3.Code -eq 0 -and $f3.Names -contains 'User.SetPassword') "-NewPassword: $($f3.Names -join ', ')"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1: UNC, Systemordner, Laufwerkswurzel und Ordner ausserhalb des Datenordners werden nicht freigegeben' {
+    $data = New-ZwFreigabeDataDir 'blocked'
+    $outside = Join-Path $Temp 'freigabe-outside'
+    New-Item -ItemType Directory -Force -Path $outside | Out-Null
+    $cases = @(
+        @('\\nas\scans\eingang', @()),
+        @("$env:SystemRoot\Temp", @()),
+        @("$env:SystemDrive\", @()),
+        @((Join-Path $data 'gibt-es-nicht'), @()),
+        @($outside, @('-ResultFile', (Join-Path $Temp 'freigabe-outside.ini')))
+    )
+    $i = 0
+    foreach ($c in $cases) {
+        $i++
+        $f = Invoke-ZwFreigabe "blocked$i" @{ UserExists = $false } (@('-WatchDir', $c[0], '-DataDir', $data) + $c[1])
+        Assert-True ($f.Code -eq 4) "$($c[0]): Exit $($f.Code) statt 4`n$($f.Output)"
+        Assert-True ($f.Steps.Count -eq 0) "$($c[0]): Systemeingriffe trotz Ablehnung: $($f.Names -join ', ')"
+    }
+    $h = Read-ZwShareIni (Join-Path $Temp 'freigabe-outside.ini')
+    Assert-True ($h.status -eq 'error' -and $h.reason -match 'Datenordner') "INI bei Ablehnung: $($h | ConvertTo-Json -Compress)"
+    # Ausserhalb des Datenordners nur mit ausdruecklicher Bestaetigung (-Yes)
+    $f = Invoke-ZwFreigabe 'outside-yes' @{ UserExists = $false } @('-WatchDir', $outside, '-DataDir', $data, '-Yes')
+    Assert-True ($f.Code -eq 0 -and $f.Names -contains 'Share.Create') "-Yes: Exit $($f.Code)"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1: ungueltige Freigabe-/Benutzernamen werden abgelehnt (Injection)' {
+    foreach ($bad in @(@('-ShareName', 'x"; Remove-Item C:\'), @('-UserName', 'a b'), @('-UserName', 'zw-scanner-mit-viel-zu-langem-namen'))) {
+        $f = Invoke-ZwFreigabe 'badname' @{} (@('-Remove') + $bad)
+        Assert-True ($f.Code -ne 0 -and $f.Steps.Count -eq 0) "$($bad -join ' ') akzeptiert"
+    }
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 -Remove: tolerant, NTFS-Eintraege und LSA-Rechte vor dem Konto' {
+    $f = Invoke-ZwFreigabe 'remove-empty' @{ UserExists = $false; SharePath = ''; FirewallRule = $false } @('-Remove')
+    Assert-True ($f.Code -eq 0) "Nichts eingerichtet: Exit $($f.Code)`n$($f.Output)"
+    Assert-True ($f.Names -notcontains 'User.Remove' -and $f.Names -notcontains 'Share.Remove') "Leer: $($f.Names -join ', ')"
+    $data = New-ZwFreigabeDataDir 'remove'
+    $f = Invoke-ZwFreigabe 'remove' @{ UserExists = $true; SharePath = "$data\data\watch"; FirewallRule = $true; Reg_ScannerSharePath = "$data\data\watch" } @('-Remove')
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code)`n$($f.Output)"
+    $want = @('Share.Remove', 'Acl.Revoke', 'Firewall.Remove', 'Lsa.RemoveAll', 'User.Remove', 'Registry.RemoveHidden', 'Registry.Remove')
+    Assert-True (($f.Names -join ',') -eq ($want -join ',')) "Reihenfolge: $($f.Names -join ', ')"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1: LSA-Hilfstyp kompiliert (Add-Type, ohne Aufruf)' {
+    $cmd = ". '$FreigabeScript'; Initialize-ZwLsa; if ('ZwLsa' -as [type]) { exit 0 } else { exit 1 }"
+    $out = & $WinPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $cmd 2>&1
+    Assert-True ($LASTEXITCODE -eq 0) "Add-Type fehlgeschlagen:`n$($out -join "`n")"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F1): breite geerbte Rechte werden vor dem Freigeben entfernt (DryRun + echte ACL im Temp-Ordner)' {
+    $data = New-ZwFreigabeDataDir 'broad'
+    New-BroadDir "$data\data\watch"
+    $ini = Join-Path $Temp 'freigabe-broad\share.ini'
+    $f = Invoke-ZwFreigabe 'broad' @{ UserExists = $false } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ResultFile', $ini)
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code):`n$($f.Output)"
+    $protect = [array]::IndexOf($f.Names, 'Acl.Protect')
+    Assert-True ($protect -ge 0 -and $protect -lt [array]::IndexOf($f.Names, 'Acl.Grant')) "Acl.Protect fehlt/zu spaet: $($f.Names -join ', ')"
+    Assert-True ((($f.Steps | Where-Object { $_.step -eq 'Acl.Protect' }).params.Removed) -match 'S-1-5-11') 'Authentifizierte Benutzer nicht als breit erkannt'
+    # Die Schutzfunktion selbst auf einem echten (Temp-)Ordner: danach keine breiten Rechte mehr.
+    $real = Join-Path $Temp 'freigabe-broad-real'
+    New-BroadDir $real
+    $cmd = ". '$FreigabeScript'; Set-ZwPrivateAcl '$real'; if (@(Get-ZwBroadAccess '$real').Count -eq 0) { exit 0 } else { exit 1 }"
+    $out = & $WinPS -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $cmd 2>&1
+    Assert-True ($LASTEXITCODE -eq 0) "Set-ZwPrivateAcl:`n$($out -join "`n")"
+    $sids = Get-AclSids $real
+    foreach ($b in $ZwBroadSids) { Assert-True ($sids -notcontains $b) "behaelt $b" }
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Assert-True ($sids -contains $me -and $sids -contains 'S-1-5-18') "eigenes Konto/SYSTEM ausgesperrt: $($sids -join ', ')"
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    $share = $nsi.IndexOf('-ResultFile "$PLUGINSDIR\share.ini"')
+    $acl = $nsi.LastIndexOf(('secure-acl.ps1" "$DATA_DIR\data"' + [char]39), $share)
+    Assert-True ($acl -gt 0 -and ($share - $acl) -lt 1500 -and $nsi.Substring($acl, $share - $acl).Contains('${If} $R0 != "0"')) 'NSIS prueft secure-acl nicht direkt vor der Freigabe'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F2): Junction mitten im Pfad und verwaltete Ablagen werden nicht freigegeben' {
+    $data = New-ZwFreigabeDataDir 'junction'
+    $elsewhere = Join-Path $Temp 'freigabe-junction-ziel'
+    New-Item -ItemType Directory -Force -Path (Join-Path $elsewhere 'Windows') | Out-Null
+    $null = & cmd /c mklink /J "$data\data\j" $elsewhere
+    Assert-True ($LASTEXITCODE -eq 0) 'mklink /J fehlgeschlagen'
+    foreach ($bad in @("$data\data\j\Windows", "$data\data", $data, "$data\data\archive", "$data\data\backups")) {
+        New-Item -ItemType Directory -Force -Path $bad -ErrorAction SilentlyContinue | Out-Null
+        $f = Invoke-ZwFreigabe 'junction' @{ UserExists = $false } @('-WatchDir', $bad, '-DataDir', $data, '-ResultFile', (Join-Path $Temp 'freigabe-junction.ini'))
+        Assert-True ($f.Code -eq 4 -and $f.Steps.Count -eq 0) "${bad}: Exit $($f.Code), Schritte $($f.Names -join ', ')`n$($f.Output)"
+    }
+    $f = Invoke-ZwFreigabe 'junction2' @{ UserExists = $false } @('-WatchDir', "$data\data\j\Windows", '-DataDir', $data, '-Yes')
+    Assert-True ($f.Output -match 'Verkn') "Grund fehlt: $($f.Output)"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F3/F4): Firewall optional nur fuer die Scanner-Adresse, Hinweis auf offene Freigaben, Batch-/Dienstanmeldung gesperrt' {
+    $data = New-ZwFreigabeDataDir 'fw'
+    $f = Invoke-ZwFreigabe 'fw' @{ UserExists = $false; OpenShares = @('Musik') } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ScannerAddress', '192.168.178.50')
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code):`n$($f.Output)"
+    $fw = ($f.Steps | Where-Object { $_.step -eq 'Firewall.Create' }).params
+    Assert-True ($fw.RemoteAddress -eq '192.168.178.50') "RemoteAddress: $($fw.RemoteAddress)"
+    Assert-True ($f.Output -match 'ganzen PCs' -and $f.Output -match 'Musik') "Hinweise fehlen:`n$($f.Output)"
+    $lsa = ($f.Steps | Where-Object { $_.step -eq 'Lsa.DenyLogon' }).params
+    Assert-True ($lsa.Rights -match 'SeDenyBatchLogonRight' -and $lsa.Rights -match 'SeDenyServiceLogonRight') "LSA: $($lsa.Rights)"
+    $f = Invoke-ZwFreigabe 'fw-upd' @{ UserExists = $true; FirewallRule = $true } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ScannerAddress', '192.168.178.0/24')
+    Assert-True ($f.Names -contains 'Firewall.Update' -and $f.Names -notcontains 'Firewall.Create') "Update: $($f.Names -join ', ')"
+    $f = Invoke-ZwFreigabe 'fw-bad' @{ UserExists = $false } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ScannerAddress', '1.2.3')
+    Assert-True ($f.Code -ne 0 -and $f.Steps.Count -eq 0) 'ungueltige -ScannerAddress akzeptiert'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F5): Ordnerwechsel nimmt die Rechte auf dem alten Ordner zurueck, gleiche Freigabe wird nur angepasst (F9)' {
+    $data = New-ZwFreigabeDataDir 'move'
+    $old = "$data\data\alt"
+    New-Item -ItemType Directory -Force -Path $old | Out-Null
+    $f = Invoke-ZwFreigabe 'move' @{ UserExists = $true; SharePath = $old; FirewallRule = $true; Reg_ScannerSharePath = $old } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code):`n$($f.Output)"
+    $revoke = @($f.Steps | Where-Object { $_.step -eq 'Acl.Revoke' })
+    Assert-True ($revoke.Count -eq 1 -and $revoke[0].params.Path -eq $old) "Revoke: $($revoke | ConvertTo-Json -Compress)"
+    Assert-True ([array]::IndexOf($f.Names, 'Acl.Revoke') -lt [array]::IndexOf($f.Names, 'Acl.Grant')) "Reihenfolge: $($f.Names -join ', ')"
+    $same = Invoke-ZwFreigabe 'same' @{ UserExists = $true; SharePath = "$data\data\watch"; FirewallRule = $true } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($same.Names -contains 'Share.UpdateAccess' -and $same.Names -notcontains 'Share.Remove' -and $same.Names -notcontains 'Acl.Revoke') "Gleicher Ordner: $($same.Names -join ', ')"
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F6): -Remove ohne Namen nutzt die Namen aus der Registry' {
+    $data = New-ZwFreigabeDataDir 'regnames'
+    $f = Invoke-ZwFreigabe 'regnames' @{ UserExists = $true; SharePath = "$data\data\watch"; FirewallRule = $true; Reg_ScannerShareName = 'Scan2'; Reg_ScannerShareUser = 'PC\scan2'; Reg_ScannerSharePath = "$data\data\watch" } @('-Remove')
+    Assert-True ($f.Code -eq 0) "Exit $($f.Code):`n$($f.Output)"
+    Assert-True ((($f.Steps | Where-Object { $_.step -eq 'Share.Remove' }).params.Name) -eq 'Scan2') "Share: $($f.LogText)"
+    Assert-True ((($f.Steps | Where-Object { $_.step -eq 'User.Remove' }).params.Name) -eq 'scan2') "Konto: $($f.LogText)"
+    Assert-True ((($f.Steps | Where-Object { $_.step -eq 'Registry.RemoveHidden' }).params.Name) -eq 'scan2') 'Versteckt-Eintrag bleibt'
+    Assert-True ($f.Names[-1] -eq 'Registry.Remove') "Registry nicht zuletzt: $($f.Names -join ', ')"
+    $bad = Invoke-ZwFreigabe 'regnames-bad' @{ UserExists = $false; Reg_ScannerShareName = 'x"; rm'; Reg_ScannerShareUser = 'PC\a b' } @('-Remove')
+    Assert-True ($bad.Code -eq 0 -and (($bad.Steps | Where-Object { $_.step -eq 'Registry.RemoveHidden' }).params.Name) -eq 'zw-scanner') 'ungueltige Registry-Namen uebernommen'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F7): Setup setzt fuer ein vorhandenes Konto ein neues Passwort; Konto in einer Gruppe wird abgelehnt; stille Installation ohne Freigabe' {
+    $data = New-ZwFreigabeDataDir 'reuse'
+    $ini = Join-Path $Temp 'freigabe-reuse\share.ini'
+    $f = Invoke-ZwFreigabe 'reuse' @{ UserExists = $true } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ResultFile', $ini)
+    Assert-True ($f.Code -eq 0 -and $f.Names -contains 'User.SetPassword') "Exit $($f.Code): $($f.Names -join ', ')"
+    $h = Read-ZwShareIni $ini
+    Assert-True ($h.password -cmatch '^[A-Za-z2-9]{16}$') "INI-Passwort: $($h.password)"
+    $ini2 = Join-Path $Temp 'freigabe-admin\share.ini'
+    $g = Invoke-ZwFreigabe 'admin' @{ UserExists = $true; UserGroups = @('Administratoren') } @('-WatchDir', "$data\data\watch", '-DataDir', $data, '-ResultFile', $ini2)
+    Assert-True ($g.Code -ne 0 -and $g.Steps.Count -eq 0) "Gruppenmitglied uebernommen: $($g.Names -join ', ')"
+    Assert-True ((Read-ZwShareIni $ini2).reason -match 'Administratoren') 'Grund fehlt in der INI'
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    Assert-True ($nsi.Contains('${AndIfNot} ${Silent}')) 'stille Installation richtet die Freigabe trotzdem ein'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F8): keine Positionsbindung; Argumente ueberstehen die Rechteanforderung (Leerzeichen, ", &)' {
+    $data = New-ZwFreigabeDataDir 'positional'
+    $f = Invoke-ZwFreigabe 'positional' @{ UserExists = $false } @('-WatchDir', "$data\data\watch", 'extra')
+    Assert-True ($f.Code -ne 0 -and $f.Steps.Count -eq 0 -and $f.Output -notmatch 'Profil') "ueberzaehliges Argument gebunden: Exit $($f.Code)`n$($f.Output)"
+    $echo = Join-Path $Temp 'echo-args.ps1'
+    $out = Join-Path $Temp 'echo-args.json'
+    $valuesFile = Join-Path $Temp 'echo-args-values.json'
+    $probe = Join-Path $Temp 'echo-args-probe.ps1'
+    Set-Content -LiteralPath $echo -Value '[System.IO.File]::WriteAllText($args[0], (ConvertTo-Json -Compress -InputObject ([string[]]@($args | Select-Object -Skip 1))))'
+    $values = @('C:\Mein Ordner\', 'a"b', 'x&y z', 'C:\A&B', 'einfach', '\\nas\scans\')
+    [System.IO.File]::WriteAllText($valuesFile, (ConvertTo-Json -Compress -InputObject $values))
+    Set-Content -LiteralPath $probe -Value @(
+        'param([string]$Script, [string]$Echo, [string]$Out, [string]$ValuesFile, [string]$Exe)',
+        '. $Script',
+        '$values = [string[]](Get-Content -LiteralPath $ValuesFile -Raw | ConvertFrom-Json)',
+        '$line = (@(''-NoProfile'', ''-File'', $Echo, $Out) + $values | ForEach-Object { ConvertTo-ZwArgument $_ }) -join [string][char]32',
+        '$p = Start-Process -FilePath $Exe -ArgumentList $line -Wait -PassThru -WindowStyle Hidden',
+        'exit $p.ExitCode'
+    )
+    $r = Invoke-WinPS $probe @('-Script', $FreigabeScript, '-Echo', $echo, '-Out', $out, '-ValuesFile', $valuesFile, '-Exe', $WinPS)
+    Assert-True ($r.Code -eq 0 -and (Test-Path $out)) "Neustart-Test: $($r.Output)"
+    $got = @([System.IO.File]::ReadAllText($out) | ConvertFrom-Json)
+    Assert-True (($got -join '|') -eq ($values -join '|')) "Argumente veraendert: $($got -join '|')"
+    $bat = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'scripts\freigabe-einrichten.bat'))
+    Assert-True ($bat.Contains('-File "%SCRIPT%" -Elevate %*') -and $bat -notmatch 'ArgumentList' -and $bat -notmatch '-Command') 'freigabe-einrichten.bat baut wieder einen -Command-String'
+}
+
+Invoke-Test 'freigabe-einrichten.ps1 (F9): Fehlschlag nimmt ein neu angelegtes Konto zurueck; fehlgeschlagene neue Freigabe stellt die alte wieder her' {
+    $data = New-ZwFreigabeDataDir 'rollback'
+    $f = Invoke-ZwFreigabe 'rollback' @{ UserExists = $false; FailStep = 'Acl.Grant' } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($f.Code -eq 1) "Exit $($f.Code)"
+    $after = $f.Names[([array]::IndexOf($f.Names, 'Acl.Grant') + 1)..($f.Names.Count - 1)]
+    Assert-True ($after -contains 'Lsa.RemoveAll' -and $after -contains 'User.Remove') "kein Rollback: $($f.Names -join ', ')"
+    $old = "$data\data\alt"
+    New-Item -ItemType Directory -Force -Path $old | Out-Null
+    $g = Invoke-ZwFreigabe 'restore' @{ UserExists = $true; SharePath = $old; FailStep = 'Share.Create' } @('-WatchDir', "$data\data\watch", '-DataDir', $data)
+    Assert-True ($g.Code -eq 1 -and $g.Names -contains 'Share.Restore' -and $g.Names -notcontains 'User.Remove') "Restore: $($g.Names -join ', ')"
+    Assert-True ((($g.Steps | Where-Object { $_.step -eq 'Share.Restore' }).params.Path) -eq $old) 'alte Freigabe nicht wiederhergestellt'
+}
+
+Invoke-Test 'setup-native.nsi: Scanner-Freigabe optional, ExecToStack, INI geloescht, Deinstallation entfernt alles' {
+    $nsi = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'setup-native.nsi'))
+    Assert-True ($nsi.Contains('"Eingangsordner im Netzwerk freigeben (f' + [char]0x00FC + 'r Netzwerk-Scanner)"')) 'Checkbox fehlt'
+    Assert-True ($nsi -match 'StrCpy \$SCANNER_SHARE "0"' -and $nsi.Contains('/SCANNERSHARE=')) 'Standard nicht aus bzw. /SCANNERSHARE fehlt'
+    Assert-True ($nsi -notmatch 'ExecToLog[^\r\n]*freigabe-einrichten') 'freigabe-einrichten.ps1 per ExecToLog (Passwort im Protokoll)'
+    Assert-True ($nsi -match "nsExec::ExecToStack '[^\r\n]*freigabe-einrichten\.ps1`"[^\r\n]*-ResultFile `"\`$PLUGINSDIR\\share\.ini`"") 'Setup-Aufruf mit ExecToStack/ResultFile fehlt'
+    $read = $nsi.IndexOf('ReadINIStr $R4 "$PLUGINSDIR\share.ini" "share" "password"')
+    $del = $nsi.IndexOf('Delete "$PLUGINSDIR\share.ini"', $read)
+    Assert-True ($read -gt 0 -and $del -gt $read -and ($del - $read) -lt 200) 'INI wird nicht direkt nach dem Lesen geloescht'
+    $un = $nsi.IndexOf('Section "Uninstall"')
+    $rm = $nsi.IndexOf('freigabe-einrichten.ps1" -Remove', $un)
+    Assert-True ($un -gt 0 -and $rm -gt $un -and $rm -lt $nsi.IndexOf('service-uninstall.bat', $un)) 'Uninstall ruft -Remove nicht vor dem Dienst-Entfernen'
+    foreach ($s in 'freigabe-einrichten.bat', 'freigabe-einrichten.ps1') {
+        Assert-True ($nsi.Contains("File `"`${DIST}\$s`"") -and $nsi.Contains("Delete `"`$INSTDIR\$s`"")) "$s nicht installiert/entfernt"
+    }
+    Assert-True ($nsi.Contains('CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Scanner-Freigabe einrichten.lnk"') -and $nsi.Contains('Delete "$SMPROGRAMS\Zettelwirtschaft\Scanner-Freigabe einrichten.lnk"')) 'Startmenue-Eintrag fehlt bzw. wird nicht entfernt'
+    $build = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'scripts\build-native.ps1'))
+    Assert-True ($build.Contains('"freigabe-einrichten.bat", "freigabe-einrichten.ps1"')) 'build-native.ps1: Freigabe-Skripte fehlen in $bundleScripts'
+}
+
 # ---------------------------------------------------------------- NSIS
 Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     if (-not $MakeNsis) { Skip 'makensis nicht gefunden' }
@@ -855,7 +1147,7 @@ Invoke-Test 'setup-native.nsi: kompiliert mit /WX (Warnungen = Fehler)' {
     foreach ($f in 'nssm.exe', 'service-install.bat', 'service-uninstall.bat', 'config.toml.example', 'VERSION', 'update-wizard.bat', 'update-wizard.ps1', 'backup.bat', 'restore-backup.bat', 'restore-backup.ps1') {
         Set-Content (Join-Path $dist $f) 'x'
     }
-    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1', 'secure-acl.ps1', 'secure-install-dir.ps1', 'legacy-install.ps1') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
+    foreach ($f in 'new-secret.ps1', 'New-NativeConfig.ps1', 'Convert-Env-To-Config.ps1', 'model-tiers.ps1', 'secure-acl.ps1', 'secure-install-dir.ps1', 'legacy-install.ps1', 'freigabe-einrichten.ps1', 'freigabe-einrichten.bat') { Copy-Item (Join-Path $RepoRoot "scripts\$f") $dist }
     $outExe = Join-Path $Temp 'nsis\zw-native-test.exe'
     Push-Location $RepoRoot
     try { $o = & $MakeNsis /WX /V2 /DVERSION=0.0.0-test "/DDIST=$dist" "/DOUTFILE=$outExe" setup-native.nsi 2>&1 } finally { Pop-Location }

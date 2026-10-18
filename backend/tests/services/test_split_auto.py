@@ -20,15 +20,14 @@ from app.models.split_batch import SplitBatch, SplitBatchStatus
 from app.services import split_service
 from app.services.ocr_service import OcrResult, PageText
 from tests.services.test_pdf_split_service import make_pdf
-from tests.services.test_split_flow import (  # noqa: F401 — Fixtures
-    OcrMock,
+from tests.services.test_split_flow import (
     _batch,
     _job,
-    _pipeline_mocks,
     _run_until,
     _upload,
-    fast_settings,
 )
+
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 
 def letter(counter: str, *, first: bool) -> str:
@@ -38,25 +37,6 @@ def letter(counter: str, *, first: bool) -> str:
         head += "Frau Erika Musterfrau\nHauptstraße 5\n12345 Beispielstadt\nSehr geehrte Frau Musterfrau,\n"
     body = "\n".join(f"Inhaltszeile {i} des Schreibens" for i in range(8))
     return f"{head}{body}\n{counter}"
-
-
-class TextOcr(OcrMock):
-    def __init__(self, texts: dict[int, str]):
-        super().__init__()
-        self.texts = texts
-
-    def ocr(self, image, n, languages, exclude_left=0.0):
-        self.calls.append(n)
-        return PageText(page_number=n, text=self.texts.get(n, f"Inhalt der Seite {n} mit genug Text"),
-                        confidence=0.5 + n / 100)
-
-
-@pytest.fixture
-def text_ocr():
-    mock = TextOcr({})
-    with patch("app.services.ocr_service.render_pdf_page_for_ocr", side_effect=mock.render), \
-            patch("app.services.ocr_service.ocr_page_image", side_effect=mock.ocr):
-        yield mock
 
 
 async def _auto(settings, factory, pdf: Path, **kw) -> str:

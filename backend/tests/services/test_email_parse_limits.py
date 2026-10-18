@@ -15,14 +15,11 @@ from app.models.processing_job import JobSource, ProcessingJob
 from app.services import email_fetch_service as efs
 from app.services.email_fetch_service import parse_email_message
 from tests.services.fake_imap import FakeImapServer
-from tests.services.test_email_fetch_service import (  # noqa: F401 — Fixtures
+from tests.services.test_email_fetch_service import (
     PDF,
     _build_mime_email,
     _records,
     _run,
-    account_id,
-    fernet_key,
-    mail_settings,
 )
 
 

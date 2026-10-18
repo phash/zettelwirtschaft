@@ -113,6 +113,9 @@ Var DB_PATH
 Var BACKUP_ZIP
 Var ADOPT_STOPPED    ; "1" = alter Dienst wurde angehalten (-> Rollback bei Abbruch)
 Var SERVICE_EXIT     ; Exit-Code von service-install.bat
+Var SCANNER_SHARE_CHECK
+Var SCANNER_SHARE    ; ${BST_CHECKED} = Eingangsordner fuer Netzwerk-Scanner freigeben
+Var FINISH_SHARE_TEXT ; Zugangsdaten der Scanner-Freigabe (nur Abschlussseite)
 
 ; --- Pages ---
 !insertmacro MUI_PAGE_WELCOME
@@ -128,7 +131,7 @@ Page custom DataDirPage DataDirPageLeave
 
 ; FINISH-Page: Browser öffnen
 !define MUI_FINISHPAGE_TITLE "Installation abgeschlossen"
-!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft läuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberfläche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\n$FINISH_PIN_TEXT$FINISH_NOTE$\r$\n$\r$\nOhne Ollama ist keine KI-Analyse möglich."
+!define MUI_FINISHPAGE_TEXT "Zettelwirtschaft läuft als Hintergrunddienst.$\r$\n$\r$\nDie Weboberfläche ist erreichbar unter:$\r$\nhttp://localhost:$SERVER_PORT$\r$\n$\r$\n$FINISH_PIN_TEXT$FINISH_NOTE$FINISH_SHARE_TEXT$\r$\n$\r$\nOhne Ollama ist keine KI-Analyse möglich."
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Browser jetzt öffnen"
 !define MUI_FINISHPAGE_RUN_FUNCTION "OpenBrowser"
@@ -152,6 +155,17 @@ Function .onInit
     StrCpy $UPGRADE "0"
     StrCpy $LEGACY_REGVIEW "0"
     StrCpy $LOCAL_ONLY "0"
+    ; Scanner-Freigabe: Standard aus. /SCANNERSHARE=1 setzt die Checkbox vor; bei
+    ; einer stillen Installation (/S) wird sie NICHT eingerichtet - das Passwort
+    ; stuende nur auf der Abschlussseite (F7). Nachholen: Startmenue-Eintrag.
+    StrCpy $SCANNER_SHARE "0"
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/SCANNERSHARE=" $R1
+    ${IfNot} ${Errors}
+    ${AndIf} $R1 == "1"
+        StrCpy $SCANNER_SHARE ${BST_CHECKED}
+    ${EndIf}
     StrCpy $ADOPT "0"
     StrCpy $ADOPT_STOPPED "0"
     StrCpy $OLD_WAS_RUNNING "1"
@@ -405,19 +419,25 @@ Function DataDirPage
     Pop $DATA_DIR_BUTTON
     ${NSD_OnClick} $DATA_DIR_BUTTON OnBrowseDataDir
 
-    ${NSD_CreateLabel} 0 52u 100% 32u "Tipp: ein Pfad in OneDrive/Dropbox/Nextcloud erzeugt automatisch ein Cloud-Backup deiner Dokumente. Ein NAS-Pfad (Z:\) bindet das Familienarchiv ins NAS-Snapshot-System ein."
+    ${NSD_CreateLabel} 0 50u 100% 26u "Tipp: ein lokaler Ordner in OneDrive/Dropbox/Nextcloud erzeugt automatisch ein Cloud-Backup deiner Dokumente. Netzlaufwerke (Z:\) sieht der Hintergrunddienst nicht."
     Pop $0
 
-    ${NSD_CreateLabel} 0 90u 100% 12u "Port der Weboberfläche:"
+    ${NSD_CreateLabel} 0 78u 100% 12u "Port der Weboberfläche:"
     Pop $0
-    ${NSD_CreateNumber} 0 102u 60u 14u "$SERVER_PORT"
+    ${NSD_CreateNumber} 0 90u 60u 14u "$SERVER_PORT"
     Pop $PORT_TEXT
 
     ; INFRA-07: ohne HTTPS laufen PIN, Sitzungs-Cookie und Dokumente im Heimnetz
     ; unverschluesselt. Wer kein Smartphone/Tablet nutzt, bindet nur an 127.0.0.1.
-    ${NSD_CreateCheckbox} 0 122u 100% 14u "Nur von diesem PC erreichbar (kein Zugriff von Smartphone/anderen Geräten)"
+    ${NSD_CreateCheckbox} 0 108u 100% 12u "Nur von diesem PC erreichbar (kein Zugriff von Smartphone/anderen Geräten)"
     Pop $LOCAL_ONLY_CHECK
     ${NSD_SetState} $LOCAL_ONLY_CHECK $LOCAL_ONLY
+
+    ; Weg (B), planung/13-netzwerk-ordner.md: lokales Scanner-Konto + SMB-Freigabe
+    ; des Eingangsordners (freigabe-einrichten.ps1). Standard aus.
+    ${NSD_CreateCheckbox} 0 122u 100% 12u "Eingangsordner im Netzwerk freigeben (für Netzwerk-Scanner)"
+    Pop $SCANNER_SHARE_CHECK
+    ${NSD_SetState} $SCANNER_SHARE_CHECK $SCANNER_SHARE
 
     nsDialogs::Show
 FunctionEnd
@@ -436,6 +456,7 @@ Function DataDirPageLeave
     ${NSD_GetText} $DATA_DIR_TEXT $DATA_DIR
     ${NSD_GetText} $PORT_TEXT $SERVER_PORT
     ${NSD_GetState} $LOCAL_ONLY_CHECK $LOCAL_ONLY
+    ${NSD_GetState} $SCANNER_SHARE_CHECK $SCANNER_SHARE
     ; Abschliessenden Backslash entfernen ("D:\" -> "D:"): sonst escaped er das
     ; schliessende Anfuehrungszeichen der Kommandozeile fuer New-NativeConfig.ps1.
     StrCpy $0 $DATA_DIR 1 -1
@@ -768,6 +789,8 @@ Section "Zettelwirtschaft" SecMain
     File "${DIST}\backup.bat"
     File "${DIST}\restore-backup.bat"
     File "${DIST}\restore-backup.ps1"
+    File "${DIST}\freigabe-einrichten.bat"
+    File "${DIST}\freigabe-einrichten.ps1"
 
     ; config.toml nur bei Erstinstallation (oder wenn sie fehlt) schreiben —
     ; ein neuer EMAIL_ENCRYPTION_KEY wuerde gespeicherte IMAP-Passwoerter
@@ -808,6 +831,45 @@ Section "Zettelwirtschaft" SecMain
     DetailPrint "Zugriffsrechte des Datenordners einschraenken..."
     nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\secure-acl.ps1" "$DATA_DIR\data" "$LOG_DIR" "$CONFIG_PATH"'
     Pop $R0
+
+    ; Optional (nur Erstinstallation): Eingangsordner fuer Netzwerk-Scanner
+    ; freigeben. ExecToStack statt ExecToLog: die Ausgabe landet nicht im
+    ; Installationsprotokoll; Zugangsdaten nur ueber die INI (sofort geloescht).
+    ${If} $SCANNER_SHARE == ${BST_CHECKED}
+    ${AndIf} $UPGRADE != "1"
+    ${AndIf} $ADOPT != "1"
+    ${AndIfNot} ${Silent}
+        DetailPrint "Scanner-Freigabe einrichten..."
+        CreateDirectory "$DATA_DIR\data\watch"
+        ; F1: Nur freigeben, wenn der Datenordner sicher eingeschraenkt ist - sonst
+        ; gaelten von der Laufwerkswurzel geerbte Rechte ("Authentifizierte
+        ; Benutzer: Aendern") ueber die Freigabe auch fuer das Scanner-Konto.
+        nsExec::ExecToLog '${POWERSHELL} -File "$INSTDIR\secure-acl.ps1" "$DATA_DIR\data"'
+        Pop $R0
+        ${If} $R0 != "0"
+            MessageBox MB_OK|MB_ICONEXCLAMATION "Die Zugriffsrechte des Datenordners konnten nicht eingeschränkt werden (Code $R0) - die Scanner-Freigabe wird deshalb nicht eingerichtet.$\r$\nSie lässt sich später über Startmenü > Zettelwirtschaft > Scanner-Freigabe einrichten nachholen." /SD IDOK
+        ${Else}
+            Delete "$PLUGINSDIR\share.ini"
+            nsExec::ExecToStack '${POWERSHELL} -File "$INSTDIR\freigabe-einrichten.ps1" -WatchDir "$DATA_DIR\data\watch" -DataDir "$DATA_DIR" -ResultFile "$PLUGINSDIR\share.ini"'
+            Pop $R0  ; exit code
+            Pop $R1  ; Ausgabe (verworfen)
+            ReadINIStr $R2 "$PLUGINSDIR\share.ini" "share" "unc"
+            ReadINIStr $R3 "$PLUGINSDIR\share.ini" "share" "user"
+            ReadINIStr $R4 "$PLUGINSDIR\share.ini" "share" "password"
+            Delete "$PLUGINSDIR\share.ini"
+            ${If} $R0 == "0"
+            ${AndIf} $R2 != ""
+                StrCpy $FINISH_SHARE_TEXT "$\r$\n$\r$\nIm Netzwerk-Scanner eintragen:$\r$\nOrdner: $R2$\r$\nBenutzer: $R3$\r$\nPasswort: $R4 (wird nicht gespeichert - bitte notieren!)$\r$\nHinweis: Dafür ist SMB (TCP 445) im privaten Netz für den ganzen PC geöffnet."
+            ${Else}
+                MessageBox MB_OK|MB_ICONEXCLAMATION "Die Scanner-Freigabe konnte nicht eingerichtet werden (Code $R0).$\r$\nSie lässt sich später über Startmenü > Zettelwirtschaft > Scanner-Freigabe einrichten nachholen." /SD IDOK
+            ${EndIf}
+            StrCpy $R4 ""
+        ${EndIf}
+    ${EndIf}
+    ${If} $SCANNER_SHARE == ${BST_CHECKED}
+    ${AndIf} ${Silent}
+        DetailPrint "Stille Installation: Scanner-Freigabe nicht eingerichtet (das Passwort könnte nicht angezeigt werden) - Startmenü > Scanner-Freigabe einrichten."
+    ${EndIf}
 
     ; Firewall-Rule (nur Erstinstallation — sonst entstehen doppelte Regeln;
     ; nicht bei "nur dieser PC", INFRA-07)
@@ -878,6 +940,8 @@ Section "Zettelwirtschaft" SecMain
         "$INSTDIR\backup.bat" "" "$SYSDIR\shell32.dll" 45
     CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Backup wiederherstellen.lnk" \
         "$INSTDIR\restore-backup.bat" "" "$SYSDIR\shell32.dll" 238
+    CreateShortcut "$SMPROGRAMS\Zettelwirtschaft\Scanner-Freigabe einrichten.lnk" \
+        "$INSTDIR\freigabe-einrichten.bat" "" "$SYSDIR\shell32.dll" 85
 
     ; Ollama-Hinweis (wird nicht mitinstalliert, siehe Willkommensseite)
     Call DetectOllama
@@ -959,6 +1023,15 @@ Section "Uninstall"
         ${EndIf}
     ${EndIf}
 
+    ; Scanner-Freigabe (Konto, Freigabe, Firewall-Regel, Rechte) entfernen -
+    ; idempotent, auch wenn sie nie eingerichtet wurde.
+    ${If} ${FileExists} "$INSTDIR\freigabe-einrichten.ps1"
+        DetailPrint "Scanner-Freigabe entfernen..."
+        nsExec::ExecToStack '${POWERSHELL} -File "$INSTDIR\freigabe-einrichten.ps1" -Remove'
+        Pop $R0
+        Pop $R1
+    ${EndIf}
+
     ; Service entfernen
     nsExec::ExecToLog '"$INSTDIR\service-uninstall.bat" "$INSTDIR"'
     Pop $R0
@@ -984,6 +1057,8 @@ Section "Uninstall"
     Delete "$INSTDIR\backup.bat"
     Delete "$INSTDIR\restore-backup.bat"
     Delete "$INSTDIR\restore-backup.ps1"
+    Delete "$INSTDIR\freigabe-einrichten.bat"
+    Delete "$INSTDIR\freigabe-einrichten.ps1"
     Delete "$INSTDIR\Uninstall.exe"
 
     ; Startmenü
@@ -993,6 +1068,7 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Update.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Backup jetzt.lnk"
     Delete "$SMPROGRAMS\Zettelwirtschaft\Backup wiederherstellen.lnk"
+    Delete "$SMPROGRAMS\Zettelwirtschaft\Scanner-Freigabe einrichten.lnk"
     RMDir "$SMPROGRAMS\Zettelwirtschaft"
 
     ; Daten: User fragen

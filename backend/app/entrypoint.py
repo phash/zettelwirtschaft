@@ -43,12 +43,11 @@ def _ensure_data_dirs() -> None:
     # Lazy import damit ENV-Vars bereits gesetzt sind
     from app.config import get_settings
 
+    from app.core.data_dirs import ensure_startup_dirs
+
     settings = get_settings()
-    for d in (settings.UPLOAD_DIR, settings.WATCH_DIR, settings.ARCHIVE_DIR, settings.THUMBNAIL_DIR):
-        if d:
-            Path(d).mkdir(parents=True, exist_ok=True)
-    if settings.EXPORT_DIR:
-        Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+    # Watch-/Export-Ordner auf einer Freigabe werden hier nie angefasst (NET-SEC-06).
+    ensure_startup_dirs(settings)
 
     if settings.CHROMADB_MODE == "embedded":
         from app.services.vectorize_service import _resolve_chroma_path
@@ -155,6 +154,31 @@ def _alembic_config():
     return cfg
 
 
+def read_watch_dir(settings) -> str:
+    """Watch-Ordner offline lesen (ohne laufenden Dienst, nur lesend).
+
+    Quelle wie zur Laufzeit: Einstellung ``watch_dir`` in der DB (Web-UI),
+    sonst ``WATCH_DIR``. Fehlt die DB oder die Tabelle, gilt ``WATCH_DIR``.
+    """
+    import sqlite3
+
+    value = ""
+    db_path = settings.sqlite_db_path
+    if db_path.exists():
+        conn = sqlite3.connect(f"file:{db_path.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT value FROM system_settings WHERE key = 'watch_dir'").fetchone()
+            value = (row[0] or "") if row else ""
+        except sqlite3.OperationalError:
+            value = ""
+        finally:
+            conn.close()
+    path = value or settings.WATCH_DIR
+    if path.replace("/", "\\").startswith("\\\\"):  # UNC: kein resolve() (kein Netzwerkzugriff)
+        return path
+    return str(Path(path).resolve())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="zettelwirtschaft-backend",
@@ -182,6 +206,12 @@ def main(argv: list[str] | None = None) -> int:
         "--self-test-pdfium",
         action="store_true",
         help="Prueft pdfium (Aufteilen von Stapel-Scans) und beendet sich; braucht keine Konfiguration",
+    )
+    parser.add_argument(
+        "--print-watch-dir",
+        action="store_true",
+        help="Effektiven Watch-Ordner (Einstellung aus der DB, sonst WATCH_DIR) ausgeben und beenden "
+        "(fuer freigabe-einrichten.ps1)",
     )
     args = parser.parse_args(argv)
 
@@ -212,6 +242,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         from app.core.version import read_app_version
         print(read_app_version())
+        return 0
+
+    if args.print_watch_dir:
+        from app.config import get_settings
+
+        try:
+            print(read_watch_dir(get_settings()))
+        except Exception as exc:
+            print(f"FEHLER: Watch-Ordner nicht ermittelbar: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     if args.backup:

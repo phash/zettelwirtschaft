@@ -20,17 +20,16 @@ from app.models.split_batch import SplitBatch, SplitBatchStatus, SplitOrigin
 from app.services import split_service
 from app.services.split_service import SplitConflictError
 from tests.services.test_pdf_split_service import make_pdf
-from tests.services.test_split_flow import (  # noqa: F401 — Fixtures
-    TestManualSplit,
+from tests.services import test_split_flow as split_flow
+from tests.services.test_split_flow import (
     _batch,
     _confirm,
     _detect,
     _job,
-    _pipeline_mocks,
     _run_until,
-    fast_settings,
-    ocr_mock,
 )
+
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 
 async def _split_done(settings, factory, tmp_path, parts=([1, 2], [3, 4])) -> tuple[str, SplitBatch, list[str]]:
@@ -190,7 +189,7 @@ class TestUndoAuto:
 
 class TestUndoManual:
     async def test_undo_restores_the_original(self, fast_settings, test_session_factory, tmp_path, ocr_mock):
-        doc = await TestManualSplit()._archived(fast_settings, test_session_factory, tmp_path)
+        doc = await split_flow.TestManualSplit()._archived(fast_settings, test_session_factory, tmp_path)
         async with test_session_factory() as session:
             batch, job = await split_service.request_document_split(session, doc, fast_settings)
         await _run_until(test_session_factory, fast_settings, [job.id])
@@ -224,7 +223,7 @@ class TestUndoManual:
     async def test_undo_blocked_when_original_is_gone_or_reimported(
         self, fast_settings, test_session_factory, tmp_path, ocr_mock,
     ):
-        doc = await TestManualSplit()._archived(fast_settings, test_session_factory, tmp_path)
+        doc = await split_flow.TestManualSplit()._archived(fast_settings, test_session_factory, tmp_path)
         async with test_session_factory() as session:
             batch, job = await split_service.request_document_split(session, doc, fast_settings)
         await _run_until(test_session_factory, fast_settings, [job.id])

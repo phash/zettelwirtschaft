@@ -38,17 +38,16 @@ from app.services.pdf_split_service import PdfSplitError
 from app.services.split_service import SplitConflictError, SplitValidationError
 from tests.services import test_split_flow as flow
 from tests.services.test_pdf_split_service import make_pdf
-from tests.services.test_split_flow import (  # noqa: F401 (Fixtures)
+from tests.services.test_split_flow import (
     _batch,
     _confirm,
     _detect,
     _job,
-    _pipeline_mocks,
     _run_until,
     _upload,
-    fast_settings,
-    ocr_mock,
 )
+
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 _TERMINAL = frozenset({JobStatus.COMPLETED, JobStatus.NEEDS_REVIEW, JobStatus.FAILED})
 

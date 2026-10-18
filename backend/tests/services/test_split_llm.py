@@ -17,15 +17,15 @@ from app.services import split_llm_service as L
 from app.services import split_service
 from app.services.analysis_service import analysis_slot
 from tests.services.test_pdf_split_service import make_pdf
-from tests.services.test_split_auto import _auto, _batch_count, letter, text_ocr  # noqa: F401 — Fixture
-from tests.services.test_split_flow import (  # noqa: F401 — Fixtures
+from tests.services.test_split_auto import _auto, _batch_count, letter
+from tests.services.test_split_flow import (
     _batch,
     _job,
-    _pipeline_mocks,
     _run_until,
     _upload,
-    fast_settings,
 )
+
+pytestmark = pytest.mark.usefixtures("_pipeline_mocks")
 
 
 def _bd(after, decision, score, *, without=None, inside=None, reasons=()):
