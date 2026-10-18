@@ -80,7 +80,9 @@ export async function deleteDocument(id) {
 // Dateien; ein Fehler bei einer Datei landet als { filename, error } in rejected.
 // onProgress bekommt den Gesamtfortschritt { loaded, total } (Bytes ueber alle
 // Dateien) plus { fileIndex, fileCount, filename } der gerade laufenden Datei.
-export async function uploadDocuments(files, onProgress) {
+// options.splitCheck: "Enthält mehrere Dokumente" — PDFs gehen vor der Analyse
+// in den Aufteilungs-Editor (Formularfeld split_check).
+export async function uploadDocuments(files, onProgress, options = {}) {
   const list = Array.from(files || [])
   const totalBytes = list.reduce((sum, f) => sum + (f.size || 0), 0)
   const result = { uploaded: [], rejected: [] }
@@ -89,6 +91,7 @@ export async function uploadDocuments(files, onProgress) {
   for (const [index, file] of list.entries()) {
     const formData = new FormData()
     formData.append('files', file)
+    if (options.splitCheck) formData.append('split_check', 'true')
     try {
       const { data } = await api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -126,6 +129,72 @@ export async function uploadDocuments(files, onProgress) {
 
 export async function getJobStatus(id) {
   const { data } = await api.get(`/documents/${id}/status`)
+  return data
+}
+
+// === Aufteilen von Stapel-Scans (Spezifikation 12) ===
+
+// Stapel-Liste, z.B. getSplitBatches({ status: 'PROPOSED' }) fuer "Prüfen"
+export async function getSplitBatches(params = {}) {
+  const { data } = await api.get('/split', { params })
+  return data
+}
+
+// Automatische Pruefung (System -> Verarbeitung): { auto_enabled, min_pages, max_pages }
+export async function getSplitSettings() {
+  const { data } = await api.get('/system/split-settings')
+  return data
+}
+
+export async function setSplitSettings(body) {
+  const { data } = await api.put('/system/split-settings', body)
+  return data
+}
+
+export async function getSplitBatch(batchId) {
+  const { data } = await api.get(`/split/${encodeURIComponent(batchId)}`)
+  return data
+}
+
+export function splitPageThumbnailUrl(batchId, page) {
+  return `/api/split/${encodeURIComponent(batchId)}/pages/${page}/thumbnail`
+}
+
+export function splitPagePreviewUrl(batchId, page) {
+  return `/api/split/${encodeURIComponent(batchId)}/pages/${page}/preview`
+}
+
+// body: { version, parts: [{ pages: [1, 2] }, ...], excluded: [3] } -> 202 { job_ids }
+export async function confirmSplit(batchId, body) {
+  const { data } = await api.post(`/split/${encodeURIComponent(batchId)}/confirm`, body)
+  return data
+}
+
+export async function keepSplitWhole(batchId, version) {
+  const { data } = await api.post(`/split/${encodeURIComponent(batchId)}/keep-whole`, { version })
+  return data
+}
+
+export async function discardSplit(batchId, version) {
+  const { data } = await api.post(`/split/${encodeURIComponent(batchId)}/discard`, { version })
+  return data
+}
+
+// "Aufteilung rückgängig" -> { status, removed_document_ids, restored_document_id }
+// 409 mit Begruendung, wenn ein Teil schon bearbeitet wurde.
+export async function undoSplit(batchId, version) {
+  const { data } = await api.post(`/split/${encodeURIComponent(batchId)}/undo`, { version })
+  return data
+}
+
+export async function retryFailedSplitParts(batchId) {
+  const { data } = await api.post(`/split/${encodeURIComponent(batchId)}/retry-failed`)
+  return data
+}
+
+// "Dokument aufteilen" -> 202 { batch_id, job_id }
+export async function requestDocumentSplit(documentId) {
+  const { data } = await api.post(`/documents/${encodeURIComponent(documentId)}/split`)
   return data
 }
 

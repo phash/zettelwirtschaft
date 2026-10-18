@@ -178,7 +178,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Mit --backup: Zielordner fuer die ZIP (Default: <DataDir>/data/backups). "
         "Der Uninstaller nutzt das, damit das Backup das Loeschen des Datenordners ueberlebt.",
     )
+    parser.add_argument(
+        "--self-test-pdfium",
+        action="store_true",
+        help="Prueft pdfium (Aufteilen von Stapel-Scans) und beendet sich; braucht keine Konfiguration",
+    )
     args = parser.parse_args(argv)
+
+    if args.self_test_pdfium:
+        # Vom Native-Build gegen das fertige Bundle aufgerufen (pdfium.dll +
+        # Paketdaten vorhanden und ladbar). Vor allem anderen: keine Config,
+        # keine Datenordner, keine Migrationen.
+        from app.services.pdf_split_service import PdfSplitError, self_test
+
+        try:
+            print(f"pdfium OK ({self_test()})")
+        except PdfSplitError as exc:
+            print(f"FEHLER: {exc}", file=sys.stderr)
+            return 1
+        return 0
 
     logging.basicConfig(
         level=logging.INFO,

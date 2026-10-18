@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.core.file_utils import generate_stored_filename, get_file_extension, normalize_file_type
-from app.models.processing_job import JobSource, JobStatus, ProcessingJob
+from app.models.processing_job import JobSource, JobStatus, ProcessingJob, SplitMode
 from app.services.file_validation_service import (
     FileValidationError,
     max_upload_bytes,
@@ -38,9 +38,13 @@ async def create_job(
     db: AsyncSession,
     *,
     email_account_id: int | None = None,
+    split_mode: SplitMode = SplitMode.AUTO,
 ) -> ProcessingJob:
     """Legt den PENDING-Verarbeitungsauftrag fuer eine schon validierte Datei an
-    (gemeinsam fuer Upload, Watch-Ordner und E-Mail-Anhaenge)."""
+    (gemeinsam fuer Upload, Watch-Ordner und E-Mail-Anhaenge).
+
+    ``split_mode=FORCE``: Upload-Option "Enthaelt mehrere Dokumente" — PDFs ab
+    zwei Seiten gehen vor der Analyse in den Aufteilungs-Editor."""
     job = ProcessingJob(
         original_filename=original_name,
         stored_filename=stored_name,
@@ -51,6 +55,7 @@ async def create_job(
         source=source,
         status=JobStatus.PENDING,
         email_account_id=email_account_id,
+        split_mode=split_mode.value,
     )
     db.add(job)
     await db.flush()
@@ -65,19 +70,46 @@ async def create_job(
     return job
 
 
-def remove_upload_copy(file_path: str | Path, settings: Settings) -> bool:
-    """Loescht die Upload-Kopie eines Jobs — nie eine Datei ausserhalb von
-    UPLOAD_DIR (Job-Pfade stammen aus der DB). True, wenn danach weg."""
+def is_job_file_location(file_path: str | Path, settings: Settings) -> bool:
+    """True, wenn der Pfad in einem Ablageort fuer Job-Dateien liegt: UPLOAD_DIR
+    (Uploads, Watch-Ordner-/E-Mail-Kopien) oder ``data/split/`` (Stapel- und
+    Teildateien der Aufteilung)."""
+    path = Path(file_path).resolve()
+    return any(
+        path.is_relative_to(Path(root).resolve())
+        for root in (settings.UPLOAD_DIR, settings.split_dir)
+    )
+
+
+def remove_job_file(file_path: str | Path, settings: Settings) -> bool:
+    """Loescht die Arbeitskopie eines Jobs — nie eine Datei ausserhalb von
+    UPLOAD_DIR bzw. ``data/split/`` (Job-Pfade stammen aus der DB). True, wenn
+    danach weg. Aufrufer muessen Quellen aktiver Stapel vorher ausnehmen
+    (split_service.protected_source_paths)."""
     try:
         path = Path(file_path).resolve()
-        if not path.is_relative_to(Path(settings.UPLOAD_DIR).resolve()):
-            logger.warning("Job-Datei liegt ausserhalb von UPLOAD_DIR, nicht geloescht: %s", path)
+        if not is_job_file_location(path, settings):
+            logger.warning("Job-Datei liegt ausserhalb der Job-Ablage, nicht geloescht: %s", path)
             return False
         path.unlink(missing_ok=True)
+        prune_empty_split_dir(path, settings)
         return True
     except OSError:
         logger.warning("Upload-Kopie konnte nicht entfernt werden: %s", file_path, exc_info=True)
         return False
+
+
+def prune_empty_split_dir(file_path: str | Path, settings: Settings) -> None:
+    """Leeren Stapel-Ordner ``data/split/<id>/`` entfernen, nachdem seine
+    letzte Datei geloescht wurde — z.B. bei der automatischen Pruefung, die
+    nur EIN Dokument fand: der Stapel ist dann geloescht, die Datei laeuft
+    aus ``data/split/<id>/source.pdf`` durch die normale Pipeline."""
+    try:
+        parent = Path(file_path).resolve().parent
+        if parent.parent == Path(settings.split_dir).resolve() and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        logger.debug("Stapel-Ordner nicht entfernt: %s", file_path, exc_info=True)
 
 
 def discard_upload(job: ProcessingJob) -> None:
@@ -141,6 +173,7 @@ async def process_upload_stream(
     source: JobSource,
     settings: Settings,
     db: AsyncSession,
+    split_mode: SplitMode = SplitMode.AUTO,
 ) -> ProcessingJob:
     """Verarbeitet einen HTTP-Upload: Datei direkt nach UPLOAD_DIR streamen,
     dort validieren, Queue-Eintrag anlegen.
@@ -166,7 +199,9 @@ async def process_upload_stream(
                 filename=original_name,
             )
         validate_file(dest_path, original_name, written, settings)
-        return await create_job(dest_path, stored_name, original_name, written, source, db)
+        return await create_job(
+            dest_path, stored_name, original_name, written, source, db, split_mode=split_mode,
+        )
     except BaseException:
         dest_path.unlink(missing_ok=True)
         raise

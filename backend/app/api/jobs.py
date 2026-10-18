@@ -9,13 +9,35 @@ from app.config import Settings, get_settings
 from app.core.query_params import parse_enum_list
 from app.database import get_db
 from app.models.processing_job import JOB_ERROR_DUPLICATE, JobStatus, ProcessingJob
-from app.schemas.processing_job import JobListItem, PaginatedJobsResponse
+from app.models.split_batch import SplitBatch, SplitBatchStatus
+from app.schemas.processing_job import JobListItem, PaginatedJobsResponse, SplitProgress
+from app.services import split_service
 from app.services.queue_worker_service import is_queue_paused, pause_queue, resume_queue
-from app.services.upload_service import remove_upload_copy
+from app.services.upload_service import remove_job_file
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def with_split_progress(db: AsyncSession, jobs) -> list[JobListItem]:
+    """JobListItem je Job; laufende Stapel-Erkennungen bekommen den Fortschritt."""
+    items = [JobListItem.model_validate(job) for job in jobs]
+    batch_ids = {
+        job.split_batch_id for job in jobs
+        if job.status == JobStatus.PROCESSING and job.split_batch_id
+    }
+    if batch_ids:
+        rows = (await db.execute(
+            select(SplitBatch.id, SplitBatch.pages_done, SplitBatch.page_count).where(
+                SplitBatch.id.in_(batch_ids), SplitBatch.status == SplitBatchStatus.DETECTING,
+            )
+        )).all()
+        progress = {row.id: SplitProgress(pages_done=row.pages_done, page_count=row.page_count) for row in rows}
+        for item in items:
+            if item.status == JobStatus.PROCESSING and item.split_batch_id in progress:
+                item.split_progress = progress[item.split_batch_id]
+    return items
 
 
 async def _get_job_or_404(db: AsyncSession, job_id: str) -> ProcessingJob:
@@ -63,7 +85,7 @@ async def list_jobs(
     jobs = result.scalars().all()
 
     return PaginatedJobsResponse(
-        items=[JobListItem.model_validate(job) for job in jobs],
+        items=await with_split_progress(db, jobs),
         total=total,
         page=page,
         page_size=page_size,
@@ -94,6 +116,10 @@ async def resume_job_queue() -> dict:
 async def retry_job(job_id: str, db: AsyncSession = Depends(get_db, scope="function")) -> dict:
     """Setzt einen fehlgeschlagenen Job auf PENDING zurueck."""
     job = await _get_job_or_404(db, job_id)
+    if job.status in (JobStatus.AWAITING_SPLIT, JobStatus.SPLIT):
+        raise HTTPException(
+            409, "Dieser Stapel wird über den Aufteilungs-Editor bearbeitet — eine Wiederholung ist nicht möglich.",
+        )
     if job.status != JobStatus.FAILED:
         raise HTTPException(400, "Nur fehlgeschlagene Jobs können wiederholt werden")
     if job.error_code == JOB_ERROR_DUPLICATE:
@@ -120,19 +146,33 @@ async def dismiss_job(
     settings: Settings = Depends(get_settings),
 ) -> Response:
     """Entfernt einen fehlgeschlagenen Job (z.B. Duplikat) samt der im
-    Upload-Ordner verbliebenen Datei. Archivierte Dokumente bleiben unberuehrt."""
+    Upload-Ordner verbliebenen Datei. Archivierte Dokumente bleiben unberuehrt.
+
+    Aufteilung: ``AWAITING_SPLIT`` = Stapel verwerfen (wie /api/split/{id}/discard),
+    ``SPLIT`` = nur der Datensatz (die Teile behalten ihre Dokumente)."""
     job = await _get_job_or_404(db, job_id)
+    if job.status == JobStatus.AWAITING_SPLIT and job.split_batch_id:
+        batch = await split_service.get_batch(db, job.split_batch_id)
+        await split_service.discard(db, batch.id, version=batch.version, settings=settings)
+        return Response(status_code=204)
+    if job.status == JobStatus.SPLIT:
+        await db.delete(job)
+        await db.commit()
+        return Response(status_code=204)
     if job.status != JobStatus.FAILED:
         raise HTTPException(400, "Nur fehlgeschlagene Jobs können entfernt werden")
 
     upload_file = job.file_path
+    protected = await split_service.protected_source_paths(db)
     await db.delete(job)
     # Datei erst nach dem Commit loeschen — scheitert er, bleibt der Job samt
     # Datei bestehen (copy+delete-Disziplin wie im archive_service).
     await db.commit()
 
-    # Nur die eigene Upload-Kopie loeschen — nie eine Datei ausserhalb von UPLOAD_DIR.
-    remove_upload_copy(upload_file, settings)
+    # Nur die eigene Job-Kopie loeschen — nie eine Datei ausserhalb der
+    # Job-Ablage und nie die Quelle eines aktiven Stapels.
+    if not split_service.is_protected(upload_file, protected):
+        remove_job_file(upload_file, settings)
 
     logger.info("Fehlgeschlagener Job %s entfernt", job_id)
     return Response(status_code=204)

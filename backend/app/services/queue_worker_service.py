@@ -11,21 +11,23 @@ from app.config import Settings
 from app.core.public_errors import internal_error_message
 from app.models.document import ReviewStatus
 from app.models.email_account import EmailAccount
-from app.models.processing_job import JOB_ERROR_DUPLICATE, JobStatus, ProcessingJob
+from app.models.processing_job import JOB_ERROR_DUPLICATE, JobSource, JobStatus, ProcessingJob, SplitRole
 from app.models.review_question import ReviewQuestion
 from app.services.analysis_service import analyze_document, apply_source_review_policy
 from app.services.archive_service import (
     ArchiveDataError,
     DuplicateDocumentError,
     archive_document,
-    check_duplicate,
+    file_sha256,
+    find_active_duplicate,
     remove_created_files,
 )
+from app.services import split_detection_service, split_service
 from app.services.correction_service import apply_auto_corrections
 from app.services.filing_scope_service import scopes_for_analysis
 from app.services.notification_service import notify_processing_failed, notify_review_needed
 from app.services.thumbnail_service import generate_thumbnail
-from app.services.upload_service import remove_upload_copy
+from app.services.upload_service import prune_empty_split_dir, remove_job_file
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +121,37 @@ async def _process_job(
 
     # Duplikat-Check VOR Thumbnail/OCR/LLM — frueher fiel ein Duplikat erst
     # nach der kompletten Analyse (~35 s) auf, bei jedem Retry erneut.
-    existing = await check_duplicate(file_path, session)
-    if existing is not None:
-        error = DuplicateDocumentError(existing.id, existing.title)
-        raise _NonRetryableJobError(str(error), JOB_ERROR_DUPLICATE, existing.id)
+    file_hash = await file_sha256(file_path)
+    # "Dokument aufteilen": die Datei IST das aktive Original — kein Duplikat.
+    if job.source != JobSource.SPLIT_REQUEST:
+        existing = await find_active_duplicate(file_hash, session)
+        if existing is not None:
+            error = DuplicateDocumentError(existing.id, existing.title)
+            raise _NonRetryableJobError(str(error), JOB_ERROR_DUPLICATE, existing.id)
+    # Stapel-Hash: ein schon aufgeteilter (oder wartender) Stapel ist nie ein
+    # aktives Dokument — ohne diese Pruefung fiele ein erneuter Import nicht auf.
+    if job.split_role != SplitRole.PART.value:
+        batch = await split_service.find_split_duplicate(
+            session, file_hash, exclude_batch_id=job.split_batch_id,
+        )
+        if batch is not None:
+            raise _NonRetryableJobError(split_service.split_duplicate_message(batch), JOB_ERROR_DUPLICATE)
+
+    # Aufteilungs-Stufe (Spezifikation 12): Stapel-PDFs warten im Editor.
+    try:
+        decision = await split_detection_service.maybe_detect(
+            job, settings, session, should_pause=is_queue_paused,
+        )
+    except split_detection_service.SplitNotPossibleError as e:
+        raise _NonRetryableJobError(str(e)) from e
+    if decision.kind != "SKIP":
+        return  # AWAITING_SPLIT bzw. pausiert: Status ist committet, keine Archivierung
+    file_path = Path(job.file_path)  # Stapel-Jobs liegen jetzt unter data/split/
+    pre_ocr_pages = decision.pages or await split_detection_service.reusable_page_ocr(job, session)
 
     filing_scopes = await scopes_for_analysis(session)
-    forced_scope_id = await _forced_scope_id(job, session)
+    part = await split_service.part_context(session, job)
+    forced_scope_id = await _forced_scope_id(job, session) or (part.forced_scope_id if part else None)
 
     # Thumbnail generieren
     thumbnail_path = await generate_thumbnail(file_path, job.file_type, job.id, settings)
@@ -139,6 +165,7 @@ async def _process_job(
         file_path, job.file_type, settings,
         filing_scopes=filing_scopes, session=session,
         pre_ocr_text=job.ocr_text,
+        pre_ocr_pages=pre_ocr_pages,
     )
     await _heartbeat(job.id, session)
 
@@ -172,6 +199,7 @@ async def _process_job(
             filing_scopes=filing_scopes,
             forced_scope_id=forced_scope_id,
             created_files=created_files,
+            split_part=part.provenance if part else None,
         )
     except DuplicateDocumentError as e:
         # Paralleles Duplikat (zwischen Vorab-Check und Insert archiviert)
@@ -181,6 +209,8 @@ async def _process_job(
 
     try:
         job.document_id = archived_document.id
+        # Der Seitentext steht jetzt in Document.ocr_text — keine zweite Kopie.
+        job.page_ocr = None
         # Job-Status folgt dem Dokument: auch eine reine Scope-Rueckfrage (oder ein
         # unlesbares Datum) setzt das Dokument auf NEEDS_REVIEW, obwohl die Analyse
         # selbst needs_review=False meldete.
@@ -200,6 +230,11 @@ async def _process_job(
         else:
             job.status = JobStatus.COMPLETED
 
+        # Letzter Teil eines Stapels: Stapel DONE (bei "Dokument aufteilen"
+        # wird das Original soft-deleted) — in derselben Transaktion.
+        original_id = (
+            await split_service.on_part_finished(session, job.split_batch_id) if part is not None else None
+        )
         await session.commit()
     except Exception:
         # Ohne Commit kein Dokument — die schon kopierten Archiv-/Export-Dateien
@@ -233,8 +268,12 @@ async def _process_job(
     try:
         if file_path.exists():
             file_path.unlink()
+        prune_empty_split_dir(file_path, settings)
     except OSError:
         logger.warning("Quelldatei konnte nicht geloescht werden: %s", file_path)
+
+    # "Dokument aufteilen": Original nach dem letzten Teil soft-deleted.
+    await split_service.delete_original_vectors(original_id, settings)
 
 
 async def _fail_job(
@@ -261,6 +300,7 @@ async def _fail_job(
     Datenplatte.
     """
     duplicate_copy: str | None = None
+    original_id: str | None = None
     async with session_factory() as retry_session:
         rj = (await retry_session.execute(
             select(ProcessingJob).where(ProcessingJob.id == job_id)
@@ -290,6 +330,7 @@ async def _fail_job(
             notify_processing_failed(
                 retry_session, rj.original_filename, error_message, document_id=document_id,
             )
+            original_id = await split_service.on_job_failed(retry_session, rj)
             logger.error(
                 "Job %s endgueltig fehlgeschlagen nach %d Versuch(en): %s",
                 rj.id, rj.retry_count, error_message,
@@ -297,7 +338,9 @@ async def _fail_job(
         await retry_session.commit()
 
     if duplicate_copy and settings is not None:
-        remove_upload_copy(duplicate_copy, settings)
+        remove_job_file(duplicate_copy, settings)
+    if settings is not None:
+        await split_service.delete_original_vectors(original_id, settings)
 
 
 async def recover_interrupted_jobs(session: AsyncSession, settings: Settings) -> int:
@@ -349,11 +392,14 @@ async def purge_duplicate_upload_copies(
                 ProcessingJob.error_code == JOB_ERROR_DUPLICATE,
             )
         )).scalars().all()
+        protected = await split_service.protected_source_paths(session)
 
     def _purge() -> int:
         removed = 0
         for path in paths:
-            if Path(path).exists() and remove_upload_copy(path, settings):
+            if split_service.is_protected(path, protected):
+                continue  # Quelle eines aktiven Stapels
+            if Path(path).exists() and remove_job_file(path, settings):
                 removed += 1
         return removed
 
@@ -443,6 +489,7 @@ async def run_queue_worker(
                             session_factory, job_id,
                             internal_error_message(e),
                             count_attempt=True, max_retries=settings.MAX_RETRIES,
+                            settings=settings,
                         )
 
         except asyncio.CancelledError:

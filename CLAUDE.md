@@ -250,6 +250,7 @@ zettelwirtschaft/
         email_account.py         # EmailAccount + ScheduleType Enum, ProcessedEmail-Import
         processed_email.py       # ProcessedEmail + EmailStatus Enum
         background_task.py       # BackgroundTask + TaskStatus (lang laufende Vorgaenge, 202 + Polling)
+        split_batch.py           # SplitBatch + SplitOrigin/SplitBatchStatus (aufzuteilende Stapel-PDFs, v1.7)
       schemas/
         document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
         filing_scope.py          # FilingScopeCreate, FilingScopeUpdate, FilingScopeResponse
@@ -261,6 +262,7 @@ zettelwirtschaft/
         chat.py                  # ChatRequest, ChatResponse, ChatMessage schemas
         email.py                 # EmailAccountCreate/Update/Response, EmailTestResult, EmailFetchResult, ProcessedEmailResponse, EmailStatsResponse
         background_task.py       # TaskResponse (202-Antwort + GET /api/tasks/{id})
+        split.py                 # SplitBatchResponse, SplitPage, SplitBoundary, SplitConfirmRequest, SplitSettings*
       api/
         auth.py                  # PIN-Login, Session-Status, Logout (in-memory Sessions)
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
@@ -276,6 +278,7 @@ zettelwirtschaft/
         chat.py                  # RAG-Chat (POST /api/chat, GET/DELETE /api/chat/history)
         email.py                 # E-Mail-Konten CRUD + Test + Fetch + History + Stats
         tasks.py                 # GET /api/tasks/{id}, /api/tasks — Status der Background-Tasks
+        split.py                 # /api/split: Stapel-Liste/-Detail, Seitenbilder, confirm/keep-whole/discard/undo/retry-failed
       services/
         upload_service.py        # Datei-Upload-Verarbeitung
         file_validation_service.py # Dateityp- und Magic-Byte-Validierung
@@ -306,6 +309,12 @@ zettelwirtschaft/
         filing_scope_service.py  # gemeinsame Ablagebereich-Logik (API + Review-Antwort "NEU: ...")
         file_relocation.py       # Archivdateien bei Scope-Wechsel verschieben (copy -> commit -> delete)
         tax_year.py              # Steuerjahr ableiten, wenn tax_relevant gesetzt ist
+        pdf_split_service.py     # pypdfium2: Seitenzahl/Geometrie, Render (50 dpi), Tinte, verlustfreies write_part, self_test
+        split_detection_service.py # Aufteilungs-Stufe im Worker: Seiten-OCR mit Checkpoint, Vorschaubilder, Vorschlag
+        split_heuristics.py      # reine Merkmals-/Scoring-Funktionen (Zaehler, Referenz-Hashes, Anschrift, Duplex)
+        split_weights.py         # Log-Odds-Gewichte + Schwellen der Heuristik (kalibriert mit scripts/eval_split.py)
+        split_llm_service.py     # optionaler KI-Pass: ein LLM-Aufruf je Stapel fuer unsichere Uebergaenge
+        split_service.py         # Stapel-Lebenszyklus: anlegen, bestaetigen, behalten, verwerfen, undo, Recovery, Aufraeumen
       core/
         file_utils.py            # Dateinamen-Sanitizing, Dateityp-Registry (Magic-Bytes, MIME, tif->tiff), UUID-Prefix
         db_types.py              # UTCDateTime: alle Zeitstempel naiv-UTC gespeichert, aware-UTC gelesen (API mit Offset)
@@ -327,7 +336,7 @@ zettelwirtschaft/
         layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
         common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
         email/                   # EmailAccountForm, EmailAccountList (E-Mail-Konten-Verwaltung)
-        settings/                # SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings
+        settings/                # SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings, SplitSettings
       constants/
         documentTypes.js         # DocumentType Enum -> Label Mapping
       utils/
@@ -345,6 +354,7 @@ zettelwirtschaft/
         ScanView.vue             # Kamera-Scan mit Aufnahme + Vorschau + Upload
         SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche + E-Mail-Konten
         ChatView.vue             # RAG-Chat mit Verlauf, Scope-Filter, Beispielfragen
+        SplitEditorView.vue      # Aufteilungs-Editor (/aufteilen/:batchId): Seitenraster, Schnitt-Marker, Bestaetigen
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
       stores/                    # Pinia Stores (notifications, auth) — documents-Store entfernt in Phase 5 (toter Code)
@@ -427,20 +437,34 @@ zettelwirtschaft/
 - **Archive copy+delete:** Dateien werden kopiert und erst nach erfolgreichem DB-Commit geloescht (statt move, das nicht rollback-sicher ist).
 - **SettingsView Sub-Components:** Aufgeteilt in SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings.
 - **Frontend Shared Utilities:** `constants/documentTypes.js` (Enum -> Label Mapping), `utils/formatters.js` (formatDate, formatCurrency).
+- **Mehrdokument-Scans aufteilen (v1.7, `planung/12-dokumente-aufteilen.md`):** Erkennung laeuft
+  **immer im Queue-Worker** (kein `/api/tasks`, keine zweite OCR-Pipeline), Ergebnis ist nur ein
+  **Vorschlag** — archiviert wird erst nach Bestaetigung im Editor; im Zweifel Pruefung statt
+  Zusammenfassen, Seiten werden nie automatisch verworfen. Seitentext der Erkennung
+  (`ProcessingJob.page_ocr`) wird fuer die Teile wiederverwendet (keine Seite zweimal per OCR).
+  Teile = exakte Seitenkopien per pypdfium2 `import_pages` (Bildstroeme unveraendert, tmp +
+  Verify + `os.replace`). Alle Statuswechsel von `SplitBatch` per optimistischem Locking
+  (`UPDATE ... WHERE status=:alt AND version=:v`, rowcount 0 -> 409). FKs zeigen nur von
+  `processing_jobs`/`documents` auf `split_batches` (kein Zyklus); `split_batches.source_*_id`
+  und `email_account_id` sind bewusst ohne FK — Leser muessen fehlende Datensaetze tolerieren
+  (`_live_email_account_id`). Dateien: `data/split/<id>/source.pdf` + `teil-NN.pdf`, Vorschaubilder
+  `THUMBNAIL_DIR/split/<id>/p###.png`/`v###.jpg`; Aufbewahrung `SPLIT_KEEP_SOURCE_DAYS`, taeglicher
+  Lauf `run_split_cleanup` (inkl. verwaister Ordner nach Absturz, Mindestalter 1 Tag).
 
 ## Wichtige Datenmodelle
 > Read `memory/data-models.md` before working on models or migrations.
 
-- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON), `email_account_id` (nullable FK). JobSource: UPLOAD, WATCH_FOLDER, EMAIL
-- `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status + filing_scope_id. Relationships: tags, warranty_info, review_questions, filing_scope (alle lazy="selectin")
+- `ProcessingJob` - Verarbeitungs-Queue (PENDING -> PROCESSING -> COMPLETED/NEEDS_REVIEW/FAILED; Stapel-Jobs zusaetzlich AWAITING_SPLIT -> SPLIT). Felder: `ocr_text`, `ocr_confidence`, `analysis_result` (JSON), `email_account_id` (nullable FK), Aufteilung: `split_batch_id` (FK SET NULL), `split_role` (SOURCE/PART), `split_part_index`, `page_from`/`page_to`, `split_mode` (AUTO/FORCE/OFF), `page_ocr` (JSON-Seitentext, nach Archivierung NULL). JobSource: UPLOAD, WATCH_FOLDER, EMAIL, SPLIT_REQUEST
+- `Document` - Kerntabelle: Datei-Infos + KI-Metadaten (Typ, Titel, Datum, Betrag, Aussteller) + OCR-Text + Steuer + Status + filing_scope_id; Teildokumente zusaetzlich `split_batch_id`, `split_part_index`, `source_pages` (z.B. "3-11,13-44"). Relationships: tags, warranty_info, review_questions, filing_scope (alle lazy="selectin")
+- `SplitBatch` - aufzuteilender Stapel: origin (AUTO/MANUAL), status (DETECTING -> PROPOSED -> SPLITTING -> DONE/DONE_WITH_ERRORS; KEPT_WHOLE, DISCARDED, UNDONE, FAILED), version (optimistisches Locking), `pages` (Merkmale pro Seite, **kein Volltext**, Referenzen/IBANs nur als 12-Hex-Hash), `proposal`, `final_parts`, `file_hash` (Stapel-Duplikat-Check), source_job_id/source_document_id ohne FK
 - `FilingScope` - Ablagebereiche: name (unique), slug (unique), description, keywords (JSON-Liste), is_default, color (Hex). Slug auto-generiert (Umlaute -> ae/oe/ue/ss)
 - `Tag` / `DocumentTag` - Schlagwort-System (automatisch + manuell), Many-to-Many ueber Junction-Table
 - `WarrantyInfo` - Garantie-Informationen: Produkt, Kaufdatum, Ablaufdatum, Typ (LEGAL/MANUFACTURER/EXTENDED), Haendler
 - `ReviewQuestion` - KI-Rueckfragen: Frage, Antwort, Feld, beantwortet-Status
-- `AuditLog` - Aenderungsprotokoll (CREATED/UPDATED/DELETED/EXPORTED/TAG_ADDED/TAG_REMOVED/REVIEWED)
+- `AuditLog` - Aenderungsprotokoll (CREATED/UPDATED/DELETED/RESTORED/EXPORTED/TAG_ADDED/TAG_REMOVED/REVIEWED/REANALYZED; Aufteilung: SPLIT am Original, SPLIT_CREATED an jedem Teil, SPLIT_UNDONE). UPDATED/TAG_*/REVIEWED schreibt nur die API — sie sperren "Aufteilung rückgängig"
 - `SavedSearch` - Gespeicherte Suchanfragen (Name + JSON-Parameter)
 - `documents_fts` - FTS5 Virtual Table (title, ocr_text, issuer, summary, tags)
-- `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, SYSTEM). REVIEW_NEEDED/SYSTEM (Job fehlgeschlagen) erzeugt der Queue-Worker; PROCESSING_DONE wurde entfernt (nie gespeichert, VARCHAR ohne CHECK)
+- `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, SYSTEM, SPLIT_NEEDED — `document_id` NULL, Frontend leitet auf `/pruefen`). REVIEW_NEEDED/SYSTEM (Job fehlgeschlagen) erzeugt der Queue-Worker; PROCESSING_DONE wurde entfernt (nie gespeichert, VARCHAR ohne CHECK)
 - `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen: ab 2x Few-Shot-Beispiel im Prompt, ab 3x `auto_apply` (deterministisch nach der LLM-Analyse, vor der Archivierung; `correction_service.apply_auto_corrections`)
 - `BackgroundTask` - lang laufende Vorgaenge: kind, key, status (PENDING/RUNNING/SUCCEEDED/FAILED), progress, result/error; Neustart markiert offene Tasks als FAILED
 - `ChatMessage` - RAG-Chat-Verlauf (question, answer, sources JSON, scope_filter, created_at)
@@ -459,11 +483,33 @@ BEDIENUNGSANLEITUNG, SONSTIGES
 ## Verarbeitungs-Pipeline
 
 ```
-Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
+Dokument-Eingang (Upload, Watch-Ordner, E-Mail-Import oder "Dokument aufteilen")
   -> Validierung (Dateityp, Groesse, Magic-Bytes)
-  -> Queue-Eintrag (PENDING)
+  -> Queue-Eintrag (PENDING, split_mode AUTO | FORCE ("Enthält mehrere Dokumente") | OFF)
+  -> Worker: Duplikat-Check (aktives Dokument mit gleichem Hash, zusaetzlich Stapel-Hash:
+     Stapel in PROPOSED/SPLITTING/DONE/DONE_WITH_ERRORS -> FAILED/DUPLICATE)
+  -> Aufteilungs-Stufe (split_detection_service.maybe_detect; nur PDFs ohne ocr_text, keine
+     Teil-Jobs; AUTO ab split_min_pages (3) bei aktiver Pruefung, FORCE ab 2 Seiten,
+     hoechstens SPLIT_MAX_PAGES (100), verschluesselt/defekt -> normale Pipeline)
+     - Quelle nach data/split/<id>/source.pdf (copy -> commit -> delete), SplitBatch DETECTING
+     - pro Seite: Geometrie + Tinte (pypdfium2, 50 dpi), Text (digital oder OCR 300 dpi,
+       Leerseiten ohne OCR), Randcode, Vorschaubilder; Heartbeat pro Seite, Checkpoint alle
+       5 Seiten (Neustart setzt bei pages_done fort), Pause greift am Checkpoint,
+       SPLIT_TIME_BUDGET_S -> ab Seite N ohne Texterkennung (partial_from, dort keine Schnitte)
+     - Scoring der Uebergaenge (split_heuristics, Log-Odds: Seitenzaehler, Referenz-Hashes,
+       Anschrift+Anrede, Kopfzeilen ohne Boilerplate, Datum, Format, Randcode, Leerseiten,
+       Duplex) -> cut (p >= 0,80) | uncertain | none
+     - optional KI-Pass (SPLIT_USE_LLM): genau ein LLM-Aufruf fuer unsichere Uebergaenge
+       (Analyse-Slot, <page_excerpts>-Sanitizer); innerhalb eines laufenden Zaehlers nie "cut",
+       hoechstens "uncertain"; Ollama aus -> Heuristik bleibt, "KI-Prüfung nicht verfügbar"
+     - AUTO ohne Schnitt/Unsicherheit -> Stapel geloescht, Job laeuft mit page_ocr weiter
+     - sonst -> Job AWAITING_SPLIT + SPLIT_NEEDED-Benachrichtigung, Editor /aufteilen/<id>
+  -> Editor: bestaetigen (Teildateien teil-NN.pdf + N Teil-Jobs mit page_ocr-Ausschnitt,
+     split_mode OFF, erben source + email_account_id) | als ein Dokument behalten (Job
+     wieder PENDING, Seitentext bleibt) | verwerfen (Job + Dateien weg)
   -> Thumbnail-Generierung (Pillow/pdf2image)
-  -> OCR
+  -> OCR (entfaellt, wenn page_ocr der Aufteilung vorliegt: Text aus den Seiten,
+     Konfidenz = Mittel der Seitenkonfidenzen)
      - PDF digital: pdfplumber (Konfidenz 1.0)
      - PDF Scan / Bild: _preprocess_for_ocr (Auto-Upscale 2x bei <1500 px,
        MedianFilter Denoising, Autocontrast cutoff=2) -> Tesseract deu+eng
@@ -490,6 +536,11 @@ Dokument-Eingang (Upload, Watch-Ordner oder E-Mail-Import)
      - Datei nach archive/{scope_slug}/{jahr}/{monat}/{typ}/ kopieren,
        erst nach DB-Commit aus Upload-Ordner loeschen (rollback-sicher)
      - Document-Eintrag + Tags + WarrantyInfo + ReviewQuestions + AuditLog erstellen
+       (Teil: split_batch_id/split_part_index/source_pages + AuditLog SPLIT_CREATED;
+       "Dokument aufteilen": Ablagebereich + manuelle Tags des Originals)
+     - Teil terminal -> split_service.on_part_finished: alle Teile fertig -> Stapel DONE
+       (Teil-Duplikat zaehlt als erledigt) bzw. DONE_WITH_ERRORS; MANUAL + DONE ->
+       Original soft-deleted (AuditLog SPLIT)
      - FTS5-Index aktualisieren
      - Vektorisierung mit EMBEDDING_MODEL (Default qwen3-embedding:4b, 2560 dim,
        ohne Prefix) -> ChromaDB-Collection documents_<modell>,
@@ -571,6 +622,7 @@ User-Frage
 **Kritische Build-Gotchas:**
 - **chromadb vs chromadb-client:** PyInstaller braucht `chromadb` (full mit `PersistentClient`), NICHT `chromadb-client` (HTTP-only). Beide nutzen den `chromadb`-Namespace — Konflikt. `build-native.ps1` deinstalliert chromadb-client und installiert `chromadb` aus `requirements-build.txt`. Symptom bei Fehler: `RuntimeError: Chroma is running in http-only client mode`.
 - **PRAGMA foreign_keys=ON:** siehe Alembic-Sektion oben. Ohne den Event-Listener sind FK-Constraints zur Laufzeit wirkungslos.
+- **pypdfium2 (Aufteilen, v1.7):** `pypdfium2` + `pypdfium2_raw` in den `hiddenimports`, `collect_dynamic_libs("pypdfium2_raw")` als `binaries` (die `version.json`-Daten sammeln die Hooks aus pyinstaller-hooks-contrib). `build-native.ps1` bricht ab, wenn `pdfium.dll` oder eine der beiden `version.json` fehlt, und ruft danach `zettelwirtschaft-backend.exe --self-test-pdfium` (laedt die DLL, schneidet im Speicher, braucht keine Config). Docker: Wheel bringt die `.so` mit, kein Systempaket noetig.
 - **Fresh-DB-Init:** Migration 001 macht ALTER ohne CREATE. Docker (`migrate.py:main`) und Native (`entrypoint.py:_run_migrations`) nutzen dieselben Helfer aus `migrate.py`: `is_fresh_db` → `create_fresh_schema` (create_all) + Stamp auf head; danach `ensure_default_filing_scope` (seedet "Privat", das sonst nur Migration 005 anlegt).
 - **App-Import im Bundle:** uvicorn startet per Import-String `"app.main:app"` — `app.main` steht deshalb explizit in den `hiddenimports` der Spec, sonst fehlen App + Router im Bundle.
 - **SPA-Routing:** `StaticFiles(html=True)` deckt nur Ordner-Index ab. `/dokumente` wuerde sonst 404 geben — der Catch-All-Route ist notwendig.
@@ -603,6 +655,12 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   (`ssl/generate-self-signed-cert.py`, `docker-compose.ssl.yml`)
 - **Native Update/Backup/Restore** (v1.4.1): GUI-Update-Wizard, `backup.bat`/`/full`,
   `restore-backup.bat`, Backup-before-uninstall (siehe `## Native-Service-Ops`)
+- **Mehrdokument-Scans aufteilen** (v1.7.0, Spezifikation 12, Etappen 1-4): automatische
+  Pruefung + "Dokument aufteilen"/Upload-Option, Heuristik + optionaler KI-Pass,
+  Aufteilungs-Editor, "Aufteilung rückgängig", Aufbewahrung 30 Tage. Kalibrierung lokal mit
+  `backend/scripts/eval_split.py <ordner> <ground_truth.json>` (Beispiel-Stapel bleiben
+  ausserhalb des Repos, keine Personendaten). Offen (optional): Seiten-Fingerprint, um
+  denselben Teil aus einem anderen Stapel zu erkennen.
 
 **Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27 + Phasen 1-6 + Re-Review):
 
@@ -677,12 +735,13 @@ Naechste Phasen (3-4 laut Konzept): Migrations-Wizard im NSIS-Installer integrie
 - `015_job_document_id` - processing_jobs.document_id (FK ON DELETE SET NULL, Upload-/Dashboard-Link) + error_code (z.B. `DUPLICATE`)
 - `016_schema_consistency` - Partial Unique Index `ux_documents_file_hash_active` (WHERE status != 'DELETED', Re-Upload geloeschter Dateien legt neues Dokument an), fehlende 006/011-Indizes in create_all-DBs, FK processing_jobs.email_account_id, review_questions.priority NOT NULL
 - `017_review_data_fixes` - Datenmigration: leere Scope-Slugs, UUID-Scope-Korrekturen -> Namen, Steuerjahr fuer steuerrelevante Dokumente ohne tax_year
+- `018_document_split` - Tabelle `split_batches` (+ Index `ix_split_batches_status_created`), Aufteilungs-Spalten auf `processing_jobs` (`split_batch_id` FK SET NULL, `split_role`, `split_part_index`, `page_from/to`, `split_mode` NOT NULL default `'AUTO'`, `page_ocr`) und `documents` (`split_batch_id` FK SET NULL, `split_part_index`, `source_pages`); partielle Unique-Indizes `ux_processing_jobs_split_part` (WHERE split_role='PART', idempotente Teil-Jobs) und `ux_documents_split_part_active` (WHERE status!='DELETED')
 
 `migrate.py` ruft `init_db()` nicht mehr auf. Frische (leere) DBs: Schema via
 `create_fresh_schema` (create_all) + Stamp auf head — die Alembic-Chain allein kann
 eine leere DB nicht aufbauen (001 = ALTER ohne CREATE). Bestands-DBs: Alembic-Chain.
 `detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
-auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013), 014 (Tabelle background_tasks), 015 (processing_jobs.document_id), 016 (Index ux_documents_file_hash_active); 017 ist reine idempotente Datenmigration ohne Merkmal.
+auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013), 014 (Tabelle background_tasks), 015 (processing_jobs.document_id), 016 (Index ux_documents_file_hash_active), 018 (Tabelle split_batches, geprueft vor 017); 017 ist reine idempotente Datenmigration ohne Merkmal.
 Die Kette ist linear (Guard-Test `test_revision_chain_is_linear`): neue Migrationen immer auf den aktuellen Head setzen, parallel entstandene vor dem Merge verketten. `migrate.py` liest den DB-Pfad aus den Settings (`settings.sqlite_db_path`, wie Native).
 
 **Native-Pfad** (`app/entrypoint.py`) wie Docker: Bei leerer DB → `Base.metadata.create_all`
@@ -767,6 +826,15 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 | `OLLAMA_THINK` | `false` | `think`-Parameter — nur gesendet, wenn das Modell laut `/api/show` "thinking" kann |
 | `IMAP_TIMEOUT` | `30` | Socket-Timeout (s) fuer IMAP-Verbindungen |
 | `EMAIL_MAX_PER_RUN` | `25` | Max. E-Mails pro Abruf (aelteste zuerst, Rest beim naechsten Scheduler-Tick) |
+| `SPLIT_AUTO_ENABLED` | `true` | Automatische Mehrdokument-Pruefung fuer PDFs aus Upload/Watch-Ordner/E-Mail (UI-Einstellung `split_auto_enabled` hat Vorrang) |
+| `SPLIT_MIN_PAGES` | `3` | Ab dieser Seitenzahl prueft die Automatik (UI `split_min_pages`, mindestens 2) |
+| `SPLIT_USE_LLM` | `true` | Unsichere Uebergaenge zusaetzlich per KI pruefen, ein Aufruf je Stapel (UI `split_use_llm`) |
+| `SPLIT_MAX_PAGES` | `100` | Darueber keine Aufteilungs-Erkennung (normale Pipeline + Hinweis), "Dokument aufteilen" -> 422. Hoechstens 1000 (`SPLIT_PAGES_HARD_LIMIT`) |
+| `SPLIT_TIME_BUDGET_S` | `1200` | Zeitbudget der Seiten-Erkennung; danach ohne Texterkennung (`partial_from`, keine Schnitte) |
+| `SPLIT_BLANK_INK` | `0.005` | Tintenanteil, unter dem eine Seite als Leerseite gilt (keine OCR, nie automatisch verworfen) |
+| `SPLIT_MAX_PARTS` | `50` | Hoechstens so viele Teile pro Stapel (422 beim Bestaetigen). Hoechstens 500 (`SPLIT_PARTS_HARD_LIMIT`) |
+| `SPLIT_KEEP_SOURCE_DAYS` | `30` | Aufbewahrung von Stapeldatei + Vorschaubildern nach Abschluss; solange ist "rückgängig" moeglich |
+| `SPLIT_THUMBNAIL_WIDTH` | `200` | Breite (px) der Seiten-Vorschaubilder im Editor |
 
 ### Native-only Settings (config.toml)
 
@@ -797,6 +865,7 @@ Detaillierte Anforderungen und Prompts liegen unter `planung/`:
 | `09-smartphone-integration.md` | PWA, Kamera-Scan, mDNS, Bottom-Nav |
 | `10-installation-deployment.md` | Docker Compose, Installer, Backup, Updates |
 | `11-rueckfrage-system.md` | Interaktiver KI-Dialog bei unklaren Dokumenten |
+| `12-dokumente-aufteilen.md` | Mehrdokument-Scans erkennen und aufteilen (Editor, Heuristik, KI-Pass, Undo) |
 
 Die Prompts sind sequenziell zu verwenden. Jeder Prompt hat Akzeptanzkriterien die erfuellt sein muessen bevor der naechste begonnen wird.
 

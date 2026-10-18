@@ -3,12 +3,14 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
-import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope } from '../services/api'
+import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope, requestDocumentSplit, getSplitBatch } from '../services/api'
 import { useFilingScopes } from '../composables/useFilingScopes'
 import { useNotificationStore } from '../stores/notifications'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatBytes } from '../utils/formatters'
 import { apiErrorMessage } from '../utils/apiErrors'
+import { sourcePagesLabel } from '../utils/splitParts'
+import { UNDO_TITLE, undoMessage, undoSplitBatch } from '../utils/splitUndo'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +20,13 @@ const doc = ref(null)
 const loading = ref(true)
 const saving = ref(false)
 const showDeleteDialog = ref(false)
+const showSplitDialog = ref(false)
+const requestingSplit = ref(false)
+const showUndoDialog = ref(false)
+const undoingSplit = ref(false)
+// Stapel des Teils, beim Oeffnen des Dialogs geladen: der Dialog nennt die
+// Folge je nach Herkunft (Original wieder aktiv vs. zurueck in den Editor).
+const undoBatch = ref(null)
 const newTag = ref('')
 // H-FE-5: scopes aus dem shared Composable mit Cache + Invalidation.
 const { scopes: filingScopes, ensureLoaded: ensureScopesLoaded, reload: reloadScopes } = useFilingScopes()
@@ -157,6 +166,85 @@ async function handleDelete() {
   }
   skipLeaveGuard = true
   router.push('/dokumente')
+}
+
+// "Dokument aufteilen" (Spezifikation 12): nur PDFs; ob es mindestens zwei
+// Seiten hat, prueft das Backend (422 mit Meldung).
+const canSplit = computed(() => isPdf.value && doc.value?.status !== 'DELETED')
+const splitDialogMessage = computed(() => {
+  const keeps = []
+  if (doc.value?.filing_scope_name) keeps.push(`der Ablagebereich „${doc.value.filing_scope_name}“`)
+  keeps.push('die manuell vergebenen Tags')
+  return `Die Seiten werden zuerst erkannt, danach legst du die Schnitte fest. Jeder Teil übernimmt ${keeps.join(' und ')}; `
+    + 'Steuerkategorie, Garantie und Rückfragen werden pro Teil neu analysiert. '
+    + 'Das Original wird erst nach der Archivierung aller Teile als gelöscht markiert.'
+})
+const splitOrigin = computed(() => {
+  const d = doc.value
+  if (!d?.split_batch_id) return null
+  const pages = d.source_pages ? ` (${sourcePagesLabel(d.source_pages)})` : ''
+  const count = d.split_part_count ? ` von ${d.split_part_count}` : ''
+  const source = d.split_source_filename ? ` aus „${d.split_source_filename}“` : ''
+  return `Teil ${d.split_part_index}${count}${source}${pages}`
+})
+
+// "Aufteilung rückgängig" am Teildokument: gesperrt (mit Begruendung), sobald
+// ein Teil bearbeitet wurde — das Backend liefert can_undo_split + Grund.
+// Nur die Sperr-Angaben neu laden — ungespeicherte Eingaben im Formular bleiben.
+async function refreshUndoFlags() {
+  try {
+    const fresh = await getDocument(doc.value.id)
+    doc.value.can_undo_split = fresh.can_undo_split
+    doc.value.split_undo_blocked_reason = fresh.split_undo_blocked_reason
+  } catch {
+    // Anzeige bleibt; die Meldung oben nennt den Grund
+  }
+}
+
+async function openUndoDialog() {
+  if (undoingSplit.value || !doc.value?.split_batch_id) return
+  undoingSplit.value = true
+  try {
+    undoBatch.value = await getSplitBatch(doc.value.split_batch_id)
+  } catch {
+    undoBatch.value = null  // Dialog zeigt dann den allgemeinen Text
+  } finally {
+    undoingSplit.value = false
+  }
+  showUndoDialog.value = true
+}
+
+async function handleUndoSplit() {
+  showUndoDialog.value = false
+  if (undoingSplit.value || !doc.value?.split_batch_id) return
+  undoingSplit.value = true
+  try {
+    const target = await undoSplitBatch(doc.value.split_batch_id, undoBatch.value)
+    notify.success(target.message)
+    skipLeaveGuard = true
+    router.push(target.path)
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Die Aufteilung kann nicht rückgängig gemacht werden.'))
+    await refreshUndoFlags()
+  } finally {
+    undoingSplit.value = false
+  }
+}
+
+async function handleRequestSplit() {
+  showSplitDialog.value = false
+  if (requestingSplit.value) return
+  requestingSplit.value = true
+  try {
+    const { batch_id: batchId } = await requestDocumentSplit(doc.value.id)
+    notify.success('Die Seiten werden erkannt …')
+    skipLeaveGuard = true
+    router.push(`/aufteilen/${batchId}`)
+  } catch (e) {
+    notify.error(apiErrorMessage(e, 'Aufteilen ist nicht möglich.'))
+  } finally {
+    requestingSplit.value = false
+  }
 }
 
 function goBack() {
@@ -330,7 +418,16 @@ onMounted(async () => {
         <h1 class="min-w-0 truncate text-xl font-bold text-gray-900">{{ doc.title }}</h1>
         <DocTypeBadge :type="doc.document_type" class="flex-shrink-0" />
       </div>
-      <div class="flex flex-shrink-0 gap-2">
+      <!-- Darf schrumpfen und umbrechen: drei Aktionen passen auf dem Smartphone
+           nicht in eine Zeile (sonst horizontales Scrollen, "Löschen" abgeschnitten). -->
+      <div class="flex max-w-full flex-wrap gap-2">
+        <button
+          v-if="canSplit"
+          type="button"
+          class="btn-secondary"
+          :disabled="requestingSplit"
+          @click="showSplitDialog = true"
+        >Dokument aufteilen</button>
         <a :href="fileUrl" download class="btn-secondary">Herunterladen</a>
         <button @click="showDeleteDialog = true" class="btn-danger">Löschen</button>
       </div>
@@ -362,6 +459,28 @@ onMounted(async () => {
         <p class="mt-2 text-xs text-gray-400">
           {{ doc.original_filename }} &middot; {{ formatBytes(doc.file_size_bytes) }}
         </p>
+        <div v-if="splitOrigin" class="mt-1 text-sm text-gray-600">
+          <p data-testid="split-origin">
+            {{ splitOrigin }} &middot;
+            <router-link :to="`/aufteilen/${doc.split_batch_id}`" class="text-primary-600 hover:text-primary-700">Zum Stapel</router-link>
+          </p>
+          <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button
+              type="button"
+              class="btn-secondary"
+              :disabled="!doc.can_undo_split || undoingSplit"
+              :aria-describedby="!doc.can_undo_split && doc.split_undo_blocked_reason ? 'split-undo-reason' : undefined"
+              data-testid="split-undo"
+              @click="openUndoDialog"
+            >Aufteilung rückgängig</button>
+            <span
+              v-if="!doc.can_undo_split && doc.split_undo_blocked_reason"
+              id="split-undo-reason"
+              class="text-xs text-gray-500"
+              data-testid="split-undo-reason"
+            >{{ doc.split_undo_blocked_reason }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- Metadata (right, 40%) -->
@@ -571,6 +690,25 @@ onMounted(async () => {
       :danger="true"
       @confirm="handleDelete"
       @cancel="showDeleteDialog = false"
+    />
+
+    <ConfirmDialog
+      :show="showSplitDialog"
+      title="Dokument aufteilen"
+      :message="splitDialogMessage"
+      confirm-text="Aufteilen"
+      @confirm="handleRequestSplit"
+      @cancel="showSplitDialog = false"
+    />
+
+    <ConfirmDialog
+      :show="showUndoDialog"
+      :title="UNDO_TITLE"
+      :message="undoMessage(undoBatch?.origin)"
+      confirm-text="Rückgängig machen"
+      :danger="true"
+      @confirm="handleUndoSplit"
+      @cancel="showUndoDialog = false"
     />
 
     <ConfirmDialog

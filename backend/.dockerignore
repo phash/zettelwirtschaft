@@ -2,6 +2,8 @@ __pycache__
 *.pyc
 .pytest_cache
 tests/
+# Lokale Auswerte-Werkzeuge (z.B. scripts/eval_split.py), nicht im Image
+scripts/
 .env
 .env.*
 *.db

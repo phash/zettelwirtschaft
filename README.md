@@ -19,6 +19,7 @@ Läuft ausschließlich on-premise im Heim-WLAN. Kein Cloud-Zwang, keine Abos, ke
 - **Rückfrage-System** - KI fragt bei unklaren Dokumenten gezielt nach
 - **E-Mail-Import** - Anhänge aus IMAP-Postfächern übernehmen (nur ungelesene Mails, KI prüft die Relevanz)
 - **Steuerrelevanz** - Direkt in der Dokumentenliste sichtbar und per Klick änderbar
+- **Mehrdokument-Scans aufteilen** - Stapel aus dem Einzugsscanner werden erkannt, im Editor bestätigt und als einzelne Dokumente abgelegt
 
 ## Installation (Windows)
 
@@ -189,6 +190,16 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Deployment:** Native Windows-Dienst (Setup.exe) oder Docker Compose
 
 ## Changelog
+
+### v1.7.0
+- **Mehrdokument-Scans aufteilen:** Legt der Einzugsscanner mehrere Briefe und Rechnungen in eine PDF, erkennt die App das jetzt vor der Analyse. PDFs ab 3 Seiten aus Upload, Watch-Ordner und E-Mail-Anhängen werden Seite für Seite gelesen; Seitenzähler („Seite 1 von …“), neue Anschrift mit Anrede, Referenz- und Vertragsnummern, Trennblätter, Formatwechsel und Duplex-Blätter ergeben einen Aufteilungsvorschlag. Wurden mehrere Dokumente gefunden oder ist eine Stelle unsicher, erscheint der Stapel unter „Zu prüfen“ → „Stapel zum Aufteilen“ (mit Benachrichtigung). Ein einzelnes Dokument läuft ohne Umweg normal weiter.
+- **Aufteilungs-Editor** (`/aufteilen/…`): Seiten-Vorschaubilder, Schnitte per Klick oder Tastatur setzen und entfernen, unsichere Stellen orange mit Begründung, Seiten weglassen (nie automatisch), Großansicht, Rückfrage bei Schnitten mitten durch ein Duplex-Blatt. Danach wird jeder Teil als eigenes Dokument analysiert, abgelegt und durchsuchbar; die Teile sind exakte Seitenkopien (keine Neukodierung) und tragen ihre Herkunft („Teil 2 von 3, Seiten 3–44“). Keine Seite wird zweimal per OCR gelesen.
+- **„Dokument aufteilen“** in der Detailansicht und Option „Enthält mehrere Dokumente“ beim Upload. Teile eines archivierten Dokuments übernehmen Ablagebereich und manuelle Tags; das Original wird erst nach dem letzten Teil als gelöscht markiert.
+- **„Aufteilung rückgängig“**, solange kein Teil bearbeitet wurde. Der Originalstapel wird 30 Tage aufbewahrt (`SPLIT_KEEP_SOURCE_DAYS`) und danach automatisch entfernt.
+- **Optionale KI-Prüfung** unsicherer Stellen (höchstens ein Aufruf je Stapel); ohne erreichbares Ollama arbeitet die Erkennung allein mit den Regeln weiter. Einstellungen unter „System“ → „Verarbeitung“ (automatische Prüfung, Mindestseitenzahl, KI-Prüfung), Grenzen per Konfiguration (`SPLIT_MAX_PAGES`, `SPLIT_TIME_BUDGET_S` u. a.).
+- **Robustheit:** Absturz während Erkennung oder Aufteilung setzt sauber fort (Checkpoint alle 5 Seiten, keine halben Teildateien), doppelte Bestätigung oder zwei Geräte gleichzeitig erzeugen keine doppelten Dokumente, ein erneut importierter Stapel wird als Duplikat erkannt, verschlüsselte/defekte PDFs laufen normal weiter.
+- **Native:** neue Abhängigkeit `pypdfium2`; der Build prüft `pdfium.dll` und führt einen Selbsttest der fertigen Exe aus (`--self-test-pdfium`).
+- Tests: Backend **1491** (1 übersprungen), E2E **636** (Desktop + Mobile, 2 übersprungen), Vitest 52.
 
 ### v1.6.2
 - Fix: Die Rückfrage „Die KI schlägt einen neuen Ablagebereich … vor. Soll dieser erstellt werden?“ akzeptiert jetzt „Ja“ (legt den Bereich an und ordnet zu) und „Nein“ (Zuordnung bleibt). Bisher wurde „ja“ als Bereichsname gelesen („Ablagebereich „ja“ existiert nicht“). Die Detailansicht zeigt Antwortvorschläge zusätzlich als Buttons.

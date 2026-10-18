@@ -282,16 +282,22 @@ def _parse_conf(value) -> int:
         return -1
 
 
-def _text_from_data(data: dict) -> tuple[str, list[tuple[str, int]]]:
+def _text_from_data(data: dict, min_right: int = 0) -> tuple[str, list[tuple[str, int]]]:
     """Text mit Zeilenstruktur aus ``image_to_data`` rekonstruieren.
 
     Woerter einer Zeile mit Leerzeichen, Zeilen mit "\\n", Absaetze/Bloecke
     mit "\\n\\n" — sonst landet ein gescanntes Dokument als eine einzige
     Zeile bei LLM, Volltextsuche und Chunker.
 
+    ``min_right`` > 0: Zeilen, die vollstaendig links davon liegen (rechte
+    Kante < min_right Pixel), fallen weg — Aufteilungs-Erkennung: senkrechter
+    Druckerei-Code im linken Rand erzeugt sonst Einzeichen-Muellzeilen.
+
     Returns:
         (Text, Liste der uebernommenen (Wort, Konfidenz)).
     """
+    if min_right > 0:
+        data = _drop_left_margin_lines(data, min_right)
     lines: list[tuple[tuple[int, int], list[str]]] = []  # ((block, par), woerter)
     current_key = None
     words: list[tuple[str, int]] = []
@@ -321,7 +327,25 @@ def _text_from_data(data: dict) -> tuple[str, list[tuple[str, int]]]:
     return "".join(parts), words
 
 
-def _run_tesseract(processed, languages: str) -> _OcrPass:
+def _drop_left_margin_lines(data: dict, min_right: int) -> dict:
+    """``image_to_data`` ohne die Woerter von Zeilen, die ganz im linken
+    Randstreifen liegen (siehe _text_from_data)."""
+    count = len(data.get("text", []))
+    lefts = data.get("left") or [0] * count
+    widths = data.get("width") or [0] * count
+    keys = [
+        (data.get("block_num", [0] * count)[i], data.get("par_num", [0] * count)[i], data.get("line_num", [0] * count)[i])
+        for i in range(count)
+    ]
+    right: dict[tuple, int] = {}
+    for i in range(count):
+        if (data["text"][i] or "").strip():
+            right[keys[i]] = max(right.get(keys[i], 0), int(lefts[i]) + int(widths[i]))
+    keep = [i for i in range(count) if right.get(keys[i], min_right) >= min_right]
+    return {key: [values[i] for i in keep] for key, values in data.items() if isinstance(values, list)}
+
+
+def _run_tesseract(processed, languages: str, exclude_left: float = 0.0) -> _OcrPass:
     import pytesseract
 
     data = pytesseract.image_to_data(
@@ -329,14 +353,15 @@ def _run_tesseract(processed, languages: str) -> _OcrPass:
         lang=languages,
         output_type=pytesseract.Output.DICT,
     )
-    text, words = _text_from_data(data)
+    min_right = int(processed.size[0] * exclude_left) if exclude_left > 0 else 0
+    text, words = _text_from_data(data, min_right)
     confidences = [conf for _, conf in words]
     avg_confidence = sum(confidences) / len(confidences) / 100.0 if confidences else 0.0
     quality = sum(len(word) * conf for word, conf in words if conf >= _QUALITY_MIN_WORD_CONF) / 100.0
     return _OcrPass(text=text.strip(), confidence=avg_confidence, quality=quality)
 
 
-def _ocr_image_sync(image, languages: str) -> tuple[str, float]:
+def _ocr_image_sync(image, languages: str, exclude_left: float = 0.0) -> tuple[str, float]:
     """Fuehrt OCR auf einem PIL-Image aus (synchron).
 
     Erster Durchgang mit der Standard-Vorverarbeitung. Ist das Ergebnis schwach
@@ -346,14 +371,14 @@ def _ocr_image_sync(image, languages: str) -> tuple[str, float]:
     der hoechsten konfidenz-gewichteten Zeichenzahl. Gute Scans
     kosten so keinen zweiten Tesseract-Lauf.
     """
-    first = _run_tesseract(_preprocess_for_ocr(image), languages)
+    first = _run_tesseract(_preprocess_for_ocr(image), languages, exclude_left)
     if not first.weak:
         return first.text, first.confidence
 
     best = first
     try:
         for candidate in _second_pass_images(image):
-            result = _run_tesseract(candidate, languages)
+            result = _run_tesseract(candidate, languages, exclude_left)
             if result.quality > best.quality:
                 best = result
     except Exception:
@@ -366,10 +391,12 @@ def _ocr_image_sync(image, languages: str) -> tuple[str, float]:
     return best.text, best.confidence
 
 
-def _ocr_page(image, page_number: int, languages: str) -> PageText | None:
+def _ocr_page(image, page_number: int, languages: str, exclude_left: float = 0.0) -> PageText | None:
     """OCR einer Seite; Fehler werden geloggt und ergeben None."""
     try:
-        text, confidence = _ocr_image_sync(image, languages)
+        text, confidence = (
+            _ocr_image_sync(image, languages, exclude_left) if exclude_left else _ocr_image_sync(image, languages)
+        )
     except Exception as e:
         logger.warning("OCR fuer Seite %d fehlgeschlagen: %s", page_number, e)
         return None
@@ -490,13 +517,14 @@ def _render_size(width_pts: float, height_pts: float, dpi: int = _OCR_DPI) -> tu
     return max(1, math.floor(width)), max(1, math.floor(height))
 
 
-def _ocr_pdf_page(file_path: Path, page_number: int, languages: str) -> PageText | None:
-    """Rendert EINE Seite (300 dpi, Graustufen) und liest sie per OCR.
+def render_pdf_page_for_ocr(file_path: Path, page_number: int):
+    """Rendert EINE Seite (300 dpi, Graustufen) fuer die OCR, None bei Fehler.
 
     Seite fuer Seite statt aller Seiten auf einmal: sonst liegen bis zu
     MAX_OCR_PAGES RGB-Seiten (~26 MB je Seite) gleichzeitig im Speicher.
     Die Pixelgroesse ist auf MAX_IMAGE_PIXELS begrenzt, pdftoppm bekommt ein
-    Timeout (FH-02).
+    Timeout (FH-02). Die Aufteilungs-Erkennung nutzt dasselbe Bild auch fuer
+    die Grossansicht der Seite.
     """
     from pdf2image import convert_from_path
 
@@ -511,9 +539,70 @@ def _ocr_pdf_page(file_path: Path, page_number: int, languages: str) -> PageText
     except Exception as e:
         logger.error("pdf2image Konvertierung von Seite %d fehlgeschlagen: %s", page_number, e)
         return None
-    if not images:
+    return images[0] if images else None
+
+
+def ocr_page_image(
+    image, page_number: int, languages: str, exclude_left: float = 0.0,
+) -> PageText | None:
+    """OCR einer bereits gerenderten Seite (Fehler/kein Text -> None).
+
+    ``exclude_left`` (Anteil der Bildbreite): Zeilen ganz im linken
+    Randstreifen werden verworfen (Aufteilungs-Erkennung, Randcode)."""
+    return _ocr_page(image, page_number, languages, exclude_left)
+
+
+def ocr_rotated_strip(image, left_fraction: float, angle: int) -> str:
+    """Liest den linken Randstreifen (Anteil ``left_fraction`` der Breite),
+    um ``angle`` Grad gedreht — senkrechte Druckerei-/Sendungscodes von
+    Einzugsscannern. Nur Ziffern/Zeichen von Interesse, deshalb "eng" und
+    ein Block-Layout (psm 6). Fehler -> "" (das Signal ist optional)."""
+    import pytesseract
+
+    try:
+        width, height = image.size
+        strip = image.crop((0, 0, max(1, int(width * left_fraction)), height))
+        rotated = strip.rotate(angle, expand=True)
+        return pytesseract.image_to_string(rotated, lang="eng", config="--psm 6") or ""
+    except Exception as e:
+        logger.debug("Randstreifen-OCR fehlgeschlagen: %s", e)
+        return ""
+
+
+def _ocr_pdf_page(file_path: Path, page_number: int, languages: str) -> PageText | None:
+    """Rendert EINE Seite (siehe render_pdf_page_for_ocr) und liest sie per OCR."""
+    image = render_pdf_page_for_ocr(file_path, page_number)
+    if image is None:
         return None
-    return _ocr_page(images[0], page_number, languages)
+    return _ocr_page(image, page_number, languages)
+
+
+def ocr_result_from_pages(pages: list[PageText], page_count: int) -> OcrResult | None:
+    """OcrResult aus vorab erkanntem Seitentext (Aufteilung: Erkennung und
+    Teil-Analyse teilen sich die OCR — keine Seite wird zweimal gelesen).
+
+    Konfidenz = Mittelwert der Seitenkonfidenzen (nur Seiten mit Text), nicht
+    die pauschale 1,0 des ``pre_ocr_text``-Pfads — so bleibt
+    ``Document.ocr_confidence`` mit normal erkannten Dokumenten vergleichbar.
+    None, wenn keine Seite Text hat.
+    """
+    with_text = sorted((p for p in pages if p.text and p.text.strip()), key=lambda p: p.page_number)
+    if not with_text:
+        return None
+    return OcrResult(
+        full_text="\n\n".join(p.text for p in with_text),
+        pages=with_text,
+        average_confidence=sum(p.confidence for p in with_text) / len(with_text),
+        page_count=page_count,
+    )
+
+
+def read_pdf_text_pages(file_path: Path) -> list[str | None] | None:
+    """Digitaler Textlayer pro Seite (siehe _read_pdf_text_pages)."""
+    return _read_pdf_text_pages(file_path)
+
+
+MIN_DIGITAL_PAGE_CHARS = _MIN_DIGITAL_PAGE_CHARS
 
 
 def _extract_pdf_sync(file_path: Path, settings: Settings) -> OcrResult | None:

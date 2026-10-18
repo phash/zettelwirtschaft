@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,7 +17,8 @@ from app.database import get_db, get_session_factory
 from app.models.audit_log import AuditAction, AuditLog
 from app.models.document import Document, DocumentStatus, DocumentTag, ReviewStatus, Tag
 from app.models.filing_scope import FilingScope
-from app.models.processing_job import JobSource, JobStatus, ProcessingJob
+from app.models.processing_job import JobSource, JobStatus, ProcessingJob, SplitMode
+from app.models.split_batch import SplitBatch
 from app.models.warranty_info import WarrantyInfo, select_active_document_warranties
 from app.schemas.document import (
     DashboardStats,
@@ -68,6 +69,26 @@ async def _get_active_document_or_404(db: AsyncSession, document_id: str) -> Doc
     return document
 
 
+async def _document_response(db: AsyncSession, document: Document) -> DocumentResponse:
+    """DocumentResponse inkl. Herkunft aus einem aufgeteilten Stapel (Teil x
+    von y aus „datei.pdf“). Ein fehlender Stapel wird toleriert."""
+    response = DocumentResponse.model_validate(document)
+    if document.split_batch_id:
+        batch = await db.get(SplitBatch, document.split_batch_id)
+        if batch is not None:
+            from app.services.split_service import load_final_parts
+
+            response.split_part_count = len(load_final_parts(batch).get("parts", [])) or None
+            response.split_source_filename = batch.original_filename
+            if document.status != DocumentStatus.DELETED:
+                from app.services.split_service import undo_blocker
+
+                reason = await undo_blocker(db, batch)
+                response.can_undo_split = reason is None
+                response.split_undo_blocked_reason = reason
+    return response
+
+
 def _schedule_revectorize(
     background_tasks: BackgroundTasks,
     document_id: str,
@@ -87,6 +108,7 @@ def _schedule_revectorize(
 @router.post("/documents/upload", response_model=MultiUploadResponse)
 async def upload_documents(
     files: list[UploadFile],
+    split_check: bool = Form(False),
     db: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
 ) -> MultiUploadResponse:
@@ -94,6 +116,9 @@ async def upload_documents(
 
     Jede Datei wird direkt in UPLOAD_DIR gestreamt (keine Zwischenkopie, kein
     vollstaendiges Einlesen in den RAM) und dort validiert.
+
+    ``split_check=true`` ("Enthält mehrere Dokumente"): PDFs ab zwei Seiten
+    gehen vor der Analyse in den Aufteilungs-Editor (Spezifikation 12).
     """
     uploaded: list[UploadResponse] = []
     rejected: list[dict] = []
@@ -112,6 +137,7 @@ async def upload_documents(
                 source=JobSource.UPLOAD,
                 settings=settings,
                 db=db,
+                split_mode=SplitMode.FORCE if split_check else SplitMode.AUTO,
             )
             # Pro Datei comitten — sonst rollt ein spaeterer Fehler in der
             # gleichen Session alle vorherigen Uploads zurueck (H-19).
@@ -155,7 +181,12 @@ async def get_document_status(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Verarbeitungsauftrag nicht gefunden")
-    return JobStatusResponse.model_validate(job)
+    response = JobStatusResponse.model_validate(job)
+    if job.status == JobStatus.PROCESSING and job.split_batch_id:
+        from app.api.jobs import with_split_progress
+
+        response.split_progress = (await with_split_progress(db, [job]))[0].split_progress
+    return response
 
 
 # === Document CRUD ===
@@ -237,7 +268,7 @@ async def get_document(
 ) -> DocumentResponse:
     """Gibt ein einzelnes Dokument mit allen Metadaten zurueck."""
     document = await _get_active_document_or_404(db, document_id)
-    return DocumentResponse.model_validate(document)
+    return await _document_response(db, document)
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentResponse)
@@ -267,7 +298,7 @@ async def update_document(
             setattr(document, field, value)
 
     if not changes:
-        return DocumentResponse.model_validate(document)
+        return await _document_response(db, document)
 
     # Steuerrelevant ohne Jahr -> Jahr ableiten (abgeleitet, keine Benutzer-
     # Eingabe: bewusst nicht im AuditLog, damit eine Re-Analyse es aendern darf).
@@ -309,7 +340,7 @@ async def update_document(
 
         background_tasks.add_task(update_scope_metadata, [document.id], document.filing_scope_id, settings)
 
-    return DocumentResponse.model_validate(document)
+    return await _document_response(db, document)
 
 
 @router.delete("/documents/{document_id}", status_code=204)
@@ -480,7 +511,7 @@ async def add_tag_to_document(
         await db.commit()
         _schedule_revectorize(background_tasks, document.id, settings, session_factory)
 
-    return DocumentResponse.model_validate(document)
+    return await _document_response(db, document)
 
 
 @router.delete("/documents/{document_id}/tags/{tag_id:int}")

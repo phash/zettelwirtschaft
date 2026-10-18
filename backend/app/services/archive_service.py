@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
@@ -45,6 +46,23 @@ class DuplicateDocumentError(ValueError):
         self.existing_title = existing_title
         title = existing_title or "ohne Titel"
         super().__init__(f"Diese Datei ist bereits archiviert („{title}“).")
+
+
+@dataclass(frozen=True)
+class SplitProvenance:
+    """Herkunft eines Teildokuments aus einem aufgeteilten Stapel."""
+
+    batch_id: str
+    part_index: int
+    part_count: int
+    source_pages: str  # z.B. "3-11,13-44"
+    source_filename: str
+    # Manuelle Tags des Originaldokuments (nur "Dokument aufteilen")
+    inherited_tags: tuple[str, ...] = ()
+
+    def audit_text(self) -> str:
+        pages = self.source_pages.replace("-", "–")
+        return f"Teil {self.part_index}/{self.part_count}, Seiten {pages} aus {self.source_filename}"
 
 
 class ArchiveDataError(Exception):
@@ -289,14 +307,20 @@ async def find_active_duplicate(file_hash: str, session: AsyncSession) -> Docume
     return result.scalars().first()
 
 
-async def check_duplicate(file_path: Path, session: AsyncSession) -> Document | None:
-    """Prueft ob eine Datei bereits als aktives Dokument archiviert wurde (via SHA-256).
+async def file_sha256(file_path: Path) -> str:
+    """SHA-256 einer Datei (blockierendes Lesen in einem Thread)."""
+    return await asyncio.to_thread(_compute_file_hash, file_path)
 
-    Wird vom Worker VOR Thumbnail/OCR/LLM aufgerufen, damit Duplikate nicht
-    erst nach der teuren Analyse auffallen.
-    """
-    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
-    return await find_active_duplicate(file_hash, session)
+
+async def _find_active_split_part(split_part: SplitProvenance, session: AsyncSession) -> Document | None:
+    result = await session.execute(
+        select(Document).where(
+            Document.split_batch_id == split_part.batch_id,
+            Document.split_part_index == split_part.part_index,
+            Document.status != DocumentStatus.DELETED,
+        )
+    )
+    return result.scalars().first()
 
 
 def _truncate(value, max_len: int) -> str | None:
@@ -452,6 +476,7 @@ async def archive_document(
     filing_scopes: list[dict] | None = None,
     forced_scope_id: str | None = None,
     created_files: list[Path] | None = None,
+    split_part: SplitProvenance | None = None,
 ) -> Document:
     """Archiviert ein Dokument: DB-Eintrag erstellen, Datei ins Archiv kopieren.
 
@@ -461,7 +486,10 @@ async def archive_document(
 
     Args:
         forced_scope_id: Ablagebereich, der Keyword-/LLM-Zuordnung uebersteuert
-            (Ablagebereich des E-Mail-Kontos).
+            (Ablagebereich des E-Mail-Kontos bzw. des aufgeteilten Originals).
+        split_part: Herkunft eines Teils aus einem aufgeteilten Stapel —
+            setzt split_batch_id/split_part_index/source_pages, uebernimmt die
+            manuellen Tags des Originals und schreibt AuditAction.SPLIT_CREATED.
 
     Returns:
         Das erstellte Document-Objekt.
@@ -471,7 +499,7 @@ async def archive_document(
         ArchiveDataError: Daten liessen sich nicht speichern (nicht wiederholbar).
     """
     # Hash berechnen + Duplikatcheck (geloeschte Dokumente zaehlen nicht)
-    file_hash = await asyncio.to_thread(_compute_file_hash, file_path)
+    file_hash = await file_sha256(file_path)
     existing = await find_active_duplicate(file_hash, session)
     if existing is not None:
         raise DuplicateDocumentError(existing.id, existing.title)
@@ -543,6 +571,9 @@ async def archive_document(
         review_status=review_status,
         ai_confidence=analysis.confidence,
         scanned_at=datetime.now(timezone.utc),
+        split_batch_id=split_part.batch_id if split_part else None,
+        split_part_index=split_part.part_index if split_part else None,
+        source_pages=split_part.source_pages if split_part else None,
     )
     # Steuerrelevant ohne Jahr (LLM liefert keins) -> Jahr ableiten, sonst taucht
     # der Beleg in keiner Steuer-Abfrage auf (die alle auf tax_year filtern).
@@ -556,13 +587,20 @@ async def archive_document(
             await session.flush()
     except IntegrityError as exc:
         existing = await find_active_duplicate(file_hash, session)
+        if existing is None and split_part is not None:
+            # ux_documents_split_part_active: dieser Teil ist schon archiviert
+            existing = await _find_active_split_part(split_part, session)
         if existing is not None:
             raise DuplicateDocumentError(existing.id, existing.title) from exc
         raise ArchiveDataError(f"Dokument konnte nicht gespeichert werden: {exc.orig}") from exc
 
-    # Tags erstellen (via junction table to avoid lazy-load issues)
-    if analysis.tags:
-        tags = await _get_or_create_tags(analysis.tags, session)
+    # Tags erstellen (via junction table to avoid lazy-load issues). Manuelle
+    # Tags des aufgeteilten Originals kommen dazu (gleicher Name -> ein Tag).
+    tag_names = list(analysis.tags or [])
+    if split_part is not None:
+        tag_names += list(split_part.inherited_tags)
+    if tag_names:
+        tags = await _get_or_create_tags(tag_names, session)
         for tag in tags:
             session.add(DocumentTag(document_id=document.id, tag_id=tag.id))
 
@@ -605,6 +643,21 @@ async def archive_document(
         ),
     )
     session.add(audit)
+    if split_part is not None:
+        session.add(AuditLog(
+            document_id=document.id,
+            action=AuditAction.SPLIT_CREATED,
+            details=json.dumps(
+                {
+                    "text": split_part.audit_text(),
+                    "split_batch_id": split_part.batch_id,
+                    "part": split_part.part_index,
+                    "parts": split_part.part_count,
+                    "source_pages": split_part.source_pages,
+                },
+                ensure_ascii=False,
+            ),
+        ))
 
     try:
         await session.flush()

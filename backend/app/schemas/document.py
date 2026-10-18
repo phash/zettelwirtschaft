@@ -138,6 +138,16 @@ class DocumentResponse(BaseModel):
     tags: list[TagResponse] = []
     warranty_info: WarrantyInfoResponse | None = None
     review_questions: list[ReviewQuestionResponse] = []
+    # Herkunft aus einem aufgeteilten Stapel (Spezifikation 12). split_part_count,
+    # split_source_filename und can_undo_split/split_undo_blocked_reason
+    # ("Aufteilung rückgängig" moeglich bzw. warum nicht) setzt der Endpoint.
+    split_batch_id: str | None = None
+    split_part_index: int | None = None
+    split_part_count: int | None = None
+    split_source_filename: str | None = None
+    source_pages: str | None = None
+    can_undo_split: bool = False
+    split_undo_blocked_reason: str | None = None
 
     resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
 

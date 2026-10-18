@@ -57,14 +57,14 @@ async function loadData() {
     const [s, docs, activeJobs, failJobs, qStatus] = await Promise.all([
       getDashboardStats(),
       getDocuments({ page: 1, page_size: 5, sort_by: 'created_at', sort_order: 'desc' }),
-      getJobs({ status: 'PROCESSING,PENDING', page_size: 20 }),
+      getJobs({ status: 'PROCESSING,PENDING,AWAITING_SPLIT', page_size: 20 }),
       getJobs({ status: 'FAILED', page_size: 10 }),
       getQueueStatus(),
     ])
     if (requestId !== activeRequestId || unmounted) return  // veraltet
     stats.value = s
     recentDocs.value = docs.items
-    processingJobs.value = activeJobs.items?.filter(j => ['PENDING', 'PROCESSING'].includes(j.status)) || []
+    processingJobs.value = activeJobs.items?.filter(j => ['PENDING', 'PROCESSING', 'AWAITING_SPLIT'].includes(j.status)) || []
     failedJobs.value = failJobs.items || []
     queuePaused.value = qStatus.paused
     loadFailed = false
@@ -81,7 +81,8 @@ async function loadData() {
       }
     }).catch(() => { /* E-Mail nicht konfiguriert, ignorieren */ })
 
-    if (processingJobs.value.length > 0) {
+    // Wartet ein Stapel nur noch auf den Benutzer, gibt es nichts zu pollen.
+    if (processingJobs.value.some(j => j.status !== 'AWAITING_SPLIT')) {
       schedulePoll(queuePaused.value ? POLL_MAX_MS : POLL_BASE_MS)
     }
   } catch {
@@ -110,6 +111,15 @@ async function toggleQueue() {
   } catch {
     notify.error('Queue-Status konnte nicht geändert werden.')
   }
+}
+
+function jobStateLabel(job) {
+  if (job.status !== 'PROCESSING') return 'Wartet'
+  const progress = job.split_progress
+  if (progress) {
+    return `Seite ${Math.min(progress.pages_done + 1, progress.page_count)} von ${progress.page_count} wird erkannt`
+  }
+  return 'Wird verarbeitet'
 }
 
 function isDuplicate(job) {
@@ -298,7 +308,12 @@ onMounted(loadData)
                 :class="job.status === 'PROCESSING' ? 'bg-blue-500' : 'bg-gray-400'"
               ></div>
               <span class="flex-1 text-sm truncate">{{ job.original_filename }}</span>
-              <span class="badge bg-blue-100 text-blue-700">{{ job.status === 'PROCESSING' ? 'Wird verarbeitet' : 'Wartet' }}</span>
+              <router-link
+                v-if="job.status === 'AWAITING_SPLIT' && job.split_batch_id"
+                :to="`/aufteilen/${job.split_batch_id}`"
+                class="badge bg-orange-100 text-orange-700 hover:bg-orange-200"
+              >Wartet auf Aufteilung</router-link>
+              <span v-else class="badge bg-blue-100 text-blue-700">{{ jobStateLabel(job) }}</span>
             </div>
           </div>
         </div>

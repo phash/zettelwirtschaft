@@ -107,6 +107,14 @@ async function openNotification(n) {
     })
   }
   if (n.document_id) router.push(`/dokumente/${n.document_id}`)
+  // Stapel wartet auf die Aufteilung: Abschnitt "Stapel zum Aufteilen" in Prüfen
+  else if (n.type === 'SPLIT_NEEDED') router.push('/pruefen')
+}
+
+function notificationLabel(n) {
+  if (n.document_id) return `${n.title} – Dokument öffnen`
+  if (n.type === 'SPLIT_NEEDED') return `${n.title} – Stapel prüfen`
+  return `${n.title} – als gelesen markieren`
 }
 
 function cancelSuggestions() {
@@ -295,7 +303,7 @@ onUnmounted(() => {
               <button
                 type="button"
                 :class="['block w-full px-4 py-3 text-left hover:bg-gray-50', n.is_read ? '' : 'bg-primary-50/50']"
-                :aria-label="n.document_id ? `${n.title} – Dokument öffnen` : `${n.title} – als gelesen markieren`"
+                :aria-label="notificationLabel(n)"
                 @click="openNotification(n)"
               >
                 <span class="block text-sm font-medium text-gray-900">{{ n.title }}</span>

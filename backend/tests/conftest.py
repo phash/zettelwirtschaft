@@ -25,6 +25,7 @@ import app.models.chat_message  # noqa: F401
 import app.models.email_account  # noqa: F401
 import app.models.processed_email  # noqa: F401
 import app.models.background_task  # noqa: F401
+import app.models.split_batch  # noqa: F401
 
 
 @pytest.fixture

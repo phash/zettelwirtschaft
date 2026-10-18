@@ -7,6 +7,7 @@ import SystemHealth from '../components/settings/SystemHealth.vue'
 import UpdateCheck from '../components/settings/UpdateCheck.vue'
 import MaintenanceActions from '../components/settings/MaintenanceActions.vue'
 import EmailSettings from '../components/settings/EmailSettings.vue'
+import SplitSettings from '../components/settings/SplitSettings.vue'
 import { copyToClipboard } from '../utils/clipboard'
 
 // H-FE-4: Kindkomponenten laden selbst (onMounted in jeder Komponente).
@@ -62,6 +63,9 @@ async function copyText(text) {
 
     <!-- E-Mail-Konten -->
     <EmailSettings />
+
+    <!-- Verarbeitung: automatische Prüfung von Stapel-Scans -->
+    <SplitSettings />
 
     <!-- System Health + Komponenten + Speicher -->
     <SystemHealth @health-loaded="onHealthLoaded" />

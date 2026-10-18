@@ -72,6 +72,22 @@ try {
     python -m PyInstaller zettelwirtschaft.spec --clean --noconfirm
     Assert-ExitCode "PyInstaller"
     Copy-Item -Recurse -Force "dist\zettelwirtschaft-backend" (Join-Path $DistRoot "backend")
+    # Aufteilen von Stapel-Scans braucht pdfium.dll (pypdfium2_raw) im Bundle -
+    # fehlt sie, scheitert jede Aufteilung erst zur Laufzeit.
+    $pdfiumDll = Get-ChildItem -Path (Join-Path $DistRoot "backend") -Recurse -Filter "pdfium.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pdfiumDll) { throw "pdfium.dll fehlt im Backend-Bundle (pypdfium2_raw) - Build abgebrochen" }
+    Write-Host "  pdfium.dll: $($pdfiumDll.FullName)" -ForegroundColor DarkGray
+    # pypdfium2 liest beim Import seine version.json (Hooks aus
+    # pyinstaller-hooks-contrib) - fehlt sie, scheitert schon der Import.
+    foreach ($pkg in @("pypdfium2", "pypdfium2_raw")) {
+        $versionJson = Get-ChildItem -Path (Join-Path $DistRoot "backend") -Recurse -Filter "version.json" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq $pkg } | Select-Object -First 1
+        if (-not $versionJson) { throw "$pkg\version.json fehlt im Backend-Bundle - Build abgebrochen" }
+    }
+    # Laufzeit-Check am fertigen Bundle: DLL laden und im Speicher schneiden.
+    $backendExe = Join-Path $DistRoot "backend\zettelwirtschaft-backend.exe"
+    & $backendExe --self-test-pdfium
+    Assert-ExitCode "pdfium-Selbsttest (zettelwirtschaft-backend.exe --self-test-pdfium)"
 } finally {
     Pop-Location
 }

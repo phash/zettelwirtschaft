@@ -18,6 +18,8 @@ class NotificationType(str, enum.Enum):
     # CHECK-Constraint, keine Migration noetig).
     REVIEW_NEEDED = "REVIEW_NEEDED"
     SYSTEM = "SYSTEM"
+    # Stapel-PDF wartet auf die Aufteilung (document_id NULL, Frontend -> /pruefen).
+    SPLIT_NEEDED = "SPLIT_NEEDED"
 
 
 class Notification(Base):

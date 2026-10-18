@@ -550,10 +550,15 @@ Invoke-Test 'Convert-Env-To-Config.ps1 (5.1): .env -> gueltige TOML, Werte ueber
     # Fehlendes EMBEDDING_MODEL: die alte Installation lief mit dem alten Default.
     Assert-True ($d.EMBEDDING_MODEL -eq 'bge-m3') "EMBEDDING_MODEL ohne Eintrag: $($d.EMBEDDING_MODEL) (erwartet bisheriger Default bge-m3)"
 
-    [System.IO.File]::WriteAllText($envPath, "PIN_ENABLED=false`r`nEMBEDDING_MODEL=qwen3-embedding:4b`r`n")
+    # Aufteilen (v1.7): gesetzte SPLIT_*-Werte werden typgerecht uebernommen,
+    # ungueltige uebersprungen, fehlende nicht geschrieben (Backend-Default).
+    [System.IO.File]::WriteAllText($envPath, "PIN_ENABLED=false`r`nEMBEDDING_MODEL=qwen3-embedding:4b`r`nSPLIT_MIN_PAGES=4`r`nSPLIT_USE_LLM=False`r`nSPLIT_BLANK_INK=0.01`r`nSPLIT_MAX_PAGES=viele`r`n")
     $r = Invoke-WinPS (Join-Path $RepoRoot 'scripts\Convert-Env-To-Config.ps1') @('-EnvPath', $envPath, '-OutPath', $out, '-DataDir', (Join-Path $dir 'data'), '-FrontendDistDir', 'C:\ZW\frontend')
     Assert-True ($r.Code -eq 0) "Exit $($r.Code): $($r.Output)"
+    Assert-True (-not (Test-HasBom $out)) 'config.toml hat nach den SPLIT_*-Zeilen eine BOM'
     $d = Read-Toml $out
+    Assert-True ($d.SPLIT_MIN_PAGES -eq 4 -and $d.SPLIT_USE_LLM -eq $false -and $d.SPLIT_BLANK_INK -eq 0.01) "SPLIT_*: $($d.SPLIT_MIN_PAGES) / $($d.SPLIT_USE_LLM) / $($d.SPLIT_BLANK_INK)"
+    Assert-True ($null -eq $d.PSObject.Properties['SPLIT_MAX_PAGES'] -and $null -eq $d.PSObject.Properties['SPLIT_AUTO_ENABLED']) 'ungueltiges bzw. fehlendes SPLIT_* wurde geschrieben'
     Assert-True ($d.OLLAMA_MODEL -eq 'qwen2.5:7b-instruct' -and $d.EMBEDDING_MODEL -eq 'qwen3-embedding:4b') "Modelle: $($d.OLLAMA_MODEL) / $($d.EMBEDDING_MODEL)"
     Assert-True ($d.ARCHIVE_DIR -eq (($dir -replace '\\', '/') + '/data/archive')) "ARCHIVE_DIR: $($d.ARCHIVE_DIR)"
 
@@ -1014,6 +1019,23 @@ Invoke-Test 'Auslieferung: dot-gesourcte Helfer sind in Docker-Paket, dist/nativ
         Assert-True ($nsi.Contains("File `"`${DIST}\$s`"")) "setup-native.nsi installiert $s nicht (File-Zeile fehlt)"
         Assert-True ($nsi.Contains("Delete `"`$INSTDIR\$s`"")) "setup-native.nsi entfernt $s beim Deinstallieren nicht (Delete-Zeile fehlt)"
     }
+}
+
+# Aufteilen von Stapel-Scans (pypdfium2): Spec bundelt pdfium.dll, build-native.ps1
+# bricht ohne DLL/version.json ab und ruft den Laufzeit-Selbsttest der fertigen Exe auf.
+Invoke-Test 'Native-Build: pypdfium2 gebundelt, pdfium.dll + Selbsttest werden geprueft' {
+    $spec = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'backend\zettelwirtschaft.spec'))
+    foreach ($needle in '"pypdfium2"', '"pypdfium2_raw"', 'collect_dynamic_libs("pypdfium2_raw")') {
+        Assert-True ($spec.Contains($needle)) "zettelwirtschaft.spec: $needle fehlt"
+    }
+    $build = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'scripts\build-native.ps1'))
+    Assert-True ($build.Contains('-Filter "pdfium.dll"')) 'build-native.ps1: pdfium.dll-Pruefung fehlt'
+    Assert-True ($build.Contains('version.json')) 'build-native.ps1: version.json-Pruefung fehlt'
+    Assert-True ($build -match '--self-test-pdfium\s*\r?\n\s*Assert-ExitCode') 'build-native.ps1: Selbsttest ohne Exit-Code-Pruefung'
+    $entry = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'backend\app\entrypoint.py'))
+    Assert-True ($entry.Contains('"--self-test-pdfium"')) 'entrypoint.py: --self-test-pdfium fehlt'
+    $req = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'backend\requirements.txt'))
+    Assert-True ($req -match '(?m)^pypdfium2>=5\.14,<6') 'requirements.txt: pypdfium2 nicht gepinnt'
 }
 
 # ---------------------------------------------------------------- Docker-Skripte

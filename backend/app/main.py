@@ -22,6 +22,7 @@ from app.api.jobs import router as jobs_router
 from app.api.notifications import router as notifications_router
 from app.api.review import router as review_router
 from app.api.search import router as search_router
+from app.api.split import router as split_router, split_error_handler
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router, task_conflict_handler
 from app.api.tax import router as tax_router
@@ -29,6 +30,7 @@ from app.api.warranties import router as warranties_router
 from app.config import get_settings, settings_for_request
 from app.core.version import read_app_version
 from app.database import async_session_factory
+from app.services.split_service import SplitError
 from app.services.task_service import TaskConflictError
 
 
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
         settings.WATCH_DIR,
         settings.ARCHIVE_DIR,
         settings.THUMBNAIL_DIR,
+        settings.split_dir,
     ]:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
         logger.info("Verzeichnis bereit: %s", dir_path)
@@ -84,6 +87,14 @@ async def lifespan(app: FastAPI):
 
     async with async_session_factory() as session:
         await recover_interrupted_jobs(session, settings)
+
+    # Aufzuteilende Stapel (Spezifikation 12): DETECTING ohne Job -> FAILED,
+    # halb geschriebene Aufteilungen zurueck auf PROPOSED bzw. fehlende
+    # Teil-Jobs anlegen. Nach recover_interrupted_jobs (PROCESSING -> PENDING).
+    from app.services.split_service import recover_interrupted_batches
+
+    async with async_session_factory() as session:
+        await recover_interrupted_batches(session, settings)
 
     # Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) laufen nur
     # in-process: beim Start verwaiste PENDING/RUNNING-Eintraege auf FAILED
@@ -157,6 +168,14 @@ async def lifespan(app: FastAPI):
     )
     background_tasks.append(email_task)
 
+    # Aufbewahrungsfrist aufgeteilter Stapel (SPLIT_KEEP_SOURCE_DAYS): beim Start
+    # und danach taeglich Stapeldateien + Vorschaubilder abgeschlossener Stapel.
+    from app.services.split_service import run_split_cleanup
+
+    background_tasks.append(asyncio.create_task(
+        run_split_cleanup(async_session_factory, settings)
+    ))
+
     # Initiale Vektorisierung (wenn ChromaDB leer) — Count-Retry und Schutz vor
     # Leer-Fehlinterpretation in vectorize_service.run_initial_vectorize; der
     # Rebuild selbst laeuft als Hintergrund-Vorgang "rebuild_vectors".
@@ -213,6 +232,7 @@ app = FastAPI(
 )
 
 app.add_exception_handler(TaskConflictError, task_conflict_handler)
+app.add_exception_handler(SplitError, split_error_handler)
 
 
 @app.exception_handler(Exception)
@@ -293,6 +313,7 @@ app.include_router(review_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
+app.include_router(split_router, prefix="/api")
 
 
 # Native-Setup: Frontend-Build (Vite-`dist/`) direkt vom Backend ausliefern.

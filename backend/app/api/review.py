@@ -15,6 +15,7 @@ from app.database import get_db, get_session_factory
 from app.models.audit_log import AuditAction, AuditLog
 from app.models.document import Document, DocumentStatus, ReviewStatus
 from app.models.review_question import ReviewQuestion
+from app.models.split_batch import SplitBatch, SplitBatchStatus
 from app.schemas.background_task import TaskResponse
 from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.reanalysis_service import (
@@ -304,8 +305,14 @@ async def review_stats(session: AsyncSession = Depends(get_db, scope="function")
     )
     answered = answered_result.scalar() or 0
 
+    # Stapel, die im Aufteilungs-Editor auf den Benutzer warten (Spezifikation 12)
+    split_batches = (await session.execute(
+        select(func.count(SplitBatch.id)).where(SplitBatch.status == SplitBatchStatus.PROPOSED)
+    )).scalar() or 0
+
     return {
         "open_documents": open_docs,
         "open_questions": open_questions,
         "answered_questions": answered,
+        "split_batches": split_batches,
     }

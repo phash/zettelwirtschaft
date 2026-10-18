@@ -14,6 +14,9 @@ Pillow>=13,<14
 pdf2image>=1.17,<2
 pytesseract>=0.3.13,<0.4
 pdfplumber>=0.11.10,<0.13
+# Aufteilen von Stapel-Scans (verlustfreies Seiten-Kopieren, 50-dpi-Raster);
+# vorher nur transitive Abhaengigkeit von pdfplumber
+pypdfium2>=5.14,<6
 reportlab>=5.0.1,<5.1
 # Client-Version MUSS zum Server-Image chromadb/chroma in docker-compose.yml passen (1.5.x)
 chromadb-client>=1.5.9,<1.6

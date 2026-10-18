@@ -87,3 +87,42 @@ if (-not $pinEnabled) { $cfgArgs.DisablePin = $true }
 
 & (Join-Path $PSScriptRoot "New-NativeConfig.ps1") @cfgArgs
 if ($LASTEXITCODE -ne 0) { throw "config.toml konnte nicht geschrieben werden (siehe Meldung oben)." }
+
+# Aufteilen von Stapel-Scans (v1.7): in der .env gesetzte SPLIT_*-Werte
+# uebernehmen. Nur gepruefte Zahl-/Bool-Werte (TOML ohne Quoting); ungueltige
+# Werte werden mit Warnung uebersprungen - das Backend nutzt dann den Default.
+$splitKeys = [ordered]@{
+    SPLIT_AUTO_ENABLED     = 'bool'
+    SPLIT_MIN_PAGES        = 'int'
+    SPLIT_USE_LLM          = 'bool'
+    SPLIT_MAX_PAGES        = 'int'
+    SPLIT_TIME_BUDGET_S    = 'int'
+    SPLIT_BLANK_INK        = 'float'
+    SPLIT_MAX_PARTS        = 'int'
+    SPLIT_KEEP_SOURCE_DAYS = 'int'
+    SPLIT_THUMBNAIL_WIDTH  = 'int'
+}
+$splitLines = @()
+foreach ($k in $splitKeys.Keys) {
+    $v = [string](Get-Or $k "")
+    if ($v -eq "") { continue }
+    $kind = $splitKeys[$k]
+    if ($kind -eq 'bool') {
+        $valid = @('true', 'false') -contains $v.ToLower()
+        $v = $v.ToLower()
+    } elseif ($kind -eq 'int') {
+        $valid = $v -match '^\d{1,9}$'
+    } else {
+        $valid = $v -match '^\d+(\.\d+)?$'
+    }
+    if (-not $valid) {
+        Write-Warning "$k=$v in $EnvPath ist ungueltig - nicht uebernommen (Default gilt)."
+        continue
+    }
+    $splitLines += "$k = $v"
+}
+if ($splitLines.Count -gt 0) {
+    $outFull = (Resolve-Path -LiteralPath $OutPath).ProviderPath
+    $text = "`r`n# Aufteilen von Stapel-Scans (aus $([System.IO.Path]::GetFileName($EnvPath)))`r`n" + ($splitLines -join "`r`n") + "`r`n"
+    [System.IO.File]::AppendAllText($outFull, $text, (New-Object System.Text.UTF8Encoding($false)))
+}

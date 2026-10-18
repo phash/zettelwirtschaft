@@ -65,6 +65,17 @@ OCR_LANGUAGES = "deu+eng"
 CONFIDENCE_THRESHOLD = 0.7
 MAX_OCR_PAGES = 10
 
+# Mehrdokument-Scans aufteilen (automatische Pruefung, Upload-Option, "Dokument aufteilen")
+# SPLIT_AUTO_ENABLED = true      # PDFs vor der Analyse auf mehrere Dokumente pruefen (UI: System -> Verarbeitung)
+# SPLIT_MIN_PAGES = 3            # ab dieser Seitenzahl automatisch pruefen (mindestens 2)
+# SPLIT_USE_LLM = true           # unsichere Uebergaenge zusaetzlich per KI pruefen (ein Aufruf je Stapel)
+# SPLIT_MAX_PAGES = 100          # darueber keine Aufteilung (normale Verarbeitung)
+# SPLIT_TIME_BUDGET_S = 1200     # Zeitbudget der Seitenerkennung je Stapel
+# SPLIT_BLANK_INK = 0.005        # Anteil dunkler Pixel, unter dem eine Seite leer ist
+# SPLIT_MAX_PARTS = 50           # hoechstens so viele Teile je Stapel
+# SPLIT_KEEP_SOURCE_DAYS = 30    # Stapeldatei nach Abschluss so lange aufbewahren
+# SPLIT_THUMBNAIL_WIDTH = 200    # Breite der Seiten-Vorschaubilder (px)
+
 # ---- Upload-Limits ----
 MAX_UPLOAD_SIZE_MB = 50
 ALLOWED_FILE_TYPES = "pdf,jpg,jpeg,png,tiff,bmp"

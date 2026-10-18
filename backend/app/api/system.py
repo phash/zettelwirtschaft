@@ -24,6 +24,7 @@ from app.core.version import read_app_version
 from app.database import SQLITE_BUSY_TIMEOUT_MS, get_db, get_session_factory
 from app.models.document import Document, DocumentStatus
 from app.schemas.background_task import TaskResponse
+from app.schemas.split import SplitSettingsBody, SplitSettingsResponse
 from app.services.backup_service import (
     BackupSpaceError,
     backup_dir,
@@ -606,6 +607,48 @@ async def _update_check_enabled(session: AsyncSession, settings: Settings) -> bo
     if raw == "":
         return settings.UPDATE_CHECK_ENABLED
     return raw == "true"
+
+
+def _split_settings_response(value, settings: Settings) -> SplitSettingsResponse:
+    return SplitSettingsResponse(
+        auto_enabled=value.auto_enabled, min_pages=value.min_pages, use_llm=value.use_llm,
+        max_pages=settings.SPLIT_MAX_PAGES,
+    )
+
+
+@router.get("/system/split-settings", response_model=SplitSettingsResponse)
+async def get_split_settings(
+    session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+):
+    """Automatische Pruefung auf mehrere Dokumente (Spezifikation 12)."""
+    from app.services import split_service
+
+    return _split_settings_response(await split_service.load_split_settings(session, settings), settings)
+
+
+@router.put("/system/split-settings", response_model=SplitSettingsResponse)
+async def set_split_settings(
+    body: SplitSettingsBody,
+    session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+):
+    from app.services import split_service
+
+    if body.min_pages > settings.SPLIT_MAX_PAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Die Mindestseitenzahl darf höchstens {settings.SPLIT_MAX_PAGES} sein.",
+        )
+    use_llm = body.use_llm
+    if use_llm is None:  # nicht mitgeschickt: bleibt
+        use_llm = (await split_service.load_split_settings(session, settings)).use_llm
+    value = split_service.SplitSettings(
+        auto_enabled=body.auto_enabled, min_pages=body.min_pages, use_llm=use_llm,
+    )
+    await split_service.save_split_settings(session, value)
+    await session.commit()
+    return _split_settings_response(value, settings)
 
 
 @router.get("/system/update-check", response_model=UpdateCheckResponse)
