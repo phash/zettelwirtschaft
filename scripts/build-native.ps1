@@ -148,7 +148,9 @@ $bundleScripts = @(
     # Zugriffsrechte Programmordner (INFRA-03): setup-native.nsi + update-wizard.ps1.
     "secure-install-dir.ps1",
     # Uebernahme manuell eingerichteter Installationen (setup-native.nsi, ab 1.6.1).
-    "legacy-install.ps1"
+    "legacy-install.ps1",
+    # Scanner-Freigabe des Eingangsordners (setup-native.nsi + Startmenue, ab 1.7).
+    "freigabe-einrichten.bat", "freigabe-einrichten.ps1"
 )
 foreach ($s in $bundleScripts) {
     Copy-Item -Force (Join-Path $RepoRoot "scripts\$s") (Join-Path $DistRoot $s)

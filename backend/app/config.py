@@ -88,7 +88,18 @@ class Settings(BaseSettings):
     # LocalSystem — schon die Pfadpruefung wuerde das Maschinenkonto am
     # angegebenen Server anmelden (NTLM-Relay), der Export ginge dorthin.
     # Nur auf einem Host mit vertrauenswuerdiger Freigabe einschalten.
+    # Seit 1.7 fuer den normalen Ablauf nicht mehr noetig: in den Einstellungen
+    # \\server\freigabe mit Benutzer + Passwort der Freigabe eintragen — das
+    # Backend verbindet sich dann selbst (core/network_share.py). Der Schalter
+    # bleibt Experten-Override fuer UNC OHNE Zugangsdaten (Computerkonto).
     ALLOW_NETWORK_FOLDERS: bool = False
+    # Pruefintervall (Sekunden, 10-600) fuer Netzwerk-Watch-Ordner, falls in
+    # der UI nichts gespeichert ist (SMB-Aenderungsbenachrichtigungen sind
+    # ueber das Netz unzuverlaessig -> Polling).
+    WATCH_POLL_INTERVAL: int = 30
+    # Auch lokale Watch-Ordner per Polling statt Dateisystem-Ereignissen
+    # ueberwachen (z.B. Docker mit CIFS-Volume: inotify sieht dort nichts).
+    WATCH_FORCE_POLLING: bool = False
     # Optional: Pfad zum Frontend-Build (Native: vom Installer gesetzt).
     # Leer = nicht serven (Docker-Pfad ueber nginx).
     FRONTEND_DIST_DIR: str = ""

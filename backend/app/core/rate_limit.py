@@ -145,3 +145,22 @@ async def global_rate_limit(request: Request) -> None:
             detail="Zu viele Anfragen. Bitte kurz warten und erneut versuchen.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+# Netzwerkordner: Verbindungstests (POST /system/settings/test-folder und PUT
+# mit Netzwerkpfad) melden sich mit eingegebenen Zugangsdaten an einer NAS an.
+# Eigenes, engeres Limit zusaetzlich zum globalen — sonst taugte der Endpoint
+# zum Passwortraten gegen Geraete im LAN.
+NETWORK_FOLDER_RATE_LIMITS = "10/minute"
+network_folder_limiter = GlobalRateLimiter(NETWORK_FOLDER_RATE_LIMITS)
+
+
+def check_network_folder_rate(request: Request) -> None:
+    """429, wenn die Client-IP zu viele Netzwerkordner-Verbindungstests macht."""
+    retry_after = network_folder_limiter.hit(trusted_client_ip(request))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Zu viele Verbindungstests. Bitte eine Minute warten und erneut versuchen.",
+            headers={"Retry-After": str(retry_after)},
+        )

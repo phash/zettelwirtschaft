@@ -1,4 +1,4 @@
-"""Zentrale Test-Zugangsdaten (PIN, IMAP-Passwoerter, Fernet-Key).
+"""Zentrale Test-Zugangsdaten (PIN, IMAP-/SMB-Passwoerter, Fernet-Key).
 
 Im Repo stehen bewusst KEINE Credential-Literale (Secret-Scanner wie GitGuardian
 melden sonst "Generic Password"). Die Werte kommen aus genau einer Quelle:
@@ -51,6 +51,10 @@ TEST_PIN = _value("TEST_PIN", _random_pin)
 TEST_IMAP_PASSWORD = _value("TEST_IMAP_PASSWORD", _random_password)
 TEST_IMAP_PASSWORD_2 = _value("TEST_IMAP_PASSWORD_2", _random_password)
 TEST_EMAIL_ENCRYPTION_KEY = _value("TEST_EMAIL_ENCRYPTION_KEY", _random_fernet_key)
+# Dummy-Zugangsdaten einer (gefaelschten) SMB-Freigabe fuer Netzwerkordner-Tests.
+TEST_SMB_USER = _value("TEST_SMB_USER", lambda: "zw-test-" + secrets.token_hex(4))
+TEST_SMB_PASSWORD = _value("TEST_SMB_PASSWORD", _random_password)
+TEST_SMB_PASSWORD_2 = _value("TEST_SMB_PASSWORD_2", _random_password)
 
 
 def _validate() -> None:
@@ -59,6 +63,11 @@ def _validate() -> None:
         raise RuntimeError(f"TEST_PIN muss aus mindestens {_MIN_PIN_LENGTH} Ziffern bestehen {source}")
     if TEST_IMAP_PASSWORD == TEST_IMAP_PASSWORD_2:
         raise RuntimeError(f"TEST_IMAP_PASSWORD und TEST_IMAP_PASSWORD_2 muessen sich unterscheiden {source}")
+    if TEST_SMB_PASSWORD == TEST_SMB_PASSWORD_2:
+        raise RuntimeError(f"TEST_SMB_PASSWORD und TEST_SMB_PASSWORD_2 muessen sich unterscheiden {source}")
+    # Sentinel-Tests suchen das Passwort in Logs/Antworten — es muss eindeutig sein.
+    if len(TEST_SMB_PASSWORD) < 12:
+        raise RuntimeError(f"TEST_SMB_PASSWORD muss mindestens 12 Zeichen lang sein {source}")
     try:
         Fernet(TEST_EMAIL_ENCRYPTION_KEY)
     except ValueError as exc:

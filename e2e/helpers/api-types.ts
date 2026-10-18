@@ -47,6 +47,17 @@ export interface SystemHealthComponent extends ComponentStatus {
   /** Ollama-Version laut /api/version (null = nicht ermittelbar) und Mindestversion. */
   version?: string | null;
   min_version?: string;
+  /** watch_folder / export_folder: Erreichbarkeit (nur Pfad + Benutzername). */
+  mode?: 'lokal' | 'netzwerk' | null;
+  state?: 'ok' | 'verbinde' | 'getrennt' | 'fehler';
+  path?: string | null;
+  user?: string | null;
+  reason?: string | null;
+  last_ok_at?: IsoDateTime | null;
+  next_retry_at?: IsoDateTime | null;
+  poll_interval?: number | null;
+  /** Zeitpunkt der letzten Pruefung (Export: nur beim Archivieren). */
+  checked_at?: IsoDateTime | null;
 }
 export interface SystemHealthResponse {
   status: ComponentState;
@@ -68,6 +79,17 @@ export interface SystemHealthResponse {
 export interface BackupItem { filename: string; size_bytes: number; created_at: IsoDateTime; is_full: boolean }
 export interface BackupListResponse { backups: BackupItem[] }
 
+/** (B) Lokale Scanner-Freigabe des Eingangsordners — nie ein Passwort. */
+export interface ScannerShareStatus {
+  configured: boolean;
+  exists: boolean;
+  unc_path: string;
+  user: string;
+  path: string;
+  matches_watch_dir: boolean;
+}
+
+/** GET/PUT-Antwort /api/system/settings (Passwoerter werden nie ausgeliefert). */
 export interface FolderSettings {
   watch_dir: string;
   export_dir: string;
@@ -75,6 +97,40 @@ export interface FolderSettings {
   export_dir_host: string;
   restart_required?: boolean;
   deployment_mode?: 'native' | 'docker' | 'dev';
+  watch_dir_net_user?: string;
+  export_dir_net_user?: string;
+  watch_dir_net_password_set?: boolean;
+  export_dir_net_password_set?: boolean;
+  watch_poll_interval?: number;
+  network_folders_supported?: boolean;
+  scanner_share?: ScannerShareStatus | null;
+}
+
+/** PUT-Body /api/system/settings: Passwoerter write-only (null = unveraendert). */
+export interface FolderSettingsUpdate {
+  watch_dir: string;
+  export_dir: string;
+  watch_dir_host?: string;
+  export_dir_host?: string;
+  watch_dir_net_user?: string;
+  watch_dir_net_password?: string | null;
+  export_dir_net_user?: string;
+  export_dir_net_password?: string | null;
+  watch_poll_interval?: number | null;
+}
+
+/** POST /api/system/settings/test-folder */
+export interface TestFolderRequest {
+  target: 'watch' | 'export';
+  path: string;
+  net_user?: string;
+  net_password?: string | null;
+}
+export interface TestFolderResponse {
+  ok: boolean;
+  kind: 'local' | 'unc' | 'network_drive' | 'subst' | 'missing_drive' | 'unsuitable' | 'unsupported';
+  message: string;
+  suggested_paths: string[];
 }
 
 // --- /api/auth -----------------------------------------------------------

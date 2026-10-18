@@ -334,8 +334,22 @@ export async function getSystemSettings() {
   return data
 }
 
+// Ordner-Einstellungen speichern/pruefen: mit Netzwerkordnern verbindet sich
+// das Backend erst (Watch-Task stoppen, Verbindungsprobe bis 20 s, Namens-
+// aufloesung) — das dauert laenger als DEFAULT_TIMEOUT_MS. Sonst bricht die UI
+// ab, waehrend das Backend noch erfolgreich speichert, und ein zweiter Klick
+// startet einen ueberlappenden Speichervorgang (R8).
+export const FOLDER_SETTINGS_TIMEOUT_MS = LONG_OPERATION_TIMEOUT_MS
+
 export async function updateSystemSettings(settings) {
-  const { data } = await api.put('/system/settings', settings)
+  const { data } = await api.put('/system/settings', settings, { timeout: FOLDER_SETTINGS_TIMEOUT_MS })
+  return data
+}
+
+// Ordner pruefen, ohne zu speichern (Laufwerksbuchstabe -> UNC-Vorschlag,
+// Netzwerkpfad -> Verbindungstest mit Zugangsdaten). Antwort: {ok, kind, message, suggested_paths}.
+export async function testFolderSettings(body) {
+  const { data } = await api.post('/system/settings/test-folder', body, { timeout: FOLDER_SETTINGS_TIMEOUT_MS })
   return data
 }
 

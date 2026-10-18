@@ -1,5 +1,5 @@
 /**
- * Zentrale Test-Zugangsdaten (PIN, Dummy-IMAP-Passwoerter) fuer die E2E-Tests.
+ * Zentrale Test-Zugangsdaten (PIN, Dummy-IMAP-/SMB-Passwoerter) fuer die E2E-Tests.
  *
  * Im Repo stehen bewusst KEINE Credential-Literale (Secret-Scanner wie
  * GitGuardian melden sonst "Generic Password"). Quelle der Werte, in dieser
@@ -27,6 +27,7 @@ const GENERATORS = {
   TEST_PIN: () => Array.from({ length: PIN_LENGTH }, () => randomInt(10)).join(''),
   TEST_IMAP_PASSWORD: () => randomBytes(18).toString('base64url'),
   TEST_IMAP_PASSWORD_2: () => randomBytes(18).toString('base64url'),
+  TEST_SMB_PASSWORD: () => randomBytes(18).toString('base64url'),
 } as const;
 
 type CredentialName = keyof typeof GENERATORS;
@@ -73,3 +74,5 @@ export const TEST_WRONG_PIN = [...TEST_PIN].map((c) => String((Number(c) + 1) % 
 export const TEST_IMAP_PASSWORD = read('TEST_IMAP_PASSWORD');
 /** Zweites, abweichendes Dummy-IMAP-Passwort (Passwortwechsel). */
 export const TEST_IMAP_PASSWORD_2 = read('TEST_IMAP_PASSWORD_2');
+/** Dummy-Passwort einer (gemockten) SMB-Freigabe fuer Netzwerkordner-Tests. */
+export const TEST_SMB_PASSWORD = read('TEST_SMB_PASSWORD');

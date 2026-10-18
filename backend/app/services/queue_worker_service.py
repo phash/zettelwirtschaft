@@ -17,7 +17,9 @@ from app.services.analysis_service import analyze_document, apply_source_review_
 from app.services.archive_service import (
     ArchiveDataError,
     DuplicateDocumentError,
+    ExportRequest,
     archive_document,
+    export_copy,
     check_duplicate,
     remove_created_files,
 )
@@ -157,6 +159,7 @@ async def _process_job(
         job.analysis_result = json.dumps(analysis_result.to_dict(), ensure_ascii=False)
 
     created_files: list[Path] = []
+    export_requests: list[ExportRequest] = []
     try:
         archived_document = await archive_document(
             file_path=file_path,
@@ -172,6 +175,7 @@ async def _process_job(
             filing_scopes=filing_scopes,
             forced_scope_id=forced_scope_id,
             created_files=created_files,
+            export_requests=export_requests,
         )
     except DuplicateDocumentError as e:
         # Paralleles Duplikat (zwischen Vorab-Check und Insert archiviert)
@@ -209,6 +213,11 @@ async def _process_job(
         raise
 
     logger.info("Job %s verarbeitet -> Dokument %s archiviert", job.id, archived_document.id)
+
+    # R2: Export-Kopie NACH dem Commit (best effort) — ein Netzwerk-Export haelt
+    # so keine SQLite-Schreibsperre waehrend Verbindungsaufbau und Kopie.
+    for export_request in export_requests:
+        await export_copy(export_request, settings)
 
     # B3: Vektorisierung NACH dem Commit (best-effort, ausserhalb der DB-Transaction).
     # Ein langsamer ChromaDB-Call darf keine SQLite-Schreibsperre halten, ein

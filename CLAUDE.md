@@ -161,6 +161,25 @@ fehlende config.toml, relative Datenpfade. Der Registry-Upgrade-Pfad ist unverä
   bewusst AUSSERHALB des Datenordners — sonst loescht das optionale "Daten loeschen?" das
   Backup gleich wieder), bevor er Dienst und Programmdateien entfernt.
 
+**Netzwerkordner / Scanner-Freigabe** (Native, ab v1.7, `planung/13-netzwerk-ordner.md`):
+
+- **(A) NAS als Watch-/Export-Ordner**: In der Web-UI `\\server\freigabe\ordner` mit Benutzer
+  und Passwort der Freigabe eintragen. Das Backend verbindet sich selbst
+  (`core/network_share.py`: `WNetAddConnection2W`, `CONNECT_TEMPORARY`, ohne Laufwerksbuchstaben).
+  Das Passwort liegt als Fernet-Token in `SystemSetting`. Der Watch-Ordner wird per
+  `PollingObserver` überwacht und verbindet sich mit Backoff neu (30 s bis 15 min). Die
+  Erreichbarkeit steht in Health unter `watch_folder`/`export_folder`. Netzlaufwerke (`V:`)
+  werden mit UNC-Vorschlag abgelehnt, `subst`-Laufwerke auf ihr Ziel umgeschrieben.
+  `ALLOW_NETWORK_FOLDERS` ist nur noch der Experten-Override für UNC ohne Zugangsdaten.
+- **(B) Scanner-Freigabe**: Checkbox im Setup oder Startmenü „Scanner-Freigabe einrichten“
+  (`freigabe-einrichten.bat/.ps1`, Admin). Legt an: lokales Konto `zw-scanner`, SMB-Freigabe
+  `Zettelwirtschaft-Eingang` (nur Ändern für dieses Konto), eingeschränkte NTFS-Rechte und eine
+  Firewall-Regel (TCP 445, LocalSubnet, Privat). Entfernen mit `-Remove`, das ruft auch der
+  Uninstaller auf. Getestet nur per `-DryRun` in `scripts/test-scripts.ps1`; nie echt auf dem
+  Entwickler-PC ausführen.
+- Tests: Die WNet-/Registry-API ist in allen Backend-Tests gefälscht (`tests/fake_share.py`,
+  autouse in `conftest.py`). Kein Test baut echte SMB-Verbindungen auf.
+
 ## Memory Files — Read Before Working on a Topic
 
 | File | Read when working on… |
@@ -756,7 +775,10 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 | `LLM_VERIFIER_THRESHOLD` | `0.5` | Confidence-Schwelle (`<=`) ab der der Verifier feuert |
 | `PIN_ENABLED` | `false` | Optionaler Web-PIN-Schutz; Backend warnt im Startup-Log + UI-Banner wenn aus |
 | `OLLAMA_AUTO_PULL` | `true` | Fehlende Modelle beim Start aus der Ollama-Registry laden (einzige automatische Internet-Verbindung); `false` = nur melden |
-| `EMAIL_ENCRYPTION_KEY` | (Pflicht fuer E-Mail) | Fernet-Key, vom Installer auto-generiert |
+| `EMAIL_ENCRYPTION_KEY` | (Pflicht fuer E-Mail) | Fernet-Key, vom Installer auto-generiert; verschluesselt auch die Passwoerter der Netzwerkordner |
+| `ALLOW_NETWORK_FOLDERS` | `false` | Experten-Override: UNC OHNE Zugangsdaten (Computerkonto). Normalfall: UNC + Benutzer/Passwort in der UI |
+| `WATCH_POLL_INTERVAL` | `30` | Pruefintervall (s, 10-600) fuer Netzwerk-Watch-Ordner, falls in der UI nichts gespeichert |
+| `WATCH_FORCE_POLLING` | `false` | Auch lokale Watch-Ordner per Polling (z.B. Docker mit CIFS-Volume) |
 | `ALLOWED_HOSTS` | `""` | Zusaetzliche Host-Namen fuer den DNS-Rebinding-Schutz (`app/core/host_guard.py`); IPs, localhost, PC-Name, `*.local`/`*.lan`/`*.home.arpa`/`*.internal`/`*.fritz.box` immer erlaubt, `*` = aus |
 | `ENABLE_API_DOCS` | `false` | `/docs`, `/redoc`, `/openapi.json` ausliefern (ungeschuetzt durch PIN!) |
 | `TIMEZONE` | `Europe/Berlin` | Zeitzone fuer Cron-Zeitplaene der E-Mail-Konten (ungueltig -> UTC + Warnung) |
