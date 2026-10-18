@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 import app.config
 from app.config import Settings
+from tests.credentials import TEST_PIN
 
 
 class TestSourcePriority:
@@ -41,8 +42,9 @@ class TestPinValidation:
     def test_pin_disabled_allows_empty_code(self):
         assert Settings(PIN_ENABLED=False, PIN_CODE="").PIN_ENABLED is False
 
-    def test_valid_pin(self):
-        assert Settings(PIN_ENABLED=True, PIN_CODE="4711").PIN_CODE == "4711"
+    @pytest.mark.parametrize("pin", [TEST_PIN, TEST_PIN[:4]], ids=["test-pin", "min-length-4"])
+    def test_valid_pin(self, pin):
+        assert Settings(PIN_ENABLED=True, PIN_CODE=pin).PIN_CODE == pin
 
 
 class TestDerivedValues:

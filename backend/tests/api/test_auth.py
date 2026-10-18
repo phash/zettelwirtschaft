@@ -6,13 +6,14 @@ from httpx import ASGITransport, AsyncClient
 from app.api.auth import clear_all_sessions
 from app.config import Settings
 from tests.conftest import make_test_client
+from tests.credentials import TEST_PIN, TEST_WRONG_PIN
 
 
 @pytest.fixture
 def pin_settings(test_settings: Settings) -> Settings:
     """Settings with PIN enabled."""
     return test_settings.model_copy(
-        update={"PIN_ENABLED": True, "PIN_CODE": "1234", "PIN_SESSION_TIMEOUT_MINUTES": 60}
+        update={"PIN_ENABLED": True, "PIN_CODE": TEST_PIN, "PIN_SESSION_TIMEOUT_MINUTES": 60}
     )
 
 
@@ -63,7 +64,7 @@ async def test_auth_status_pin_enabled_not_authenticated(pin_client):
 @pytest.mark.asyncio
 async def test_login_correct_pin(pin_client):
     """Login with correct PIN succeeds and sets cookie."""
-    resp = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    resp = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
@@ -73,7 +74,7 @@ async def test_login_correct_pin(pin_client):
 @pytest.mark.asyncio
 async def test_login_wrong_pin(pin_client):
     """Login with wrong PIN fails."""
-    resp = await pin_client.post("/api/auth/login", json={"pin": "9999"})
+    resp = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
     assert resp.status_code == 401
     data = resp.json()
     assert data["success"] is False
@@ -105,7 +106,7 @@ async def test_auth_endpoints_always_accessible(pin_client):
 async def test_full_login_flow(pin_client):
     """Login, access protected endpoint, logout, verify blocked again."""
     # Login
-    login_resp = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    login_resp = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     assert login_resp.json()["success"] is True
 
     token = login_resp.cookies["zw_session"]
@@ -143,11 +144,11 @@ async def test_pin_lockout_after_5_failures(pin_client):
 
     # 5 falsche Versuche -> 401, kein Lockout
     for i in range(5):
-        r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+        r = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
         assert r.status_code == 401, f"Versuch {i + 1} sollte 401 sein"
 
     # 6. Versuch (selbst mit korrektem PIN!) -> 429 Lockout
-    r = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    r = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     assert r.status_code == 429
     detail = r.json()["detail"].lower()
     assert "warten" in detail or "lockout" in detail
@@ -162,11 +163,11 @@ async def test_pin_lockout_clears_on_success_before_lockout(pin_client):
     _login_attempts.clear()
 
     for _ in range(4):
-        r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+        r = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
         assert r.status_code == 401
 
     # Korrekter PIN -> Erfolg, Counter weg
-    r = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    r = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     assert r.status_code == 200
     assert len(_login_attempts) == 0
     _login_attempts.clear()
@@ -179,7 +180,7 @@ async def test_pin_lockout_clears_on_success_before_lockout(pin_client):
 async def test_expired_session_is_rejected(pin_client):
     from app.api import auth
 
-    login = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    login = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     token = login.cookies["zw_session"]
     auth._sessions[token] = datetime.now(timezone.utc) - timedelta(seconds=1)
     pin_client.cookies.set("zw_session", token)
@@ -195,13 +196,13 @@ async def test_lockout_backoff_doubles_after_expired_lockout(pin_client):
     from app.api import auth
 
     for _ in range(5):
-        await pin_client.post("/api/auth/login", json={"pin": "0000"})
+        await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
     ((ip, (count, lockout, last_seen)),) = auth._login_attempts.items()
     assert count == 5
     first = (lockout - last_seen).total_seconds()
     # Lockout kuenstlich ablaufen lassen
     auth._login_attempts[ip] = (count, datetime.now(timezone.utc) - timedelta(seconds=1), last_seen)
-    r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+    r = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
     assert r.status_code == 401
     count2, lockout2, seen2 = auth._login_attempts[ip]
     assert count2 == 6
@@ -266,9 +267,9 @@ async def test_rotating_real_ip_from_lan_is_still_locked_out(lan_pin_app, monkey
     monkeypatch.setattr(app.config, "_in_container", lambda: False)
     async with _client_for(lan_pin_app, "192.168.1.50") as c:
         for i in range(5):
-            r = await c.post("/api/auth/login", json={"pin": "0000"}, headers={"X-Real-IP": f"10.9.9.{i}"})
+            r = await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN}, headers={"X-Real-IP": f"10.9.9.{i}"})
             assert r.status_code == 401
-        r = await c.post("/api/auth/login", json={"pin": "1234"}, headers={"X-Real-IP": "10.9.9.99"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN}, headers={"X-Real-IP": "10.9.9.99"})
         assert r.status_code == 429
 
 
@@ -282,10 +283,10 @@ async def test_real_ip_honoured_only_from_docker_proxy(lan_pin_app, monkeypatch)
     monkeypatch.setattr(app.config, "_in_container", lambda: True)
     async with _client_for(lan_pin_app, "172.18.0.3") as c:
         for _ in range(5):
-            await c.post("/api/auth/login", json={"pin": "0000"}, headers={"X-Real-IP": "192.168.1.60"})
+            await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN}, headers={"X-Real-IP": "192.168.1.60"})
         assert set(auth._login_attempts) == {"192.168.1.60"}
         # Ein anderer Client hinter demselben Proxy ist nicht gesperrt.
-        r = await c.post("/api/auth/login", json={"pin": "1234"}, headers={"X-Real-IP": "192.168.1.61"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN}, headers={"X-Real-IP": "192.168.1.61"})
         assert r.status_code == 200
 
 
@@ -296,7 +297,7 @@ async def test_spoofed_forwarded_proto_from_lan_does_not_set_secure(lan_pin_app,
 
     monkeypatch.setattr(app.config, "_in_container", lambda: False)
     async with _client_for(lan_pin_app, "192.168.1.50") as c:
-        r = await c.post("/api/auth/login", json={"pin": "1234"}, headers={"X-Forwarded-Proto": "https"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN}, headers={"X-Forwarded-Proto": "https"})
     assert r.status_code == 200
     assert "secure" not in r.headers["set-cookie"].lower()
 
@@ -307,7 +308,7 @@ async def test_forwarded_proto_from_docker_proxy_sets_secure(lan_pin_app, monkey
 
     monkeypatch.setattr(app.config, "_in_container", lambda: True)
     async with _client_for(lan_pin_app, "172.18.0.3") as c:
-        r = await c.post("/api/auth/login", json={"pin": "1234"}, headers={"X-Forwarded-Proto": "https"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN}, headers={"X-Forwarded-Proto": "https"})
     assert r.status_code == 200
     assert "secure" in r.headers["set-cookie"].lower()
 
@@ -339,7 +340,7 @@ async def test_counter_survives_end_of_capped_lockout(pin_client):
     lockout_end = last_fail + timedelta(seconds=auth.MAX_LOCKOUT_SECONDS)  # = now - 1s
     auth._login_attempts["127.0.0.1"] = (12, lockout_end, last_fail)
 
-    r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+    r = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
     assert r.status_code == 401
     count, lockout, seen = auth._login_attempts["127.0.0.1"]
     assert count == 13
@@ -354,7 +355,7 @@ async def test_counter_forgotten_after_long_idle_from_lockout_end(pin_client):
     lockout_end = now - timedelta(seconds=auth.ATTEMPT_FORGIVE_SECONDS + 1)
     auth._login_attempts["127.0.0.1"] = (12, lockout_end, lockout_end - timedelta(hours=1))
 
-    r = await pin_client.post("/api/auth/login", json={"pin": "0000"})
+    r = await pin_client.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
     assert r.status_code == 401
     assert auth._login_attempts["127.0.0.1"][0] == 1
 
@@ -384,19 +385,19 @@ async def test_global_failure_budget_blocks_rotating_lan_ips(lan_pin_app, monkey
             for _ in range(auth.MAX_LOGIN_ATTEMPTS - 1):  # unter Per-IP-Lockout bleiben
                 if failures >= auth.GLOBAL_MAX_FAILURES:
                     break
-                r = await c.post("/api/auth/login", json={"pin": "0000"})
+                r = await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
                 assert r.status_code == 401
                 failures += 1
         ip += 1
 
     async with _client_for(lan_pin_app, "192.168.5.250") as c:
-        r = await c.post("/api/auth/login", json={"pin": "1234"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN})
     assert r.status_code == 429
     assert "netzwerk" in r.json()["detail"].lower()
 
     # Besitzer am Server-PC (Loopback) kommt weiterhin rein.
     async with _client_for(lan_pin_app, "127.0.0.1") as c:
-        r = await c.post("/api/auth/login", json={"pin": "1234"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN})
     assert r.status_code == 200
 
     # Genau eine Warnung in der Glocke.
@@ -413,5 +414,5 @@ async def test_global_budget_window_expires(lan_pin_app, monkeypatch):
     old = datetime.now(timezone.utc) - timedelta(seconds=auth.GLOBAL_FAILURE_WINDOW_SECONDS + 1)
     auth._global_failures.extend([old] * auth.GLOBAL_MAX_FAILURES)
     async with _client_for(lan_pin_app, "192.168.5.251") as c:
-        r = await c.post("/api/auth/login", json={"pin": "1234"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN})
     assert r.status_code == 200

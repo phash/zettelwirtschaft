@@ -6,6 +6,7 @@ import pytest
 from app.config import Settings
 from app.core import host_guard
 from tests.conftest import make_test_client
+from tests.credentials import TEST_WRONG_PIN
 
 
 @pytest.fixture
@@ -90,7 +91,7 @@ async def test_rebound_host_is_rejected(pin_off_client):
         r = await pin_off_client.get(path, headers={"Host": "attacker.example"})
         assert r.status_code == 400, path
     r = await pin_off_client.post(
-        "/api/auth/login", json={"pin": "0000"}, headers={"Host": "attacker.example:8080"}
+        "/api/auth/login", json={"pin": TEST_WRONG_PIN}, headers={"Host": "attacker.example:8080"}
     )
     assert r.status_code == 400
 

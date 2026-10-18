@@ -1,4 +1,5 @@
 import { BrowserContext, Page, Route } from '@playwright/test';
+import { TEST_PIN } from './credentials';
 import type {
   AuthStatus,
   BackupListResponse,
@@ -882,7 +883,7 @@ export interface PinSession {
 }
 
 export interface PinAuthOptions {
-  /** Richtiger PIN fuer den Login-Mock (Standard '1234'). */
+  /** Richtiger PIN fuer den Login-Mock (Standard: TEST_PIN aus helpers/credentials.ts). */
   pin?: string;
   /** Sitzung von Anfang an gueltig (schon angemeldet). */
   authenticated?: boolean;
@@ -901,7 +902,7 @@ export interface PinAuthOptions {
  * auth/status spiegelt sie wider.
  */
 export async function setupPinAuthMocks(page: Page, options: PinAuthOptions = {}): Promise<PinSession> {
-  const pin = options.pin ?? '1234';
+  const pin = options.pin ?? TEST_PIN;
   let authenticated = options.authenticated ?? false;
   let logoutCalls = 0;
   const loginAttempts: string[] = [];

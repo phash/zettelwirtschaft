@@ -190,6 +190,11 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
+### v1.6.2
+- Fix: Die Rückfrage „Die KI schlägt einen neuen Ablagebereich … vor. Soll dieser erstellt werden?“ akzeptiert jetzt „Ja“ (legt den Bereich an und ordnet zu) und „Nein“ (Zuordnung bleibt). Bisher wurde „ja“ als Bereichsname gelesen („Ablagebereich „ja“ existiert nicht“). Die Detailansicht zeigt Antwortvorschläge zusätzlich als Buttons.
+- Fix (Native-Setup): Beim Übernehmen einer alten Installation wird die kurz gesperrte alte `nssm.exe` mit Wiederholung gelöscht statt liegen zu bleiben.
+- Tests: Zugangsdaten (PIN, IMAP-Passwörter, Verschlüsselungs-Key) kommen aus einer lokalen, nicht versionierten `.env.test` (Vorlage `.env.test.example` in `backend/`, `e2e/`, `scripts/`); ohne Datei werden pro Lauf Zufallswerte erzeugt. Keine Dummy-Credentials mehr im Repository.
+
 ### v1.6.1
 - **Native-Setup übernimmt von Hand eingerichtete Installationen:** Bisher brach die Setup.exe ab, wenn der Dienst `ZettelwirtschaftBackend` ohne Setup eingerichtet war (z. B. nach der Docker→Native-Migration per `service-install.bat`), und verwies auf das Update-Paket, das solche Installationen ebenfalls nicht kannte. Jetzt erkennt das Setup den Dienst (Programm-, Konfigurations-, Daten- und Log-Pfad aus den NSSM-Einstellungen, auch bei Version 1.2.x/1.3.x) und bietet die Aktualisierung an: Dienst stoppen → Sicherung von Datenbank (+ WAL) und `config.toml` nach `Dokumente\Zettelwirtschaft-Backups\pre-<version>_<zeit>.zip` (ohne die alte Exe, ZIP wird geprüft) → neue Programmdateien nach `C:\Program Files\Zettelwirtschaft` → in der `config.toml` nur `FRONTEND_DIST_DIR` umstellen → Dienst neu registrieren (gleicher Log-Ordner, Ollama-Abhängigkeit) → Datenbank-Migrationen beim Start → Registry-Eintrag wie bei einer normalen Installation. Läuft die Weboberfläche, bietet das Setup an, den alten Programmordner zu löschen (nur wenn darin keine Daten liegen). Bricht das Setup vorher ab, wird der bisherige Dienst wiederhergestellt. Nicht übernehmbare Dienste (kein NSSM, fehlende/relative Pfade) werden mit konkreter Anleitung abgelehnt.
 - `restore-backup.bat` spielt eine mitgesicherte WAL-Datei mit zurück.

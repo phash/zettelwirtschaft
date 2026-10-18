@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import auth
 from tests.conftest import make_test_client
+from tests.credentials import TEST_PIN, TEST_WRONG_PIN
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +25,7 @@ def _clean_login_state():
 
 @pytest.fixture
 async def pin_app(test_settings, test_engine, test_session_factory):
-    settings = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": "1234"})
+    settings = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": TEST_PIN})
     async with make_test_client(settings, test_session_factory):
         from app.main import app
 
@@ -48,7 +49,7 @@ async def test_shared_gateway_key_lockout_is_capped(pin_app, monkeypatch):
     # Ausgangslage: viele Fehlversuche, letzte Sperre gerade abgelaufen.
     auth._login_attempts[gateway] = (20, now - timedelta(seconds=1), now - timedelta(seconds=61))
     async with _client_for(pin_app, "172.18.0.3") as c:
-        r = await c.post("/api/auth/login", json={"pin": "0000"}, headers={"X-Real-IP": gateway})
+        r = await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN}, headers={"X-Real-IP": gateway})
     assert r.status_code == 401
     _count, lockout, _seen = auth._login_attempts[gateway]
     assert lockout is not None
@@ -65,7 +66,7 @@ async def test_real_lan_client_keeps_full_backoff(pin_app, monkeypatch):
     now = datetime.now(timezone.utc)
     auth._login_attempts[ip] = (20, now - timedelta(seconds=1), now - timedelta(seconds=61))
     async with _client_for(pin_app, "172.18.0.3") as c:
-        r = await c.post("/api/auth/login", json={"pin": "0000"}, headers={"X-Real-IP": ip})
+        r = await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN}, headers={"X-Real-IP": ip})
     assert r.status_code == 401
     _count, lockout, _seen = auth._login_attempts[ip]
     remaining = (lockout - datetime.now(timezone.utc)).total_seconds()
@@ -93,10 +94,10 @@ async def test_full_locked_table_fails_closed_but_correct_pin_works(pin_app, mon
     for i in range(2):
         auth._record_failed_attempt(f"10.0.0.{i}", auth.MAX_LOGIN_ATTEMPTS, now)
     async with _client_for(pin_app, "10.0.0.77") as c:
-        r = await c.post("/api/auth/login", json={"pin": "0000"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_WRONG_PIN})
         assert r.status_code == 429
         assert "10.0.0.77" not in auth._login_attempts
-        r = await c.post("/api/auth/login", json={"pin": "1234"})
+        r = await c.post("/api/auth/login", json={"pin": TEST_PIN})
         assert r.status_code == 200
     assert len(auth._login_attempts) == 2
 

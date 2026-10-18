@@ -402,7 +402,7 @@ from app.services.crypto_service import encrypt_password, decrypt_password, gene
 
 def test_encrypt_decrypt_roundtrip():
     key = generate_encryption_key()
-    password = "mein-geheimes-passwort"
+    password = TEST_IMAP_PASSWORD  # tests/credentials.py
     encrypted = encrypt_password(password, key)
     assert encrypted != password
     decrypted = decrypt_password(encrypted, key)
@@ -1313,7 +1313,7 @@ async def test_create_account(client):
             "imap_port": 993,
             "use_ssl": True,
             "username": "user@gmail.com",
-            "password": "app-password",
+            "password": TEST_IMAP_PASSWORD,
             "schedule_type": "MANUAL",
         })
     assert resp.status_code == 201
@@ -1331,7 +1331,7 @@ async def test_create_and_list_accounts(client):
             "name": "Test",
             "imap_host": "imap.test.com",
             "username": "user@test.com",
-            "password": "pw",
+            "password": TEST_IMAP_PASSWORD,
         })
     resp = await client.get("/api/email/accounts")
     assert resp.status_code == 200
@@ -1346,7 +1346,7 @@ async def test_delete_account(client):
             "name": "ToDelete",
             "imap_host": "imap.test.com",
             "username": "user@test.com",
-            "password": "pw",
+            "password": TEST_IMAP_PASSWORD,
         })
     account_id = create_resp.json()["id"]
     del_resp = await client.delete(f"/api/email/accounts/{account_id}")
@@ -1364,7 +1364,7 @@ async def test_test_connection(client):
             "name": "Test",
             "imap_host": "imap.test.com",
             "username": "user@test.com",
-            "password": "pw",
+            "password": TEST_IMAP_PASSWORD,
         })
     account_id = create_resp.json()["id"]
 
@@ -1382,7 +1382,7 @@ async def test_manual_fetch(client):
             "name": "Test",
             "imap_host": "imap.test.com",
             "username": "user@test.com",
-            "password": "pw",
+            "password": TEST_IMAP_PASSWORD,
         })
     account_id = create_resp.json()["id"]
 

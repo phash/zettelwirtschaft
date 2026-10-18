@@ -474,6 +474,57 @@ class TestAnswerFieldUpdateFilingScope:
         detail = await client.get(f"/api/review/documents/{doc.id}")
         assert detail.json()["confident_fields"]["filing_scope"] == "Praxis"
 
+    async def _suggestion_question(self, db_session: AsyncSession):
+        """Rueckfrage wie archive_service sie fuer einen KI-Vorschlag stellt."""
+        scope = await _create_scope(db_session)
+        doc = await _create_doc(db_session, scope)
+        q = await _create_question(
+            db_session, doc,
+            question="Die KI schlägt einen neuen Ablagebereich 'Versicherung' vor. Soll dieser erstellt werden?",
+            field_affected="filing_scope",
+            suggested_answers=f"NEU: Versicherung|{scope.name}",
+        )
+        await db_session.commit()
+        return scope, doc, q
+
+    @pytest.mark.parametrize("answer", ["ja", "Ja", " JA "])
+    async def test_yes_creates_suggested_scope(self, client, db_session: AsyncSession, answer):
+        """'Ja' auf die Vorschlags-Frage legt den vorgeschlagenen Bereich an —
+        frueher: 422 'Ablagebereich „ja“ existiert nicht'."""
+        _, doc, q = await self._suggestion_question(db_session)
+
+        resp = await client.post(f"/api/review/questions/{q.id}/answer", json={"answer": answer})
+        assert resp.status_code == 200, resp.text
+
+        detail = await client.get(f"/api/review/documents/{doc.id}")
+        assert detail.json()["confident_fields"]["filing_scope"] == "Versicherung"
+        names = (await db_session.execute(select(FilingScope.name))).scalars().all()
+        assert "Versicherung" in names and "ja" not in [n.lower() for n in names]
+
+    async def test_no_keeps_current_scope(self, client, db_session: AsyncSession):
+        scope, doc, q = await self._suggestion_question(db_session)
+
+        resp = await client.post(f"/api/review/questions/{q.id}/answer", json={"answer": "Nein"})
+        assert resp.status_code == 200, resp.text
+
+        doc_resp = await client.get(f"/api/documents/{doc.id}")
+        assert doc_resp.json()["filing_scope_id"] == scope.id
+        names = (await db_session.execute(select(FilingScope.name))).scalars().all()
+        assert "Versicherung" not in names
+
+    async def test_yes_without_suggestion_is_still_rejected(self, client, db_session: AsyncSession):
+        """Ohne 'NEU:'-Option bleibt 'ja' ungueltig (keine Raterei)."""
+        scope = await _create_scope(db_session)
+        doc = await _create_doc(db_session, scope)
+        q = await _create_question(
+            db_session, doc, question="Zu welchem Ablagebereich gehört dieses Dokument?",
+            field_affected="filing_scope", suggested_answers=scope.name,
+        )
+        await db_session.commit()
+
+        resp = await client.post(f"/api/review/questions/{q.id}/answer", json={"answer": "ja"})
+        assert resp.status_code == 422
+
     async def test_answer_new_scope_creates_record(self, client, db_session: AsyncSession):
         """'NEU: Verein' soll ein FilingScope-Objekt in der DB erstellen."""
         scope = await _create_scope(db_session)

@@ -14,6 +14,7 @@ import pytest
 
 from app.core import request_limits as rl
 from tests.conftest import make_test_client
+from tests.credentials import TEST_PIN
 
 
 def test_body_limit_per_path():
@@ -30,7 +31,7 @@ def test_body_limit_per_path():
 
 @pytest.fixture
 async def pin_client(test_settings, test_engine, test_session_factory):
-    settings = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": "1234"})
+    settings = test_settings.model_copy(update={"PIN_ENABLED": True, "PIN_CODE": TEST_PIN})
     async with make_test_client(settings, test_session_factory) as ac:
         yield ac
 
@@ -76,7 +77,7 @@ async def test_login_rejects_oversized_streamed_body(pin_client):
 
 @pytest.mark.asyncio
 async def test_login_with_normal_body_still_works(pin_client):
-    resp = await pin_client.post("/api/auth/login", json={"pin": "1234"})
+    resp = await pin_client.post("/api/auth/login", json={"pin": TEST_PIN})
     assert resp.status_code == 200, resp.text
 
 

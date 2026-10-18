@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { TEST_PIN } from '../helpers/credentials';
 import { setupDashboardMocks, setupPinAuthMocks, showOnboardingTour } from '../helpers/mock.helpers';
 
 const WELCOME = 'Willkommen bei Zettelwirtschaft';
@@ -138,7 +139,7 @@ test.describe('Onboarding with PIN protection', () => {
     await expect(page).toHaveURL(/\/pin/);
     await expect(tour(page)).toHaveCount(0);
 
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
     await expect(tour(page)).toContainText(WELCOME);
   });

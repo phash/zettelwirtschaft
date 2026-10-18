@@ -1,18 +1,13 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from cryptography.fernet import Fernet
-
 from app.config import get_settings
 from app.main import app
 from app.models.email_account import EmailAccount
 from app.models.processed_email import EmailStatus, ProcessedEmail
 from app.services.crypto_service import decrypt_password
 from app.services.task_service import shutdown_tasks, wait_for_task
-
-# Echter Fernet-Schluessel (frueher ein ungueltiger Platzhalter, den nur das
-# Mocken von encrypt_password verdeckt hat).
-TEST_ENCRYPTION_KEY = Fernet.generate_key().decode()
+from tests.credentials import TEST_EMAIL_ENCRYPTION_KEY, TEST_IMAP_PASSWORD, TEST_IMAP_PASSWORD_2
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +19,7 @@ async def _cancel_leftover_tasks():
 @pytest.fixture
 def email_client_settings(test_settings):
     """Ueberschreibt get_settings mit EMAIL_ENCRYPTION_KEY fuer E-Mail-Tests."""
-    s = test_settings.model_copy(update={"EMAIL_ENCRYPTION_KEY": TEST_ENCRYPTION_KEY})
+    s = test_settings.model_copy(update={"EMAIL_ENCRYPTION_KEY": TEST_EMAIL_ENCRYPTION_KEY})
     app.dependency_overrides[get_settings] = lambda: s
     yield s
     app.dependency_overrides[get_settings] = lambda: test_settings
@@ -34,7 +29,7 @@ _ACCOUNT = {
     "name": "Test",
     "imap_host": "imap.test.com",
     "username": "user@test.com",
-    "password": "pw",
+    "password": TEST_IMAP_PASSWORD,
 }
 
 
@@ -62,12 +57,12 @@ async def test_create_account_requires_encryption_key(client):
 @pytest.mark.asyncio
 async def test_create_account_encrypts_password(client, email_client_settings, db_session):
     data = await _create_account(client, name="Gmail Privat", imap_host="imap.gmail.com",
-                                 password="app-password", schedule_type="MANUAL")
+                                 password=TEST_IMAP_PASSWORD, schedule_type="MANUAL")
     assert data["name"] == "Gmail Privat"
     assert data["schedule_type"] == "MANUAL"
     assert "password" not in data and "encrypted_password" not in data
     account = await db_session.get(EmailAccount, data["id"])
-    assert decrypt_password(account.encrypted_password, TEST_ENCRYPTION_KEY) == "app-password"
+    assert decrypt_password(account.encrypted_password, TEST_EMAIL_ENCRYPTION_KEY) == TEST_IMAP_PASSWORD
 
 
 @pytest.mark.asyncio
@@ -110,13 +105,13 @@ async def test_update_account(client, email_client_settings, db_session):
     account_id = (await _create_account(client))["id"]
     resp = await client.put(f"/api/email/accounts/{account_id}", json={
         "name": "Neu", "schedule_type": "CRON", "cron_expression": "*/15 * * * *",
-        "password": "neues-pw", "is_active": False,
+        "password": TEST_IMAP_PASSWORD_2, "is_active": False,
     })
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert (data["name"], data["schedule_type"], data["is_active"]) == ("Neu", "CRON", False)
     account = await db_session.get(EmailAccount, account_id)
-    assert decrypt_password(account.encrypted_password, TEST_ENCRYPTION_KEY) == "neues-pw"
+    assert decrypt_password(account.encrypted_password, TEST_EMAIL_ENCRYPTION_KEY) == TEST_IMAP_PASSWORD_2
 
 
 @pytest.mark.asyncio

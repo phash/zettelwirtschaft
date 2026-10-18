@@ -27,8 +27,9 @@ from app.services.email_fetch_service import (
     classify_imap_error,
     imap_ssl_context,
 )
+from tests.credentials import TEST_IMAP_PASSWORD
 
-PASSWORD = "Victim-Mail-Passw0rd!"
+PASSWORD = TEST_IMAP_PASSWORD
 
 
 def _name(cn: str) -> x509.Name:

@@ -16,7 +16,7 @@
 # Aufruf:
 #   .\New-NativeConfig.ps1 -OutPath "C:\Users\Max\Documents\Zettelwirtschaft\config.toml" `
 #       -DataDir "C:\Users\Max\Documents\Zettelwirtschaft" -FrontendDistDir "C:\Program Files\Zettelwirtschaft\frontend" `
-#       -PinCode 123456
+#       -PinCode <PIN>
 # Ohne -OllamaModel/-EmbeddingModel waehlt model-tiers.ps1 die Modelle passend
 # zur Hardware (NVIDIA-GPU >= 10 GB VRAM -> gemma4:12b-it-qat, < 12 GB RAM ->
 # qwen3-embedding:0.6b); das Native-Setup hat keine eigene Modellauswahl.

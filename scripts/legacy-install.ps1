@@ -399,7 +399,15 @@ function Remove-ZwTree([string]$path) {
             try { Remove-Item -LiteralPath $path -Force } catch { $failed++ }
         }
     } else {
-        try { Remove-Item -LiteralPath $path -Force } catch { $failed++ }
+        # Die alte nssm.exe ist direkt nach dem Umregistrieren des Dienstes noch
+        # einige Sekunden gesperrt (ausklingender NSSM-Prozess) -> kurz erneut
+        # versuchen statt sie liegen zu lassen.
+        $removed = $false
+        for ($try = 0; $try -lt 10 -and -not $removed; $try++) {
+            try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop; $removed = $true }
+            catch { Start-Sleep -Milliseconds 1000 }
+        }
+        if (-not $removed) { $failed++ }
     }
     return $failed
 }

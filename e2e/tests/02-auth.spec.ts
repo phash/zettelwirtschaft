@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { TEST_PIN, TEST_WRONG_PIN } from '../helpers/credentials';
 import {
   setupPinAuthMocks,
   setupDashboardMocks,
@@ -37,7 +38,7 @@ test.describe('Authentication - PIN Login', () => {
     await setupPinAuthMocks(page);
     await page.goto('/pin');
 
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await expect(page.getByRole('button', { name: /anmelden/i })).toBeEnabled();
   });
 
@@ -45,11 +46,11 @@ test.describe('Authentication - PIN Login', () => {
     const session = await setupPinAuthMocks(page, { dataMocks: setupDashboardMocks });
 
     await page.goto('/pin');
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
 
     await expect(page).toHaveURL('/');
-    expect(session.loginAttempts).toEqual(['1234']);
+    expect(session.loginAttempts).toEqual([TEST_PIN]);
     // Nach dem Login liefern die geschuetzten Endpunkte Daten (kein 401 mehr)
     await expect(page.getByText('Gesamt Dokumente')).toBeVisible();
     await expect(page.getByTestId('stat-cards')).toContainText(String(MOCK_STATS.total_documents));
@@ -59,7 +60,7 @@ test.describe('Authentication - PIN Login', () => {
     await setupPinAuthMocks(page);
 
     await page.goto('/pin');
-    await page.locator('#pin').fill('0000');
+    await page.locator('#pin').fill(TEST_WRONG_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
 
     await expect(page.getByRole('alert')).toHaveText('Falscher PIN');
@@ -80,11 +81,11 @@ test.describe('Authentication - PIN Login', () => {
 
     await page.goto('/pin');
     for (let i = 0; i < 5; i++) {
-      await page.locator('#pin').fill('0000');
+      await page.locator('#pin').fill(TEST_WRONG_PIN);
       await page.getByRole('button', { name: /anmelden/i }).click();
       await expect(page.getByRole('alert')).toHaveText('Falscher PIN');
     }
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
 
     await expect(page.getByRole('alert')).toHaveText('Zu viele Fehlversuche. Bitte 30s warten.');
@@ -98,7 +99,7 @@ test.describe('Authentication - PIN Login', () => {
     await expect(page).toHaveURL(/\/pin\?redirect=/);
     expect(new URL(page.url()).searchParams.get('redirect')).toBe('/dokumente?typ=RECHNUNG');
 
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
     await expect(page).toHaveURL('/dokumente?typ=RECHNUNG');
   });
@@ -119,7 +120,7 @@ test.describe('Authentication - PIN Login', () => {
     await expect(page).toHaveURL(/\/pin\?redirect=/);
     expect(new URL(page.url()).searchParams.get('redirect')).toBe('/suche?q=Strom');
 
-    await page.locator('#pin').fill('1234');
+    await page.locator('#pin').fill(TEST_PIN);
     await page.getByRole('button', { name: /anmelden/i }).click();
     await expect(page).toHaveURL('/suche?q=Strom');
     await expect(page.getByText('Stromrechnung Januar 2026').first()).toBeVisible();
