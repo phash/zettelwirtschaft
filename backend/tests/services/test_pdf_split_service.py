@@ -1,6 +1,7 @@
 """pdf_split_service: verlustfreies Schneiden, Geometrie, Tinte (synthetische PDFs)."""
 
 import io
+import secrets
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -29,7 +30,8 @@ def make_pdf(path: Path, pages: int, *, blank: set[int] = frozenset(), sizes: di
     if encrypt:
         from reportlab.lib.pdfencrypt import StandardEncryption
 
-        kwargs["encrypt"] = StandardEncryption("geheim", ownerPassword="besitzer")
+        # Pro Lauf zufaellig: die Tests brauchen nur ein verschluesseltes PDF, kein festes Passwort.
+        kwargs["encrypt"] = StandardEncryption(secrets.token_urlsafe(12), ownerPassword=secrets.token_urlsafe(12))
     c = canvas.Canvas(str(path), pagesize=A4, **kwargs)
     for n in range(1, pages + 1):
         size = (sizes or {}).get(n, A4)
