@@ -199,7 +199,10 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 - **Optionale KI-Prüfung** unsicherer Stellen (höchstens ein Aufruf je Stapel); ohne erreichbares Ollama arbeitet die Erkennung allein mit den Regeln weiter. Einstellungen unter „System“ → „Verarbeitung“ (automatische Prüfung, Mindestseitenzahl, KI-Prüfung), Grenzen per Konfiguration (`SPLIT_MAX_PAGES`, `SPLIT_TIME_BUDGET_S` u. a.).
 - **Robustheit:** Absturz während Erkennung oder Aufteilung setzt sauber fort (Checkpoint alle 5 Seiten, keine halben Teildateien), doppelte Bestätigung oder zwei Geräte gleichzeitig erzeugen keine doppelten Dokumente, ein erneut importierter Stapel wird als Duplikat erkannt, verschlüsselte/defekte PDFs laufen normal weiter.
 - **Native:** neue Abhängigkeit `pypdfium2`; der Build prüft `pdfium.dll` und führt einen Selbsttest der fertigen Exe aus (`--self-test-pdfium`).
-- Tests: Backend **1491** (1 übersprungen), E2E **636** (Desktop + Mobile, 2 übersprungen), Vitest 52.
+- **Netzwerkordner (Native):** Eingangs- und Exportordner auf einer NAS per UNC-Pfad (`\\nas\scan`) mit eigenem Benutzer/Passwort der Freigabe (verschlüsselt gespeichert); „Verbindung testen“, Überwachung per Polling mit automatischem Wiederverbinden, Status in der Systemprüfung. Netzlaufwerke (`V:`) werden mit Vorschlag des passenden UNC-Pfads abgelehnt — der Dienst sieht Laufwerksbuchstaben nicht. Der Dienst meldet sich nie mit seiner eigenen Identität an fremden Freigaben an.
+- **Scanner-Freigabe:** Optional im Setup oder per Startmenü „Scanner-Freigabe einrichten“: der lokale Eingangsordner wird als `\\<PC>\Zettelwirtschaft-Eingang` für Netzwerk-Scanner freigegeben — eigenes Konto `zw-scanner`, nur Schreibrechte auf den Eingangsordner, Firewall nur fürs lokale Subnetz; Deinstallation entfernt alles.
+- Docker: Hinweis zum Einbinden einer NAS als CIFS-Volume; Verhalten unverändert.
+- Tests: Backend **1694** (9 übersprungen), E2E **668** (Desktop + Mobile, 2 übersprungen), Vitest 53, Skript-Tests grün.
 
 ### v1.6.2
 - Fix: Die Rückfrage „Die KI schlägt einen neuen Ablagebereich … vor. Soll dieser erstellt werden?“ akzeptiert jetzt „Ja“ (legt den Bereich an und ordnet zu) und „Nein“ (Zuordnung bleibt). Bisher wurde „ja“ als Bereichsname gelesen („Ablagebereich „ja“ existiert nicht“). Die Detailansicht zeigt Antwortvorschläge zusätzlich als Buttons.
