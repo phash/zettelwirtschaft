@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.classList.add('js')</script>
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#221C15">
+<link rel="canonical" href="https://zettelwirtschaft.mr-development.de/">
+<meta property="og:url" content="https://zettelwirtschaft.mr-development.de/">
+<meta property="og:image" content="https://zettelwirtschaft.mr-development.de/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:site_name" content="Zettelwirtschaft">
+<title>Zettelwirtschaft — lokales Dokumentenarchiv mit KI für Rechnungen &amp; Belege</title>
+<meta name="description" content="Zettelwirtschaft ist ein lokales Dokumentenmanagementsystem für Privathaushalte. Rechnungen, Belege und Verträge per KI analysieren, archivieren und durchsuchen — komplett on-premise. Kein Cloud-Zwang, keine Abos, keine Telemetrie.">
+<meta property="og:title" content="Zettelwirtschaft — Dein lokales Dokumentenarchiv mit KI">
+<meta property="og:description" content="Schluss mit der Zettelwirtschaft. Belege per KI analysieren, archivieren, durchsuchen — alles bleibt bei dir zuhause.">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="de_DE">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://zettelwirtschaft.mr-development.de/#website",
+      "url": "https://zettelwirtschaft.mr-development.de/",
+      "name": "Zettelwirtschaft",
+      "inLanguage": "de-DE",
+      "publisher": {"@id": "https://zettelwirtschaft.mr-development.de/#autor"}
+    },
+    {
+      "@type": "Person",
+      "@id": "https://zettelwirtschaft.mr-development.de/#autor",
+      "name": "Manuel Rödig",
+      "url": "https://www.mr-development.de/",
+      "sameAs": ["https://github.com/phash"]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://zettelwirtschaft.mr-development.de/#software",
+      "name": "Zettelwirtschaft",
+      "alternateName": "Zettelwirtschaft DMS",
+      "description": "Kostenloses, quelloffenes Dokumentenmanagementsystem für Privathaushalte. Erfasst Rechnungen, Belege und Verträge per Scanner, Smartphone oder E-Mail, analysiert sie mit einer lokalen KI (Ollama) und archiviert sie durchsuchbar — vollständig offline, ohne Cloud und ohne Telemetrie.",
+      "url": "https://zettelwirtschaft.mr-development.de/",
+      "downloadUrl": "https://zettelwirtschaft.mr-development.de/download.html",
+      "softwareVersion": "1.7.0",
+      "datePublished": "2026-10-18",
+      "applicationCategory": "BusinessApplication",
+      "applicationSubCategory": "Dokumentenmanagement",
+      "operatingSystem": "Windows 10, Windows 11, Linux (Docker)",
+      "memoryRequirements": "8 GB RAM",
+      "storageRequirements": "10 GB",
+      "inLanguage": "de",
+      "isAccessibleForFree": true,
+      "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+      "codeRepository": "https://github.com/phash/zettelwirtschaft",
+      "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"},
+      "author": {"@id": "https://zettelwirtschaft.mr-development.de/#autor"},
+      "image": "https://zettelwirtschaft.mr-development.de/assets/og-image.png",
+      "featureList": [
+        "Texterkennung (OCR) für Scans, Fotos und PDFs",
+        "Lokale KI-Analyse von Dokumenttyp, Datum, Betrag und Aussteller",
+        "Volltextsuche und KI-Assistent mit Quellenangabe",
+        "Steuerpaket-Export als ZIP mit PDF und CSV",
+        "Garantie-Tracker mit Erinnerungen",
+        "Smartphone-Scan als Progressive Web App",
+        "E-Mail-Import per IMAP",
+        "Netzwerkscanner- und NAS-Anbindung",
+        "Mehrdokument-Scans automatisch aufteilen",
+        "Optionaler PIN-Schutz und tägliche Backups"
+      ]
+    }
+  ]
+}
+</script>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/site.css?v=20261023">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<!-- HEADER -->
+<header class="site-head">
+  <div class="wrap site-head__bar">
+    <a class="brand" href="index.html" aria-label="Zettelwirtschaft — Startseite">
+      <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#FBF5E7"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#B23A2E" stroke-width="3"/><rect x="16" y="16" width="32" height="32" rx="3" fill="none" stroke="#B23A2E" stroke-width="1.4" opacity=".55"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#B23A2E" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+      <span><span class="brand__name">Zettelwirtschaft</span><span class="brand__tag">Lokales Dokumentenarchiv</span></span>
+    </a>
+    <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menü öffnen"><span></span></button>
+    <nav class="nav" id="primary-nav" aria-label="Hauptnavigation">
+      <a href="index.html#funktionen">Funktionen</a>
+      <a href="index.html#betrieb">Betrieb</a>
+      <a href="anleitungen.html">Anleitungen</a>
+      <a href="hilfe.html">FAQ</a>
+      <a href="download.html">Download</a>
+      <a class="btn btn--stamp nav__cta" href="download.html">Herunterladen <span class="ar">→</span></a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap hero__grid">
+    <div>
+      <span class="kicker">Privathaushalt · 100&nbsp;%&nbsp;lokal</span>
+      <h1>Schluss mit der <span class="ink-accent">Zettel&shy;wirtschaft</span>.</h1>
+      <p class="lead">Rechnungen, Belege und Verträge per Scanner oder Smartphone erfassen — eine lokale KI liest, sortiert und archiviert sie durchsuchbar. Läuft ausschließlich bei dir im Heim-WLAN.</p>
+      <div class="hero__cta">
+        <a class="btn btn--stamp" href="download.html">Version&nbsp;1.7.0 laden <span class="ar">→</span></a>
+        <a class="btn btn--ghost" href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Quellcode auf GitHub</a>
+      </div>
+      <div class="hero__meta">
+        <div><strong>0</strong>Cloud-Dienste</div>
+        <div><strong>~40s</strong>pro Dokument (CPU)</div>
+        <div><strong>15</strong>Dokumenttypen</div>
+        <div><strong>AGPL</strong>Open Source</div>
+      </div>
+    </div>
+
+    <aside class="dossier" aria-label="Beispiel einer KI-Analyse">
+      <div class="dossier__stamp"><span class="stamp stamp--lg"><span class="dot"></span>Geprüft</span></div>
+      <div class="dossier__title">Akte · Automatische Analyse</div>
+      <div class="dossier__row"><b>Typ</b><span class="v">Rechnung</span></div>
+      <div class="dossier__row"><b>Aussteller</b><span class="v">Stadtwerke</span></div>
+      <div class="dossier__row"><b>Datum</b><span class="v">14.05.2026</span></div>
+      <div class="dossier__row"><b>Betrag</b><span class="v">84,90&nbsp;€</span></div>
+      <div class="dossier__row"><b>Steuer</b><span class="v">Haushaltsnah</span></div>
+      <div class="dossier__row"><b>Ablage</b><span class="v">Privat / 2026 / Mai</span></div>
+      <div class="dossier__title" style="margin:1rem 0 .3rem">Konfidenz 86&nbsp;%</div>
+      <div class="dossier__bar"><i></i></div>
+    </aside>
+  </div>
+</section>
+
+<!-- PROBLEM / PROMISE -->
+<section class="section section--paper">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Das Prinzip</span>
+      <h2>Aus dem Schuhkarton wird ein geordnetes Archiv — ganz ohne fremde Server.</h2>
+      <p class="lead">Du legst ein Dokument ein. Tesseract erkennt den Text, ein lokales Sprachmodell bestimmt Typ, Datum, Betrag und Aussteller, ordnet es einem Ablagebereich zu und macht es volltext- und semantisch durchsuchbar. Bei Unklarheiten fragt die KI gezielt nach, statt zu raten.</p>
+    </div>
+    <h3 class="reveal" style="margin-top:2.6rem">Zettelwirtschaft auf einen Blick</h3>
+    <p class="reveal" style="max-width:68ch;color:var(--ink-2)"><b>Zettelwirtschaft ist ein kostenloses Open-Source-Dokumentenmanagementsystem (DMS) für Privathaushalte.</b> Es digitalisiert Rechnungen, Belege, Verträge und Behördenschreiben, erkennt deren Inhalt mit einer lokalen KI und legt sie geordnet und durchsuchbar ab. Alles läuft auf dem eigenen PC oder Server — kein Konto, keine Cloud, kein Abo.</p>
+    <dl class="facts reveal" data-d="1">
+      <div><dt>Für wen</dt><dd>Privathaushalte, Familien, Selbstständige mit kleiner Praxis oder Büro</dd></div>
+      <div><dt>Kosten</dt><dd>Kostenlos, Open Source (AGPL-3.0), keine Abos</dd></div>
+      <div><dt>Systeme</dt><dd>Windows&nbsp;10/11 (Setup.exe) oder Linux/NAS mit Docker</dd></div>
+      <div><dt>Hardware</dt><dd>ab 8&nbsp;GB RAM, ca. 10&nbsp;GB Speicher; GPU optional</dd></div>
+      <div><dt>KI</dt><dd>Lokal über Ollama: <code class="inline">gemma4:e2b-it-qat</code> + <code class="inline">qwen3-embedding:4b</code></dd></div>
+      <div><dt>Dauer</dt><dd>ca. 40&nbsp;s pro Dokument auf CPU, wenige Sekunden mit NVIDIA-GPU</dd></div>
+      <div><dt>Eingänge</dt><dd>Upload, Smartphone, Netzwerkscanner, Watch-Ordner, E-Mail (IMAP)</dd></div>
+      <div><dt>Formate</dt><dd>PDF, JPG, PNG, TIFF, BMP bis 50&nbsp;MB</dd></div>
+      <div><dt>Datenschutz</dt><dd>Dokumente verlassen nie den Rechner, keine Telemetrie</dd></div>
+      <div><dt>Sprache</dt><dd>Deutsche Oberfläche, Texterkennung Deutsch + Englisch</dd></div>
+    </dl>
+    <div class="tech reveal" data-d="1">
+      <span>FastAPI</span><span>SQLite&nbsp;FTS5</span><span>Tesseract&nbsp;OCR</span><span>Ollama&nbsp;LLM</span><span>ChromaDB</span><span>Vue&nbsp;3</span><span>Vite&nbsp;8</span><span>Tailwind&nbsp;v4</span><span>Docker</span><span>PWA</span>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section" id="funktionen">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Funktionen</span>
+      <h2>Alles, was ein Haushalts&shy;archiv braucht.</h2>
+    </div>
+    <div class="cards">
+      <article class="card reveal"><div class="card__no">F.01</div><h3>KI-Dokumentenanalyse</h3><p>Typ, Datum, Betrag und Aussteller werden automatisch per lokalem Sprachmodell (Ollama) erkannt — mit Schema-gebundener JSON-Ausgabe.</p></article>
+      <article class="card reveal" data-d="1"><div class="card__no">F.02</div><h3>OCR für Scans &amp; PDFs</h3><p>Tesseract für Fotos und Scans, pdfplumber für digitale PDFs. Vorverarbeitung mit Upscaling und Entrauschen für saubere Texterkennung.</p></article>
+      <article class="card reveal" data-d="2"><div class="card__no">F.03</div><h3>Volltextsuche</h3><p>SQLite FTS5 mit Facetten und Autovervollständigung. Findet Belege nach Aussteller, Betrag, Typ oder beliebigem Stichwort in Sekunden.</p></article>
+      <article class="card reveal"><div class="card__no">F.04</div><h3>KI-Assistent (RAG)</h3><p>Stell deinem Archiv Fragen in natürlicher Sprache. Hybride Suche aus Volltext und Vektoren liefert belegte Antworten mit Quellenangabe.</p></article>
+      <article class="card reveal" data-d="1"><div class="card__no">F.05</div><h3>Steuerpaket-Export</h3><p>Belege nach Steuerkategorien filtern und als ZIP mit Übersichts-PDF und CSV exportieren — fertig für die Steuererklärung.</p></article>
+      <article class="card reveal" data-d="2"><div class="card__no">F.06</div><h3>Garantie-Tracker</h3><p>Ablaufdaten im Blick mit automatischen Erinnerungen 90, 30 und 0 Tage vor Garantieende. Nie wieder einen Anspruch verpassen.</p></article>
+      <article class="card reveal"><div class="card__no">F.07</div><h3>Smartphone-Scan</h3><p>Progressive Web App: Dokumente direkt per Handykamera erfassen und ins Archiv schicken — ohne App-Store, übers Heim-WLAN.</p></article>
+      <article class="card reveal" data-d="1"><div class="card__no">F.08</div><h3>E-Mail-Anbindung</h3><p>Rechnungen aus dem Postfach automatisch abholen (IMAP). Die KI prüft die Relevanz, Passwörter werden Fernet-verschlüsselt gespeichert.</p></article>
+      <article class="card reveal" data-d="2"><div class="card__no">F.09</div><h3>Ablagebereiche &amp; Rückfragen</h3><p>Dokumente nach Bereichen ordnen (z.&nbsp;B. Privat, Praxis). Bei unsicherer Zuordnung stellt die KI gezielte Rückfragen statt blind zu archivieren.</p></article>
+      <article class="card reveal"><div class="card__no">F.10</div><h3>Mehrdokument-Scans aufteilen</h3><p>Ein Stapel aus dem Einzugsscanner wird erkannt und in einzelne Dokumente zerlegt — mit Editor zum Prüfen und 30&nbsp;Tage rückgängig machbar. <a href="anleitungen.html#aufteilen">Anleitung</a></p></article>
+      <article class="card reveal" data-d="1"><div class="card__no">F.11</div><h3>Netzwerkscanner &amp; NAS</h3><p>Scanner scannt per „Scan to Network Folder“ direkt in die App. Eingangs- und Exportordner dürfen auf einer NAS liegen. <a href="anleitungen.html#netzwerkscanner">Anleitung</a></p></article>
+      <article class="card reveal" data-d="2"><div class="card__no">F.12</div><h3>Backup &amp; Update</h3><p>Tägliches Auto-Backup, Vollbackup mit allen Dokumenten und Updates per Setup, die Daten, Einstellungen und PIN behalten. <a href="anleitungen.html#backup">Anleitung</a></p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ABLAUF / PROCESS -->
+<section class="section section--ink" id="ablauf">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Verarbeitungs-Pipeline</span>
+      <h2>Vom Beleg zur fertigen Akte — in fünf Schritten.</h2>
+    </div>
+    <div class="flow">
+      <div class="flow__step reveal"><h3>Erfassen</h3><p>Upload, Watch-Ordner, Smartphone-Scan oder E-Mail-Import landen in der Warteschlange.</p></div>
+      <div class="flow__step reveal" data-d="1"><h3>Auslesen</h3><p>OCR per Tesseract oder pdfplumber extrahiert den Text — mit Bild-Vorverarbeitung.</p></div>
+      <div class="flow__step reveal" data-d="2"><h3>Verstehen</h3><p>Das lokale LLM klassifiziert und extrahiert Metadaten, Steuer- und Garantieangaben.</p></div>
+      <div class="flow__step reveal" data-d="3"><h3>Archivieren</h3><p>Ablage nach Bereich, Jahr, Monat und Typ; Schlagworte, Volltext- und Vektorindex.</p></div>
+      <div class="flow__step reveal" data-d="4"><h3>Finden</h3><p>Durchsuchen, filtern, im Steuerpaket exportieren oder den KI-Assistenten fragen.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY -->
+<section class="section section--ink" style="padding-top:0">
+  <div class="wrap privacy">
+    <div class="reveal">
+      <span class="kicker">Datenschutz von Grund auf</span>
+      <h2>Deine Daten bleiben bei&nbsp;dir.</h2>
+      <p>Zettelwirtschaft kennt keinen Cloud-Anbieter, keinen Account-Zwang und keine Telemetrie. Belege, OCR-Texte, KI-Analysen und Embeddings entstehen und bleiben auf deiner eigenen Hardware. Selbst das Sprachmodell läuft lokal über Ollama.</p>
+      <a class="btn btn--ghost" href="datenschutz.html" style="color:#F6EEDC;border-color:#D8B877;box-shadow:4px 4px 0 rgba(0,0,0,.25)">Datenschutz im Detail</a>
+    </div>
+    <div class="privacy__list reveal" data-d="1">
+      <div class="privacy__item"><span class="chk">✓</span><div><b>On-Premise.</b> Läuft ausschließlich im Heim-WLAN, kein externer Server.</div></div>
+      <div class="privacy__item"><span class="chk">✓</span><div><b>Keine Telemetrie.</b> Es werden keinerlei Nutzungsdaten erhoben oder versendet.</div></div>
+      <div class="privacy__item"><span class="chk">✓</span><div><b>Verschlüsselte Geheimnisse.</b> E-Mail-Passwörter Fernet-verschlüsselt, optionaler PIN-Schutz.</div></div>
+      <div class="privacy__item"><span class="chk">✓</span><div><b>Quelloffen.</b> Vollständig einsehbar unter AGPL-3.0 — keine proprietären Forks.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- BETRIEB / MODES -->
+<section class="section" id="betrieb">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Drei Betriebsmodi</span>
+      <h2>So, wie es zu deinem Setup passt.</h2>
+    </div>
+    <div class="modes">
+      <article class="mode reveal">
+        <span class="mode__tag"><span class="stamp stamp--green">Linux · NAS</span></span>
+        <h3>Docker</h3>
+        <p>Der klassische Stack auf Linux, NAS oder Server.</p>
+        <ul>
+          <li>Backend, Frontend, Ollama &amp; ChromaDB als Container</li>
+          <li><code class="inline">docker compose up -d</code></li>
+          <li>Gehärtet: non-root, cap_drop ALL, internes Netz</li>
+          <li><a href="anleitungen.html#docker">Anleitung</a> · Images zum Laden bereit</li>
+        </ul>
+      </article>
+      <article class="mode mode--featured reveal" data-d="1">
+        <span class="mode__tag"><span class="stamp"><span class="dot"></span>Windows</span></span>
+        <h3>Native Windows</h3>
+        <p>Setup.exe installiert einen Hintergrund­dienst.</p>
+        <ul>
+          <li>NSSM-Service, ChromaDB embedded</li>
+          <li>Tesseract &amp; poppler gebündelt</li>
+          <li>Konfiguration über <code class="inline">config.toml</code></li>
+          <li>Empfohlen für Windows-PCs · <a href="anleitungen.html#windows">Anleitung</a></li>
+        </ul>
+      </article>
+      <article class="mode reveal" data-d="2">
+        <span class="mode__tag"><span class="stamp stamp--green">Dev</span></span>
+        <h3>Lokal / Entwicklung</h3>
+        <p>Ohne Docker direkt aus dem Quellcode.</p>
+        <ul>
+          <li><code class="inline">uvicorn app.main:app --reload</code></li>
+          <li><code class="inline">npm run dev</code> (Vite, Port&nbsp;3000)</li>
+          <li>1.699 Backend-Tests · 668 E2E-Tests</li>
+          <li>Python&nbsp;3.12 · Node&nbsp;22+</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="section section--paper">
+  <div class="wrap" style="text-align:center">
+    <div class="reveal" style="max-width:48ch;margin-inline:auto">
+      <span class="kicker" style="justify-content:center">Loslegen</span>
+      <h2>Hol dir Zettelwirtschaft&nbsp;1.7.0.</h2>
+      <p class="lead">Windows-Setup, Docker-Images, Quellpaket und Prüfsummen stehen direkt zum Download bereit. Schritt-für-Schritt-Anleitungen führen durch Installation und Einrichtung.</p>
+      <div class="hero__cta" style="justify-content:center;margin-top:1.8rem">
+        <a class="btn btn--stamp" href="download.html">Zum Download <span class="ar">→</span></a>
+        <a class="btn btn--ghost" href="anleitungen.html">Anleitungen</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- FOOTER -->
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand">
+          <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#1E342D"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#D8B877" stroke-width="3"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#D8B877" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+          <span class="brand__name" style="font-family:var(--display);font-size:1.3rem">Zettelwirtschaft</span>
+        </div>
+        <p>Lokales Dokumentenmanagement für Privathaushalte. Rechnungen, Belege und Dokumente — automatisch geordnet, sicher zuhause.</p>
+        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.7.0 · AGPL-3.0</div>
+      </div>
+      <div>
+        <h4>Seiten</h4>
+        <ul>
+          <li><a href="index.html#funktionen">Funktionen</a></li>
+          <li><a href="anleitungen.html">Anleitungen</a></li>
+          <li><a href="hilfe.html">FAQ</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Rechtliches</h4>
+        <ul>
+          <li><a href="impressum.html">Impressum</a></li>
+          <li><a href="datenschutz.html">Datenschutz</a></li>
+          <li><a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Quellcode (GitHub)</a></li>
+          <li><a href="https://www.gnu.org/licenses/agpl-3.0.de.html" rel="noopener noreferrer">AGPL-3.0 Lizenz</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-note">
+      <span>© <span data-year>2026</span> Manuel Rödig · 85405 Nandlstadt</span>
+      <span>Kein Cloud-Zwang · Keine Telemetrie · 100&nbsp;% lokal</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

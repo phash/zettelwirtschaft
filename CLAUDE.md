@@ -184,11 +184,11 @@ fehlende config.toml, relative Datenpfade. Der Registry-Upgrade-Pfad ist unverä
 
 | File | Read when working on… |
 |---|---|
-| [`memory/backend-patterns.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/backend-patterns.md) | Python/FastAPI, SQLAlchemy, OCR pipeline, LLM calls, API endpoints, tests |
-| [`memory/data-models.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/data-models.md) | DB models, migrations, enums, archive structure, version tracking |
-| [`memory/frontend-patterns.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/frontend-patterns.md) | Vue.js components, views, TailwindCSS, API client, PWA |
-| [`memory/release-deployment.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/release-deployment.md) | Releases, Docker, Windows installer, CI/CD, known deployment bugs |
-| [`memory/e2e-tests.md`](C:/Users/manue/.claude/projects/E--claude-zettelwirtschaft/memory/e2e-tests.md) | Playwright E2E tests, mocking strategy, CI setup |
+| `memory/backend-patterns.md` | Python/FastAPI, SQLAlchemy, OCR pipeline, LLM calls, API endpoints, tests |
+| `memory/data-models.md` | DB models, migrations, enums, archive structure, version tracking |
+| `memory/frontend-patterns.md` | Vue.js components, views, TailwindCSS, API client, PWA |
+| `memory/release-deployment.md` | Releases, Docker, Windows installer, CI/CD, known deployment bugs |
+| `memory/e2e-tests.md` | Playwright E2E tests, mocking strategy, CI setup |
 
 ---
 
@@ -355,7 +355,8 @@ zettelwirtschaft/
         layout/                  # AppLayout, Sidebar, AppHeader, BottomNav (Mobile)
         common/                  # StatCard, Pagination, ConfirmDialog, DocTypeBadge, ToastContainer
         email/                   # EmailAccountForm, EmailAccountList (E-Mail-Konten-Verwaltung)
-        settings/                # SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings, SplitSettings
+        settings/                # SystemHealth, MaintenanceActions, FilingScopeManager, FolderSettings, EmailSettings, SplitSettings, UpdateCheck
+        onboarding/              # OnboardingModal (5-Schritt-Willkommens-Tour, in AppLayout gemountet)
       constants/
         documentTypes.js         # DocumentType Enum -> Label Mapping
       utils/
@@ -374,9 +375,10 @@ zettelwirtschaft/
         SettingsView.vue         # System-Health + Backup + Wartung + Ablagebereiche + E-Mail-Konten
         ChatView.vue             # RAG-Chat mit Verlauf, Scope-Filter, Beispielfragen
         SplitEditorView.vue      # Aufteilungs-Editor (/aufteilen/:batchId): Seitenraster, Schnitt-Marker, Bestaetigen
+        HelpView.vue             # In-App-Hilfe (/hilfe): Schnellstart, Funktions-Karten, FAQ, Tour-Neustart
       services/api.js            # Zentraler API-Client (Axios)
       router/index.js            # Vue Router
-      stores/                    # Pinia Stores (notifications, auth) — documents-Store entfernt in Phase 5 (toter Code)
+      stores/                    # Pinia Stores (notifications, auth, onboarding) — documents-Store entfernt (toter Code)
       composables/               # useFilingScopes (shared cache + inflight-Token), useBackgroundTask (202 + Polling)
     vite.config.js
     tailwind.config.js
@@ -680,6 +682,13 @@ und in `planung/*.md` dokumentiert. Darueber hinaus aktiv:
   `backend/scripts/eval_split.py <ordner> <ground_truth.json>` (Beispiel-Stapel bleiben
   ausserhalb des Repos, keine Personendaten). Offen (optional): Seiten-Fingerprint, um
   denselben Teil aus einem anderen Stapel zu erkennen.
+- **In-App-Hilfe & Onboarding** (v1.5.0): `HelpView.vue` (`/hilfe`) + 5-Schritt-Willkommens-Tour
+  (`OnboardingModal.vue`, `stores/onboarding.js`); zeigt sich beim ersten App-Start automatisch
+  (pro Browser via localStorage, nicht auf der PIN-Seite), jederzeit aus der Hilfe erneut startbar
+- **Praesentations-/Download-Website** (v1.4.1+): statische Marketing-/Anleitungs-/Download-Seite
+  in `website/` (Deploy + Release-Checkliste: `website/README.md`), live als `zettelwirtschaft.mr-development.de` (eigener nginx-Container hinter
+  dem zentralen `/opt/caddyserver` auf `musikersuche@musikersuche.org`). Liefert `latest.json` fuer
+  die Update-Pruefung. Die APP selbst bleibt local-first und wird NICHT oeffentlich exponiert.
 
 **Abgeschlossene Review-/Hardening-Phasen** (aus PRs #24-#27 + Phasen 1-6 + Re-Review):
 
@@ -857,6 +866,8 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 | `SPLIT_MAX_PARTS` | `50` | Hoechstens so viele Teile pro Stapel (422 beim Bestaetigen). Hoechstens 500 (`SPLIT_PARTS_HARD_LIMIT`) |
 | `SPLIT_KEEP_SOURCE_DAYS` | `30` | Aufbewahrung von Stapeldatei + Vorschaubildern nach Abschluss; solange ist "rückgängig" moeglich |
 | `SPLIT_THUMBNAIL_WIDTH` | `200` | Breite (px) der Seiten-Vorschaubilder im Editor |
+| `UPDATE_CHECK_ENABLED` | `false` | Opt-in Update-Pruefung (telemetriefrei). Laufzeit-Schalter ist die DB-Einstellung `update_check_enabled`; ohne Aktivierung kein externer Aufruf |
+| `UPDATE_MANIFEST_URL` | `https://zettelwirtschaft.mr-development.de/latest.json` | Manifest-URL fuer die Update-Pruefung |
 
 ### Native-only Settings (config.toml)
 
@@ -864,6 +875,7 @@ Settings-Quellen: ENV > `config.toml` (via `ZETTELWIRTSCHAFT_CONFIG`) > `.env` >
 |---|---|---|
 | `SERVER_HOST` | `0.0.0.0` | HTTP-Bind. `127.0.0.1` = nur lokal (Setup-Checkbox "Nur von diesem PC", keine Firewall-Regel), `0.0.0.0` = LAN (ohne `SERVER_SSL_*` unverschluesselt, INFRA-07) |
 | `SERVER_PORT` | `8080` | HTTP-Port (Native uvicorn). Docker nutzt `FRONTEND_PORT` |
+| `SERVER_SSL_CERTFILE` / `SERVER_SSL_KEYFILE` | `""` | Native-HTTPS: beide gesetzt + vorhanden → uvicorn startet mit TLS (Smartphone-Scan im LAN). Cert via `ssl/generate-self-signed-cert.py` |
 | `CHROMADB_MODE` | `http` | `embedded` = `PersistentClient(path=...)`, `http` = Docker-Container |
 | `CHROMADB_PATH` | (auto: `<ARCHIVE_DIR>/../chromadb`) | Pfad fuer Embedded-Mode |
 | `FRONTEND_DIST_DIR` | `""` | Dev: wenn gesetzt + existiert, mountet das Backend `dist/` als `/`. Im Native-Bundle ignoriert (immer `<install>/frontend`, INFRA-01). Leer = Docker-Pfad |

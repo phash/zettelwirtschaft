@@ -1,0 +1,16 @@
+{
+  "product": "zettelwirtschaft",
+  "latest_version": "1.7.0",
+  "published_at": "2026-10-18",
+  "release_url": "https://zettelwirtschaft.mr-development.de/download.html",
+  "notes": "Neu: Mehrdokument-Scans erkennen und aufteilen (Vorschlag + Editor, rückgängig machbar) und Netzwerkordner mit Zugangsdaten bzw. eigene Scanner-Freigabe für die Windows-Version.",
+  "min_supported": "1.0.0",
+  "downloads": {
+    "source_tar_gz": "https://zettelwirtschaft.mr-development.de/downloads/zettelwirtschaft-1.7.0-source.tar.gz",
+    "source_zip": "https://zettelwirtschaft.mr-development.de/downloads/zettelwirtschaft-1.7.0-source.zip",
+    "backend_image": "https://zettelwirtschaft.mr-development.de/downloads/zettelwirtschaft-backend-1.7.0-docker-image.tar.gz",
+    "frontend_image": "https://zettelwirtschaft.mr-development.de/downloads/zettelwirtschaft-frontend-1.7.0-docker-image.tar.gz",
+    "windows_setup": "https://zettelwirtschaft.mr-development.de/downloads/Zettelwirtschaft-1.7.0-Native-Setup.exe",
+    "windows_update": "https://zettelwirtschaft.mr-development.de/downloads/Zettelwirtschaft-1.7.0-native-update.zip"
+  }
+}

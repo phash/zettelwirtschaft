@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.classList.add('js')</script>
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#221C15">
+<link rel="canonical" href="https://zettelwirtschaft.mr-development.de/anleitungen.html">
+<title>Anleitungen: Zettelwirtschaft installieren &amp; nutzen — Schritt für Schritt</title>
+<meta name="description" content="Schritt-für-Schritt-Anleitungen für Zettelwirtschaft: Installation unter Windows und mit Docker, Smartphone und Netzwerkscanner einrichten, Mehrdokument-Scans aufteilen, E-Mail-Import, Steuerpaket, Backup und Update.">
+<meta property="og:url" content="https://zettelwirtschaft.mr-development.de/anleitungen.html">
+<meta property="og:title" content="Anleitungen — Zettelwirtschaft Schritt für Schritt">
+<meta property="og:description" content="Installation, Scanner, Smartphone, E-Mail-Import, Steuerpaket, Backup und Update — jede Aufgabe als kurze Schritt-für-Schritt-Anleitung.">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://zettelwirtschaft.mr-development.de/assets/og-image.png">
+<meta property="og:site_name" content="Zettelwirtschaft">
+<meta property="og:locale" content="de_DE">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/site.css?v=20261023">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {"@type": "ListItem", "position": 1, "name": "Start", "item": "https://zettelwirtschaft.mr-development.de/"},
+        {"@type": "ListItem", "position": 2, "name": "Anleitungen", "item": "https://zettelwirtschaft.mr-development.de/anleitungen.html"}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#windows",
+      "name": "Zettelwirtschaft unter Windows installieren (Setup.exe)",
+      "description": "Zettelwirtschaft als Windows-Dienst ohne Docker installieren, Ollama einrichten und zum ersten Mal öffnen.",
+      "totalTime": "PT20M",
+      "supply": [{"@type": "HowToSupply", "name": "Windows 10 oder 11, mind. 8 GB RAM, ca. 10 GB freier Speicher"}],
+      "tool": [{"@type": "HowToTool", "name": "Zettelwirtschaft-Native-Setup.exe"}, {"@type": "HowToTool", "name": "Ollama ab Version 0.30.3"}],
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Ollama installieren", "text": "Ollama von ollama.com/download installieren. Es läuft danach als eigener Windows-Dienst."},
+        {"@type": "HowToStep", "position": 2, "name": "Setup herunterladen", "text": "Die Datei Zettelwirtschaft-Native-Setup.exe von der Download-Seite laden und optional die SHA-256-Prüfsumme vergleichen."},
+        {"@type": "HowToStep", "position": 3, "name": "Setup starten", "text": "Setup per Doppelklick starten. Bei der SmartScreen-Warnung „Weitere Informationen“ und dann „Trotzdem ausführen“ wählen."},
+        {"@type": "HowToStep", "position": 4, "name": "Datenordner wählen", "text": "Einen Datenordner wählen (Standard: Dokumente\\Zettelwirtschaft). Hier liegen Datenbank, Archiv und Uploads."},
+        {"@type": "HowToStep", "position": 5, "name": "Netzwerkzugriff festlegen", "text": "Entscheiden, ob die App nur von diesem PC oder auch vom Smartphone im Heim-WLAN erreichbar sein soll. Optional die Scanner-Freigabe einrichten."},
+        {"@type": "HowToStep", "position": 6, "name": "PIN notieren", "text": "Die Abschlussseite zeigt den automatisch erzeugten sechsstelligen PIN. Diesen notieren."},
+        {"@type": "HowToStep", "position": 7, "name": "App öffnen", "text": "Im Browser http://localhost:8080 öffnen und mit dem PIN anmelden. Die KI-Modelle lädt die App beim ersten Start selbst herunter."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#docker",
+      "name": "Zettelwirtschaft mit Docker auf Linux oder NAS installieren",
+      "description": "Den kompletten Stack aus Backend, Frontend, Ollama und ChromaDB mit Docker Compose starten.",
+      "totalTime": "PT15M",
+      "tool": [{"@type": "HowToTool", "name": "Docker Engine mit Compose-Plugin"}],
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Quellpaket laden und entpacken", "text": "zettelwirtschaft-source.tar.gz laden, mit tar xzf entpacken und in den Ordner wechseln."},
+        {"@type": "HowToStep", "position": 2, "name": "Konfiguration anlegen", "text": "cp .env.example .env ausführen und bei Bedarf Port, PIN und Modelle anpassen."},
+        {"@type": "HowToStep", "position": 3, "name": "Stack starten", "text": "docker compose up -d --build ausführen."},
+        {"@type": "HowToStep", "position": 4, "name": "Modelle laden", "text": "Das Backend lädt fehlende Modelle beim Start automatisch. Vorab geht es mit docker compose exec ollama ollama pull."},
+        {"@type": "HowToStep", "position": 5, "name": "Prüfen und öffnen", "text": "http://localhost:8080/api/health aufrufen, danach die Weboberfläche unter http://localhost:8080 öffnen."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#smartphone",
+      "name": "Smartphone als Dokumentenscanner einrichten",
+      "description": "Die Zettelwirtschaft-PWA auf dem Smartphone nutzen, um Belege per Kamera zu erfassen.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "HTTPS einrichten", "text": "Ein selbstsigniertes Zertifikat erzeugen, denn die Kamera funktioniert im Browser nur über HTTPS."},
+        {"@type": "HowToStep", "position": 2, "name": "App im Handy öffnen", "text": "Im selben WLAN https://<rechnername>/ bzw. die konfigurierte Adresse öffnen und die Zertifikatswarnung einmalig bestätigen."},
+        {"@type": "HowToStep", "position": 3, "name": "Zum Startbildschirm hinzufügen", "text": "Im Browser-Menü „Zum Startbildschirm hinzufügen“ wählen."},
+        {"@type": "HowToStep", "position": 4, "name": "Scannen", "text": "Auf „Scan“ tippen, Beleg fotografieren und hochladen."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#netzwerkscanner",
+      "name": "Netzwerkscanner direkt in Zettelwirtschaft scannen lassen",
+      "description": "Mit der Scanner-Freigabe scannt ein Netzwerkscanner per SMB direkt in den Eingangsordner.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Scanner-Freigabe einrichten", "text": "Im Setup „Eingangsordner im Netzwerk freigeben“ wählen oder später Startmenü › Zettelwirtschaft › Scanner-Freigabe einrichten starten."},
+        {"@type": "HowToStep", "position": 2, "name": "Zugangsdaten notieren", "text": "Netzwerkpfad, Benutzer zw-scanner und Passwort werden einmal angezeigt."},
+        {"@type": "HowToStep", "position": 3, "name": "Scanner konfigurieren", "text": "Im Scanner unter „Scan to Network Folder“ (SMB, mindestens SMB2) Pfad, Benutzer und Passwort eintragen."},
+        {"@type": "HowToStep", "position": 4, "name": "Testscan", "text": "Eine Seite scannen. Sie erscheint nach kurzer Zeit im Dashboard."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#aufteilen",
+      "name": "Mehrdokument-Scans aufteilen",
+      "description": "Einen Stapel aus dem Einzugsscanner in einzelne Dokumente zerlegen.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Stapel öffnen", "text": "Unter „Zu prüfen“ › „Stapel zum Aufteilen“ den erkannten Stapel öffnen."},
+        {"@type": "HowToStep", "position": 2, "name": "Schnitte prüfen", "text": "Schnitte zwischen zwei Seiten per Klick setzen oder entfernen. Orange markierte Stellen sind unsicher."},
+        {"@type": "HowToStep", "position": 3, "name": "Seiten weglassen", "text": "Leere Trennblätter bei Bedarf weglassen. Die App verwirft nie automatisch eine Seite."},
+        {"@type": "HowToStep", "position": 4, "name": "Bestätigen", "text": "Aufteilung bestätigen. Jeder Teil wird als eigenes Dokument analysiert und archiviert."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#email",
+      "name": "E-Mail-Postfach an Zettelwirtschaft anbinden",
+      "description": "Rechnungen aus einem IMAP-Postfach automatisch abholen lassen.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Konto anlegen", "text": "Unter „System“ im Abschnitt E-Mail-Konten ein Konto mit IMAP-Server, Port, Benutzer und Passwort anlegen."},
+        {"@type": "HowToStep", "position": 2, "name": "Ordner wählen", "text": "Posteingangs-Ordner und Zielordner für verarbeitete Mails festlegen."},
+        {"@type": "HowToStep", "position": 3, "name": "Zeitplan wählen", "text": "Manuell, Zeitgesteuert (CRON) oder Automatisch (alle 5 Minuten) wählen."},
+        {"@type": "HowToStep", "position": 4, "name": "Testen und abrufen", "text": "Verbindung testen und mit „Jetzt abrufen“ einen ersten Abruf starten."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#steuer",
+      "name": "Steuerbelege als ZIP-Paket exportieren",
+      "description": "Alle steuerrelevanten Belege eines Jahres mit Übersichts-PDF und CSV exportieren.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Seite Steuer öffnen", "text": "In der Navigation „Steuer“ öffnen."},
+        {"@type": "HowToStep", "position": 2, "name": "Jahr wählen", "text": "Steuerjahr und optional einen Ablagebereich wählen."},
+        {"@type": "HowToStep", "position": 3, "name": "Exportieren", "text": "„ZIP exportieren“ klicken. Das Paket enthält Belege, Übersichts-PDF und CSV."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#backup",
+      "name": "Zettelwirtschaft sichern und wiederherstellen",
+      "description": "Datenbank und Dokumente sichern und eine Sicherung zurückspielen.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Sicherung erstellen", "text": "Unter „System“ › Backups „Vollbackup“ wählen, um Datenbank und alle Originaldokumente zu sichern."},
+        {"@type": "HowToStep", "position": 2, "name": "Sicherung auslagern", "text": "Das ZIP aus dem Datenordner auf ein anderes Laufwerk oder eine NAS kopieren."},
+        {"@type": "HowToStep", "position": 3, "name": "Wiederherstellen", "text": "Unter Windows restore-backup.bat mit dem Backup-ZIP als Administrator ausführen."}
+      ]
+    },
+    {
+      "@type": "HowTo",
+      "@id": "https://zettelwirtschaft.mr-development.de/anleitungen.html#update",
+      "name": "Zettelwirtschaft auf eine neue Version aktualisieren",
+      "description": "Update für Windows-Installation und Docker-Stack.",
+      "step": [
+        {"@type": "HowToStep", "position": 1, "name": "Windows: neues Setup starten", "text": "Die neue Setup.exe starten. Sie erkennt die Installation, erstellt ein Backup und behält Daten, Einstellungen und PIN."},
+        {"@type": "HowToStep", "position": 2, "name": "Docker: neues Quellpaket", "text": "Neues Quellpaket entpacken, .env übernehmen und docker compose up -d --build ausführen."},
+        {"@type": "HowToStep", "position": 3, "name": "Prüfen", "text": "Version unter „System“ prüfen. Datenbank-Migrationen laufen automatisch beim Start."}
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<header class="site-head">
+  <div class="wrap site-head__bar">
+    <a class="brand" href="index.html" aria-label="Zettelwirtschaft — Startseite">
+      <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#FBF5E7"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#B23A2E" stroke-width="3"/><rect x="16" y="16" width="32" height="32" rx="3" fill="none" stroke="#B23A2E" stroke-width="1.4" opacity=".55"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#B23A2E" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+      <span><span class="brand__name">Zettelwirtschaft</span><span class="brand__tag">Lokales Dokumentenarchiv</span></span>
+    </a>
+    <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menü öffnen"><span></span></button>
+    <nav class="nav" id="primary-nav" aria-label="Hauptnavigation">
+      <a href="index.html#funktionen">Funktionen</a>
+      <a href="index.html#betrieb">Betrieb</a>
+      <a href="anleitungen.html" aria-current="page">Anleitungen</a>
+      <a href="hilfe.html">FAQ</a>
+      <a href="download.html">Download</a>
+      <a class="btn btn--stamp nav__cta" href="download.html">Herunterladen <span class="ar">→</span></a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="page-hero">
+  <div class="wrap">
+    <nav class="crumbs" aria-label="Brotkrumen"><a href="index.html">Start</a> <span aria-hidden="true">›</span> <span aria-current="page">Anleitungen</span></nav>
+    <span class="kicker">Schritt für Schritt</span>
+    <h1>Anleitungen &amp; <span class="ink-accent">Tutorials</span></h1>
+    <p class="lead">Jede Aufgabe als kurze Anleitung: von der Installation über Scanner und Smartphone bis zu Steuerpaket, Backup und Update. Stand: Version&nbsp;1.7.0.</p>
+  </div>
+</section>
+
+<section class="section section--paper" style="padding-top:1rem;padding-bottom:2rem">
+  <div class="wrap">
+    <h2 class="toc__title">Inhalt</h2>
+    <ol class="toc">
+      <li><a href="#windows"><span>Windows</span>Installation mit Setup.exe</a></li>
+      <li><a href="#docker"><span>Linux · NAS</span>Installation mit Docker</a></li>
+      <li><a href="#erstes-dokument"><span>Start</span>Erstes Dokument erfassen</a></li>
+      <li><a href="#smartphone"><span>Mobil</span>Smartphone als Scanner</a></li>
+      <li><a href="#netzwerkscanner"><span>Scanner</span>Netzwerkscanner &amp; NAS-Ordner</a></li>
+      <li><a href="#aufteilen"><span>Neu in 1.7</span>Mehrdokument-Scans aufteilen</a></li>
+      <li><a href="#email"><span>Import</span>E-Mail-Postfach anbinden</a></li>
+      <li><a href="#steuer"><span>Steuer</span>Steuerpaket exportieren</a></li>
+      <li><a href="#backup"><span>Sicherheit</span>Backup &amp; Wiederherstellung</a></li>
+      <li><a href="#update"><span>Wartung</span>Auf neue Version aktualisieren</a></li>
+    </ol>
+  </div>
+</section>
+
+<section class="section guides">
+  <div class="wrap guides__wrap">
+
+    <!-- 1 WINDOWS -->
+    <article class="guide" id="windows">
+      <header class="guide__head">
+        <span class="guide__no">A.01</span>
+        <h2>Zettelwirtschaft unter Windows installieren</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Ollama installieren, <code class="inline">Setup.exe</code> ausführen, PIN notieren, <code class="inline">http://localhost:8080</code> öffnen. Kein Docker nötig.</p>
+        <ul class="guide__meta"><li>ca. 20&nbsp;Min. + Modell-Download</li><li>Windows&nbsp;10/11</li><li>8&nbsp;GB RAM · 10&nbsp;GB frei</li></ul>
+      </header>
+      <ol class="steps">
+        <li><h3>Ollama installieren</h3><p>Lade Ollama von <a href="https://ollama.com/download" rel="noopener noreferrer">ollama.com/download</a> und installiere es. Benötigt wird <b>Version 0.30.3 oder neuer</b>. Ollama führt die KI-Modelle lokal aus und läuft als eigener Dienst.</p></li>
+        <li><h3>Setup herunterladen</h3><p>Lade <code class="inline">Zettelwirtschaft-1.7.0-Native-Setup.exe</code> von der <a href="download.html#dateien">Download-Seite</a>. Optional: Prüfsumme in PowerShell mit <code class="inline">Get-FileHash .\Zettelwirtschaft-1.7.0-Native-Setup.exe</code> vergleichen.</p></li>
+        <li><h3>Setup starten</h3><p>Doppelklick auf die Datei. Windows zeigt eventuell „Der Computer wurde durch Windows geschützt“, weil der Installer nicht signiert ist. Klicke auf <b>Weitere Informationen</b> und dann <b>Trotzdem ausführen</b>.</p></li>
+        <li><h3>Datenordner wählen</h3><p>Standard ist <code class="inline">Dokumente\Zettelwirtschaft</code>. Hier liegen Datenbank, Archiv und Uploads. Ein externes Laufwerk oder ein Cloud-Sync-Ordner ist ebenfalls möglich.</p></li>
+        <li><h3>Netzwerkzugriff festlegen</h3><p>Soll die App nur auf diesem PC laufen, setze den Haken <b>„Nur von diesem PC erreichbar“</b>. Für Smartphone-Scan und andere Geräte im Heim-WLAN lässt du ihn weg. Optional richtest du hier gleich die <a href="#netzwerkscanner">Scanner-Freigabe</a> ein.</p></li>
+        <li><h3>PIN notieren</h3><p>Die Abschlussseite zeigt einen <b>zufälligen sechsstelligen PIN</b>. Notiere ihn: Die App fragt beim Öffnen danach.</p></li>
+        <li><h3>App öffnen</h3><p>Öffne <code class="inline">http://localhost:8080</code>. Beim ersten Start lädt die App die KI-Modelle selbst herunter (je nach Hardware zusammen ca. 5–10&nbsp;GB). Den Fortschritt zeigt <b>System</b> → Systemstatus. Eine Willkommens-Tour erklärt die wichtigsten Bereiche.</p></li>
+      </ol>
+      <p class="note"><b>Ergebnis:</b> Der Dienst <code class="inline">ZettelwirtschaftBackend</code> startet ab jetzt automatisch mit Windows. Steuern lässt er sich über <code class="inline">services.msc</code>. Logs liegen im Datenordner.</p>
+    </article>
+
+    <!-- 2 DOCKER -->
+    <article class="guide" id="docker">
+      <header class="guide__head">
+        <span class="guide__no">A.02</span>
+        <h2>Installation mit Docker auf Linux, Server oder NAS</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Quellpaket entpacken, <code class="inline">.env</code> anlegen, <code class="inline">docker compose up -d --build</code>. Backend, Frontend, Ollama und ChromaDB laufen als Container.</p>
+        <ul class="guide__meta"><li>ca. 15&nbsp;Min. + Modell-Download</li><li>Docker Engine + Compose</li><li>linux/amd64</li></ul>
+      </header>
+      <ol class="steps">
+        <li><h3>Quellpaket laden und entpacken</h3>
+<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz</b>
+<span class="p">$</span> <b>cd zettelwirtschaft-1.7.0</b></pre></li>
+        <li><h3>Konfiguration anlegen</h3>
+<pre class="code"><span class="p">$</span> <b>cp .env.example .env</b>
+<span class="c"># wichtig: PIN_ENABLED=true und eigenen PIN_CODE setzen</span></pre>
+          <p>Die Datei <code class="inline">.env.example</code> erklärt jede Einstellung. Port der Weboberfläche: <code class="inline">FRONTEND_PORT</code> (Standard 8080).</p></li>
+        <li><h3>Stack starten</h3>
+<pre class="code"><span class="p">$</span> <b>docker compose up -d --build</b></pre></li>
+        <li><h3>KI-Modelle laden</h3><p>Das Backend lädt fehlende Modelle beim Start automatisch. Den Download kannst du auch vorab anstoßen:</p>
+<pre class="code"><span class="p">$</span> <b>docker compose exec ollama ollama pull gemma4:e2b-it-qat</b>
+<span class="p">$</span> <b>docker compose exec ollama ollama pull qwen3-embedding:4b</b></pre></li>
+        <li><h3>Prüfen und öffnen</h3><p>Health-Check: <code class="inline">curl http://localhost:8080/api/health</code>. Danach die Weboberfläche unter <code class="inline">http://&lt;server&gt;:8080</code> öffnen. Logs: <code class="inline">docker compose logs -f backend</code>.</p></li>
+      </ol>
+      <p class="note"><b>Ohne lokalen Build:</b> Die fertigen Images von der <a href="download.html">Download-Seite</a> mit <code class="inline">docker load -i …</code> laden und per <code class="inline">docker-compose.override.yml</code> einbinden (Weg&nbsp;B auf der Download-Seite).</p>
+    </article>
+
+    <!-- 3 ERSTES DOKUMENT -->
+    <article class="guide" id="erstes-dokument">
+      <header class="guide__head">
+        <span class="guide__no">B.01</span>
+        <h2>Das erste Dokument erfassen und prüfen</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Datei unter „Upload“ ablegen, ca. 40&nbsp;Sekunden warten (CPU), Ergebnis im Archiv prüfen. Bei Unsicherheit fragt die KI unter „Zu prüfen“ nach.</p>
+      </header>
+      <ol class="steps">
+        <li><h3>Datei hochladen</h3><p>Öffne <b>Upload</b> und ziehe eine Rechnung per Drag &amp; Drop ins Fenster. Erlaubt sind PDF, JPG, PNG, TIFF und BMP bis 50&nbsp;MB pro Datei.</p></li>
+        <li><h3>Analyse abwarten</h3><p>Die App liest den Text per OCR und lässt das lokale Sprachmodell Typ, Datum, Betrag, Aussteller, Steuer- und Garantieangaben bestimmen. Auf reiner CPU dauert das etwa 40&nbsp;Sekunden, mit NVIDIA-GPU wenige Sekunden.</p></li>
+        <li><h3>Ergebnis ansehen</h3><p>Das Dokument erscheint unter <b>Dokumente</b>. In der Detailansicht siehst du Vorschau und erkannte Felder. Falsche Werte korrigierst du direkt im Formular.</p></li>
+        <li><h3>Rückfragen beantworten</h3><p>War die KI unsicher, liegt das Dokument unter <b>Zu prüfen</b>. Beantworte die Rückfrage oder bestätige mit „So übernehmen“. Wiederholte Korrekturen merkt sich die App und wendet sie ab dem dritten Mal automatisch an.</p></li>
+      </ol>
+      <p class="note"><b>Weitere Eingänge:</b> Watch-Ordner (Datei ablegen, wird automatisch erkannt), <a href="#smartphone">Smartphone-Scan</a>, <a href="#netzwerkscanner">Netzwerkscanner</a> und <a href="#email">E-Mail-Import</a>.</p>
+    </article>
+
+    <!-- 4 SMARTPHONE -->
+    <article class="guide" id="smartphone">
+      <header class="guide__head">
+        <span class="guide__no">B.02</span>
+        <h2>Smartphone als Dokumentenscanner einrichten</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Die Kamera funktioniert im Browser nur über HTTPS. Einmal ein selbstsigniertes Zertifikat erzeugen, App im Handy öffnen, zum Startbildschirm hinzufügen.</p>
+        <ul class="guide__meta"><li>ca. 10&nbsp;Min.</li><li>gleiches WLAN</li><li>kein App-Store</li></ul>
+      </header>
+      <ol class="steps">
+        <li><h3>HTTPS einrichten</h3>
+          <p><b>Docker:</b></p>
+<pre class="code"><span class="p">$</span> <b>bash ssl/generate-cert.sh</b>
+<span class="p">$</span> <b>docker compose -f docker-compose.yml -f docker-compose.ssl.yml up -d</b></pre>
+          <p><b>Windows:</b> Zertifikat mit dem gebündelten Python erzeugen (<code class="inline">&lt;Programmordner&gt;\bin\python.exe ssl\generate-self-signed-cert.py</code>), dann in <code class="inline">config.toml</code> <code class="inline">SERVER_SSL_CERTFILE</code> und <code class="inline">SERVER_SSL_KEYFILE</code> setzen und den Dienst neu starten.</p></li>
+        <li><h3>App im Handy öffnen</h3><p>Im selben WLAN <code class="inline">https://&lt;rechnername-oder-IP&gt;</code> aufrufen (Docker: Port 443, Windows: konfigurierter Port). Die Zertifikatswarnung einmalig bestätigen („Erweitert“ → „Trotzdem fortfahren“). Im Heimnetz ist das normal.</p></li>
+        <li><h3>Zum Startbildschirm hinzufügen</h3><p>Im Browser-Menü <b>„Zum Startbildschirm hinzufügen“</b> wählen. Die App startet dann wie eine normale App.</p></li>
+        <li><h3>Beleg scannen</h3><p>Auf <b>Scan</b> tippen, Beleg fotografieren, Vorschau prüfen und hochladen. Die Analyse läuft auf deinem Rechner, nicht auf dem Handy.</p></li>
+      </ol>
+      <p class="note"><b>Ohne HTTPS:</b> Fotos mit der normalen Kamera-App aufnehmen und über <b>Upload</b> hochladen. Das funktioniert auch über <code class="inline">http://</code>.</p>
+    </article>
+
+    <!-- 5 NETZWERKSCANNER -->
+    <article class="guide" id="netzwerkscanner">
+      <header class="guide__head">
+        <span class="guide__no">B.03</span>
+        <h2>Netzwerkscanner und NAS-Ordner anbinden</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Windows-Version: Scanner-Freigabe einrichten und Pfad, Benutzer und Passwort im Scanner eintragen („Scan to Network Folder“). Alternativ einen NAS-Ordner als Eingangsordner nutzen.</p>
+      </header>
+      <h3 class="guide__sub">Variante 1 — Scanner scannt direkt auf den PC</h3>
+      <ol class="steps">
+        <li><h3>Freigabe einrichten</h3><p>Im Setup die Option <b>„Eingangsordner im Netzwerk freigeben“</b> wählen oder später <b>Startmenü › Zettelwirtschaft › Scanner-Freigabe einrichten</b> starten (Administratorrechte nötig).</p></li>
+        <li><h3>Zugangsdaten notieren</h3><p>Angezeigt werden der Pfad <code class="inline">\\&lt;PC&gt;\Zettelwirtschaft-Eingang</code>, der Benutzer <code class="inline">zw-scanner</code> und ein Passwort. Das Passwort erscheint nur einmal.</p></li>
+        <li><h3>Scanner konfigurieren</h3><p>Im Scanner-Menü bzw. Web-Interface unter <b>„Scan to Network Folder“ / SMB</b> Pfad, Benutzer und Passwort eintragen. Der Scanner braucht mindestens SMB2.</p></li>
+        <li><h3>Testscan</h3><p>Eine Seite scannen. Sie erscheint nach kurzer Zeit im Dashboard und wird verarbeitet.</p></li>
+      </ol>
+      <p class="note"><b>Sicherheit:</b> Das Scanner-Konto darf nur in den Eingangsordner schreiben. Die Firewall öffnet SMB (TCP&nbsp;445) im privaten Netz für den ganzen PC; mit <code class="inline">-ScannerAddress</code> nur für die Adresse des Scanners. Die Zugangsdaten nur im Scanner hinterlegen.</p>
+      <h3 class="guide__sub">Variante 2 — Scanner speichert auf der NAS</h3>
+      <ol class="steps">
+        <li><h3>Ordner eintragen</h3><p>Unter <b>System</b> → Ordner den Eingangsordner als UNC-Pfad eintragen, z.&nbsp;B. <code class="inline">\\nas\scan</code>, mit Benutzer und Passwort der Freigabe. Laufwerksbuchstaben wie <code class="inline">V:</code> sieht der Hintergrunddienst nicht.</p></li>
+        <li><h3>Verbindung testen</h3><p><b>„Verbindung testen“</b> klicken. Die App prüft den Ordner regelmäßig (Standard alle 30&nbsp;Sekunden) und verbindet sich nach einem NAS-Neustart selbst wieder.</p></li>
+      </ol>
+    </article>
+
+    <!-- 6 AUFTEILEN -->
+    <article class="guide" id="aufteilen">
+      <header class="guide__head">
+        <span class="guide__no">B.04</span>
+        <h2>Mehrdokument-Scans aufteilen</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Legt der Einzugsscanner mehrere Briefe in eine PDF, schlägt die App Schnitte vor. Du prüfst im Editor und bestätigst. Ohne deine Bestätigung wird nichts aufgeteilt.</p>
+        <ul class="guide__meta"><li>ab Version 1.7.0</li><li>PDFs ab 3 Seiten</li><li>30 Tage rückgängig</li></ul>
+      </header>
+      <ol class="steps">
+        <li><h3>Stapel öffnen</h3><p>Erkennt die App mehrere Dokumente oder ist sie unsicher, erscheint der Stapel unter <b>Zu prüfen › Stapel zum Aufteilen</b>, mit Benachrichtigung.</p></li>
+        <li><h3>Schnitte prüfen</h3><p>Im Editor siehst du alle Seiten als Vorschaubilder. Schnitte setzt oder entfernst du per Klick zwischen zwei Seiten. <b>Orange</b> Stellen sind unsicher, die Begründung steht daneben (z.&nbsp;B. „Seite 1 von 2“, neue Anschrift, Trennblatt).</p></li>
+        <li><h3>Seiten weglassen</h3><p>Leere Trennblätter kannst du weglassen. Die App verwirft nie automatisch eine Seite.</p></li>
+        <li><h3>Bestätigen</h3><p>Nach dem Bestätigen wird jeder Teil als eigenes Dokument analysiert, abgelegt und durchsuchbar.</p></li>
+      </ol>
+      <p class="note"><b>Weitere Wege:</b> Beim Upload die Option „Enthält mehrere Dokumente“ wählen, oder ein archiviertes Dokument in der Detailansicht über <b>„Dokument aufteilen“</b> zerlegen. <b>„Aufteilung rückgängig“</b> geht, solange kein Teil bearbeitet wurde. Einstellungen: <b>System</b> → Verarbeitung.</p>
+    </article>
+
+    <!-- 7 EMAIL -->
+    <article class="guide" id="email">
+      <header class="guide__head">
+        <span class="guide__no">B.05</span>
+        <h2>E-Mail-Postfach anbinden</h2>
+        <p class="guide__tldr"><b>Kurz:</b> IMAP-Konto unter „System“ anlegen. Die App holt ungelesene Mails ab, die lokale KI prüft die Relevanz, Anhänge werden zu Dokumenten.</p>
+      </header>
+      <ol class="steps">
+        <li><h3>Konto anlegen</h3><p>Unter <b>System</b> im Abschnitt <b>E-Mail-Konten</b> ein neues Konto anlegen: IMAP-Server, Port (meist 993 mit SSL), Benutzername und Passwort. Das Passwort wird verschlüsselt gespeichert.</p></li>
+        <li><h3>Ordner wählen</h3><p>Posteingangs-Ordner (z.&nbsp;B. <code class="inline">INBOX</code> oder ein eigener Ordner „Rechnungen“) und Zielordner für verarbeitete Mails festlegen. Verarbeitete Mails werden dorthin verschoben.</p></li>
+        <li><h3>Zeitplan wählen</h3><p><b>Manuell</b> (nur auf Knopfdruck), <b>Zeitgesteuert</b> (CRON-Ausdruck, z.&nbsp;B. <code class="inline">0 7 * * *</code> für täglich 7&nbsp;Uhr) oder <b>Automatisch</b> (alle 5&nbsp;Minuten).</p></li>
+        <li><h3>Testen und abrufen</h3><p>Verbindung testen, dann <b>„Jetzt abrufen“</b>. Der Verlauf zeigt, welche Mails als relevant erkannt wurden.</p></li>
+      </ol>
+      <p class="note"><b>Tipp:</b> Nur <b>ungelesene</b> Mails werden abgerufen. Mit einer Postfach-Regel, die Rechnungen in einen eigenen Ordner sortiert, sieht die App nur, was sie sehen soll. IMAP-Server mit selbstsigniertem Zertifikat werden abgelehnt.</p>
+    </article>
+
+    <!-- 8 STEUER -->
+    <article class="guide" id="steuer">
+      <header class="guide__head">
+        <span class="guide__no">C.01</span>
+        <h2>Steuerpaket für die Steuererklärung exportieren</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Seite „Steuer“ öffnen, Jahr wählen, „ZIP exportieren“. Das Paket enthält alle steuerrelevanten Belege, eine Übersichts-PDF und eine CSV-Liste.</p>
+      </header>
+      <ol class="steps">
+        <li><h3>Steuerrelevanz prüfen</h3><p>In der Dokumentenliste ist die Steuerrelevanz direkt sichtbar und per Klick änderbar. Die KI schlägt Kategorien vor, z.&nbsp;B. Werbungskosten, Handwerkerleistungen oder haushaltsnahe Dienstleistungen.</p></li>
+        <li><h3>Jahr wählen</h3><p>Seite <b>Steuer</b> öffnen, Steuerjahr wählen und bei mehreren Ablagebereichen optional einen Bereich (z.&nbsp;B. nur „Privat“).</p></li>
+        <li><h3>Exportieren</h3><p><b>„ZIP exportieren“</b> klicken. Die Summen enthalten nur Euro-Beträge. Belege in anderen Währungen werden gesondert aufgeführt.</p></li>
+      </ol>
+      <p class="note"><b>Hinweis:</b> Zettelwirtschaft ersetzt keine Steuerberatung. Die Kategorien sind Vorschläge der KI und vor der Abgabe zu prüfen.</p>
+    </article>
+
+    <!-- 9 BACKUP -->
+    <article class="guide" id="backup">
+      <header class="guide__head">
+        <span class="guide__no">C.02</span>
+        <h2>Backup und Wiederherstellung</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Täglich läuft automatisch ein Datenbank-Backup. Für Datenbank <em>und</em> Dokumente „Vollbackup“ wählen und das ZIP auf ein anderes Laufwerk kopieren.</p>
+      </header>
+      <ol class="steps">
+        <li><h3>Vollbackup erstellen</h3><p>Unter <b>System</b> → Backups: <b>„Backup (DB)“</b> sichert die Datenbank, <b>„Vollbackup“</b> zusätzlich alle Originaldokumente. Unter Windows geht es auch offline über Startmenü „Backup jetzt“ bzw. <code class="inline">backup.bat /full</code>.</p></li>
+        <li><h3>Sicherung auslagern</h3><p>Die ZIPs liegen im Datenordner unter <code class="inline">backups</code>. Kopiere sie regelmäßig auf eine externe Platte oder NAS. Ein Backup auf derselben Platte schützt nicht vor einem Plattendefekt.</p></li>
+        <li><h3>Wiederherstellen (Windows)</h3><p><code class="inline">restore-backup.bat &lt;backup.zip&gt;</code> als Administrator ausführen. Das Skript stoppt den Dienst, spielt Datenbank (und bei Vollbackups die Dokumente) zurück und startet den Dienst neu.</p></li>
+        <li><h3>Suchindex neu aufbauen</h3><p>Nach einer Wiederherstellung unter <b>System</b> → Wartung „Vektor-Index aufbauen“ starten, damit der KI-Assistent wieder alle Dokumente findet.</p></li>
+      </ol>
+      <p class="note"><b>Docker:</b> Den Ordner <code class="inline">data/</code> sichern (Datenbank, Archiv, Backups). Geheimnisse aus der <code class="inline">.env</code> landen bewusst nicht im Backup-ZIP — die <code class="inline">.env</code> separat sicher aufbewahren.</p>
+    </article>
+
+    <!-- 10 UPDATE -->
+    <article class="guide" id="update">
+      <header class="guide__head">
+        <span class="guide__no">C.03</span>
+        <h2>Auf eine neue Version aktualisieren</h2>
+        <p class="guide__tldr"><b>Kurz:</b> Windows: neue Setup.exe starten — Backup, Daten, Einstellungen und PIN bleiben. Docker: neues Quellpaket, <code class="inline">docker compose up -d --build</code>. Migrationen laufen automatisch.</p>
+      </header>
+      <ol class="steps">
+        <li><h3>Windows: Setup ausführen</h3><p>Neue <code class="inline">Native-Setup.exe</code> starten. Sie erkennt die bestehende Installation, erstellt vorher eine Sicherung nach <code class="inline">Dokumente\Zettelwirtschaft-Backups</code> und aktualisiert die Programmdateien. Alternativ: Update-Paket in einen Temp-Ordner entpacken und <code class="inline">update-wizard.bat</code> als Administrator starten.</p></li>
+        <li><h3>Docker: Stack neu bauen</h3>
+<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz</b>
+<span class="p">$</span> <b>cp ../zettelwirtschaft-alt/.env zettelwirtschaft-1.7.0/</b>
+<span class="p">$</span> <b>cd zettelwirtschaft-1.7.0 &amp;&amp; docker compose up -d --build</b></pre>
+          <p>Den <code class="inline">data/</code>-Ordner übernehmen oder vorher sichern. Unter Windows mit Docker erledigt das <code class="inline">update.bat</code> inklusive Sicherung.</p></li>
+        <li><h3>Version prüfen</h3><p>Unter <b>System</b> steht die installierte Version. Wer will, aktiviert dort die <b>Update-Prüfung</b>: Sie fragt nur eine Versionsdatei ab, ohne Nutzungs- oder Dokumentdaten, und ist standardmäßig aus.</p></li>
+      </ol>
+    </article>
+
+    <div class="guide__end">
+      <h2>Nicht fündig geworden?</h2>
+      <p>Kurze Antworten auf häufige Fragen stehen in der <a href="hilfe.html">FAQ</a>. Technische Details, Konfiguration und Changelog findest du im <a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">GitHub-Repository</a>.</p>
+      <div style="display:flex;gap:.9rem;flex-wrap:wrap;margin-top:1.4rem">
+        <a class="btn btn--stamp" href="download.html">Zum Download <span class="ar">→</span></a>
+        <a class="btn btn--ghost" href="hilfe.html">Zur FAQ</a>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand">
+          <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#1E342D"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#D8B877" stroke-width="3"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#D8B877" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+          <span class="brand__name" style="font-family:var(--display);font-size:1.3rem">Zettelwirtschaft</span>
+        </div>
+        <p>Lokales Dokumentenmanagement für Privathaushalte. Rechnungen, Belege und Dokumente — automatisch geordnet, sicher zuhause.</p>
+        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.7.0 · AGPL-3.0</div>
+      </div>
+      <div>
+        <h4>Seiten</h4>
+        <ul>
+          <li><a href="index.html#funktionen">Funktionen</a></li>
+          <li><a href="anleitungen.html">Anleitungen</a></li>
+          <li><a href="hilfe.html">FAQ</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Rechtliches</h4>
+        <ul>
+          <li><a href="impressum.html">Impressum</a></li>
+          <li><a href="datenschutz.html">Datenschutz</a></li>
+          <li><a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Quellcode (GitHub)</a></li>
+          <li><a href="https://www.gnu.org/licenses/agpl-3.0.de.html" rel="noopener noreferrer">AGPL-3.0 Lizenz</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-note">
+      <span>© <span data-year>2026</span> Manuel Rödig · 85405 Nandlstadt</span>
+      <span>Kein Cloud-Zwang · Keine Telemetrie · 100&nbsp;% lokal</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

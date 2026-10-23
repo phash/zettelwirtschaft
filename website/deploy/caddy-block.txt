@@ -1,0 +1,29 @@
+
+# ============================================
+# zettelwirtschaft.mr-development.de — Zettelwirtschaft Praesentations-/Download-Website (statisch)
+# Marketing + Download-Seite, ausgeliefert vom nginx-Container `zettelwirtschaft-web`.
+# Die ANWENDUNG selbst ist local-first/on-premise und wird hier bewusst NICHT exponiert.
+# ============================================
+zettelwirtschaft.mr-development.de {
+	encode gzip zstd br
+	import security_headers
+
+	# Reine Lese-/Download-Seite: kleines Request-Body-Limit (keine Uploads).
+	request_body {
+		max_size 4MB
+	}
+
+	# /.well-known vor dotfile_protection (ACME / kuenftige Beduerfnisse)
+	handle /.well-known/* {
+		reverse_proxy zettelwirtschaft-web:80
+	}
+
+	import dotfile_protection
+
+	handle {
+		# Selbst-gehostete Assets/Fonts, keine externen Quellen -> strenge CSP.
+		# script-src-Hash deckt das eine Inline-Script (classList.add('js')) ab.
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-Du+OJKJSbdUgz5nrHeWWINvez6XKDDU/tyj/5c2uvwo='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+		reverse_proxy zettelwirtschaft-web:80
+	}
+}

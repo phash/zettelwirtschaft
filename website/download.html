@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.classList.add('js')</script>
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#221C15">
+<link rel="canonical" href="https://zettelwirtschaft.mr-development.de/download.html">
+<title>Download Zettelwirtschaft 1.7.0 — Windows-Setup &amp; Docker (kostenlos)</title>
+<meta name="description" content="Zettelwirtschaft 1.7.0 kostenlos herunterladen: Windows-Setup (ohne Docker), Docker-Images für Linux/NAS, Quellpaket und SHA-256-Prüfsummen. Mit Schritt-für-Schritt-Installationsanleitung.">
+<meta property="og:url" content="https://zettelwirtschaft.mr-development.de/download.html">
+<meta property="og:title" content="Download — Zettelwirtschaft 1.7.0">
+<meta property="og:description" content="Windows-Setup, Docker-Images und Quellpaket — kostenlos, Open Source, ohne Registrierung.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://zettelwirtschaft.mr-development.de/assets/og-image.png">
+<meta property="og:site_name" content="Zettelwirtschaft">
+<meta property="og:locale" content="de_DE">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {"@type": "ListItem", "position": 1, "name": "Start", "item": "https://zettelwirtschaft.mr-development.de/"},
+        {"@type": "ListItem", "position": 2, "name": "Download", "item": "https://zettelwirtschaft.mr-development.de/download.html"}
+      ]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://zettelwirtschaft.mr-development.de/#software",
+      "name": "Zettelwirtschaft",
+      "softwareVersion": "1.7.0",
+      "datePublished": "2026-10-18",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Windows 10, Windows 11, Linux (Docker)",
+      "downloadUrl": [
+        "https://zettelwirtschaft.mr-development.de/downloads/Zettelwirtschaft-1.7.0-Native-Setup.exe",
+        "https://zettelwirtschaft.mr-development.de/downloads/zettelwirtschaft-1.7.0-source.tar.gz"
+      ],
+      "fileSize": "168 MB",
+      "isAccessibleForFree": true,
+      "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+      "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"},
+      "releaseNotes": "https://github.com/phash/zettelwirtschaft#v170"
+    }
+  ]
+}
+</script>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/site.css?v=20261023">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<header class="site-head">
+  <div class="wrap site-head__bar">
+    <a class="brand" href="index.html" aria-label="Zettelwirtschaft — Startseite">
+      <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#FBF5E7"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#B23A2E" stroke-width="3"/><rect x="16" y="16" width="32" height="32" rx="3" fill="none" stroke="#B23A2E" stroke-width="1.4" opacity=".55"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#B23A2E" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+      <span><span class="brand__name">Zettelwirtschaft</span><span class="brand__tag">Lokales Dokumentenarchiv</span></span>
+    </a>
+    <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menü öffnen"><span></span></button>
+    <nav class="nav" id="primary-nav" aria-label="Hauptnavigation">
+      <a href="index.html#funktionen">Funktionen</a>
+      <a href="index.html#betrieb">Betrieb</a>
+      <a href="anleitungen.html">Anleitungen</a>
+      <a href="hilfe.html">FAQ</a>
+      <a href="download.html" aria-current="page">Download</a>
+      <a class="btn btn--stamp nav__cta" href="#dateien">Direkt laden <span class="ar">↓</span></a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="page-hero">
+  <div class="wrap">
+    <nav class="crumbs" aria-label="Brotkrumen"><a href="index.html">Start</a> <span aria-hidden="true">›</span> <span aria-current="page">Download</span></nav>
+    <span class="kicker">Release 1.7.0 · 18.10.2026</span>
+    <h1>Download <span class="ink-accent">1.7.0</span></h1>
+    <p class="lead">Windows-Setup ohne Docker, gebrauchsfertige Docker-Images für Linux und NAS, das Quellpaket und SHA-256-Prüfsummen. Kostenlos, kein Konto, keine Registrierung.</p>
+    <p class="note" style="max-width:62ch"><b>Welche Datei?</b> Windows-PC → <a href="#dateien">Windows-Setup</a> (<a href="anleitungen.html#windows">Anleitung</a>). Linux, Server oder NAS → <a href="#dateien">Quellpaket</a> (<a href="anleitungen.html#docker">Anleitung</a>). Bestehende Windows-Installation → einfach das neue Setup starten.</p>
+    <p style="margin-top:1rem"><b>Neu in 1.7.0:</b> Mehrdokument-Scans erkennen und aufteilen, Netzwerkordner mit Zugangsdaten und eigene Scanner-Freigabe für die Windows-Version.</p>
+    <div style="display:flex;gap:.8rem;flex-wrap:wrap;margin-top:1.4rem">
+      <span class="stamp"><span class="dot"></span>v1.7.0</span>
+      <span class="stamp stamp--green">AGPL-3.0</span>
+      <span class="stamp stamp--green">Windows&nbsp;10/11</span>
+      <span class="stamp stamp--green">linux/amd64</span>
+    </div>
+  </div>
+</section>
+
+<!-- DOWNLOADS -->
+<section class="section" id="dateien" style="padding-top:1rem">
+  <div class="wrap">
+    <div class="dl-grid">
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--gold">SRC<br>TGZ</div>
+        <div class="dl__main">
+          <h3>Quellpaket &amp; Compose-Stack</h3>
+          <p>Vollständiges Projekt für <code class="inline">docker compose up -d --build</code>. Empfohlen für die meisten Installationen.</p>
+          <div class="meta"><span>tar.gz</span><span>1,2&nbsp;MB</span><span>enthält docker-compose.yml</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--stamp" href="downloads/zettelwirtschaft-1.7.0-source.tar.gz" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--gold">SRC<br>ZIP</div>
+        <div class="dl__main">
+          <h3>Quellpaket (ZIP)</h3>
+          <p>Identischer Inhalt als ZIP — praktisch unter Windows ohne tar-Werkzeug.</p>
+          <div class="meta"><span>zip</span><span>1,4&nbsp;MB</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--ghost" href="downloads/zettelwirtschaft-1.7.0-source.zip" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--blue">IMG<br>API</div>
+        <div class="dl__main">
+          <h3>Backend Docker-Image</h3>
+          <p>Vorgefertigtes Backend-Image (Python&nbsp;3.12, FastAPI, Tesseract, poppler) zum direkten <code class="inline">docker load</code> — kein Build nötig.</p>
+          <div class="meta"><span>tar.gz</span><span>168&nbsp;MB</span><span>zettelwirtschaft-backend:1.7.0</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--ghost" href="downloads/zettelwirtschaft-backend-1.7.0-docker-image.tar.gz" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--blue">IMG<br>WEB</div>
+        <div class="dl__main">
+          <h3>Frontend Docker-Image</h3>
+          <p>Vorgefertigtes Frontend-Image (Vue&nbsp;3-Build hinter nginx, non-root, Port&nbsp;8080).</p>
+          <div class="meta"><span>tar.gz</span><span>27&nbsp;MB</span><span>zettelwirtschaft-frontend:1.7.0</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--ghost" href="downloads/zettelwirtschaft-frontend-1.7.0-docker-image.tar.gz" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--blue">WIN<br>EXE</div>
+        <div class="dl__main">
+          <h3>Windows-Setup (Native)</h3>
+          <p>Setup.exe installiert Zettelwirtschaft als Windows-Dienst (NSSM) — ohne Docker. ChromaDB embedded, Tesseract &amp; poppler gebündelt.</p>
+          <div class="meta"><span>exe</span><span>168&nbsp;MB</span><span>Windows&nbsp;10/11</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--stamp" href="downloads/Zettelwirtschaft-1.7.0-Native-Setup.exe" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon dl__icon--blue">WIN<br>UPD</div>
+        <div class="dl__main">
+          <h3>Windows-Update-Paket (Native)</h3>
+          <p>Update für bestehende Native-Installationen: in TEMP entpacken, <code class="inline">update-wizard.bat</code> als Admin starten (Backup → Dienst stoppen → Dateien → Migrationen → Start).</p>
+          <div class="meta"><span>zip</span><span>173&nbsp;MB</span><span>update-wizard</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--ghost" href="downloads/Zettelwirtschaft-1.7.0-native-update.zip" download>Laden <span class="ar">↓</span></a></div>
+      </article>
+
+      <article class="dl reveal">
+        <div class="dl__icon">SHA<br>256</div>
+        <div class="dl__main">
+          <h3>Prüfsummen</h3>
+          <p>SHA-256 aller Artefakte. Vor dem Entpacken mit <code class="inline">sha256sum -c</code> verifizieren.</p>
+          <div class="meta"><span>SHA256SUMS.txt</span></div>
+        </div>
+        <div class="dl__action"><a class="btn btn--ghost" href="downloads/SHA256SUMS.txt">Ansehen</a></div>
+      </article>
+
+    </div>
+
+    <p class="note"><b>Windows-Nutzer:</b> Die <b>Setup.exe</b> ist der einfachste Weg — Hintergrund­dienst (kein Docker), ChromaDB embedded. Beim ersten Start zeigt Windows ggf. eine SmartScreen-Warnung („Weitere Informationen“ → „Trotzdem ausführen“), da der Installer nicht signiert ist — bei Open-Source normal. Für den Smartphone-Scan im LAN siehe <a href="anleitungen.html#smartphone">Anleitung Smartphone-Scan</a>.</p>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section class="section section--paper">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Installation</span>
+      <h2>Zwei Wege zum laufenden System.</h2>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.6rem;margin-top:2.2rem">
+      <div class="reveal">
+        <h3>Weg&nbsp;A — Quellpaket (empfohlen)</h3>
+        <p>Baut die Images lokal und startet den kompletten Stack.</p>
+        <pre class="code"><span class="c"># Quellpaket entpacken</span>
+<span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz</b>
+<span class="p">$</span> <b>cd zettelwirtschaft-1.7.0</b>
+
+<span class="c"># Konfiguration anlegen</span>
+<span class="p">$</span> <b>cp .env.example .env</b>
+
+<span class="c"># Stack starten (baut Backend + Frontend)</span>
+<span class="p">$</span> <b>docker compose up -d --build</b>
+
+<span class="c"># LLM-Modelle einmalig laden</span>
+<span class="p">$</span> <b>docker compose exec ollama ollama pull gemma4:e2b-it-qat</b>
+<span class="p">$</span> <b>docker compose exec ollama ollama pull qwen3-embedding:4b</b></pre>
+      </div>
+
+      <div class="reveal" data-d="1">
+        <h3>Weg&nbsp;B — Vorgefertigte Images</h3>
+        <p>Ohne lokalen Build — die geladenen Images direkt verwenden.</p>
+        <pre class="code"><span class="c"># Images laden</span>
+<span class="p">$</span> <b>docker load -i zettelwirtschaft-backend-1.7.0-docker-image.tar.gz</b>
+<span class="p">$</span> <b>docker load -i zettelwirtschaft-frontend-1.7.0-docker-image.tar.gz</b>
+
+<span class="c"># im entpackten Quellordner: Build durch Image ersetzen</span>
+<span class="c"># docker-compose.override.yml anlegen:</span>
+<b>services:
+  backend:
+    build: !reset null
+    image: zettelwirtschaft-backend:1.7.0
+  frontend:
+    build: !reset null
+    image: zettelwirtschaft-frontend:1.7.0</b>
+
+<span class="p">$</span> <b>docker compose up -d</b></pre>
+      </div>
+    </div>
+
+    <p class="note"><b>Aufruf:</b> Web-Oberfläche unter <code class="inline">http://localhost:8080</code> · Health-Check <code class="inline">http://localhost:8080/api/health</code>. Hardware-Empfehlung: 8&nbsp;GB RAM, ~10&nbsp;GB Plattenplatz. Ausführliche Schritt-für-Schritt-Anleitungen stehen unter <a href="anleitungen.html">Anleitungen</a>.</p>
+  </div>
+</section>
+
+<!-- CHECKSUMS -->
+<section class="section">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Integrität</span>
+      <h2>Prüfsummen (SHA-256).</h2>
+      <p>Lade die Datei <code class="inline">SHA256SUMS.txt</code> in denselben Ordner und prüfe mit <code class="inline">sha256sum -c SHA256SUMS.txt</code>.</p>
+    </div>
+    <pre class="code reveal" data-d="1" style="margin-top:1.6rem"><b>d62de10190aecf2aa061e93876b3323ad4b09cfe45386afd3651d15b05ede58b</b>  zettelwirtschaft-1.7.0-source.tar.gz
+<b>91ee5e51d1aa9279a1de875d22fb324598385bae34cf8a8d565269731e1f9cc1</b>  zettelwirtschaft-1.7.0-source.zip
+<b>17fcd922aed8b8b0e6d3547c4b71cabea2326f131048099ea7ee47b5814d8e87</b>  zettelwirtschaft-backend-1.7.0-docker-image.tar.gz
+<b>8a9f1ff2269fdca5dcd8553972633e665f7ace8d57f1046de91745f9405cd529</b>  zettelwirtschaft-frontend-1.7.0-docker-image.tar.gz
+<b>ff75f6f4e5e055775139332c37dc6027855319dc24378ec4afec0ca6ef67542f</b>  Zettelwirtschaft-1.7.0-Native-Setup.exe
+<b>96373b0e715f61adcc22786b7eba73e06c3dc576e8f94f968a5e7db9b364b0e5</b>  Zettelwirtschaft-1.7.0-native-update.zip</pre>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand">
+          <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#1E342D"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#D8B877" stroke-width="3"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#D8B877" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+          <span class="brand__name" style="font-family:var(--display);font-size:1.3rem">Zettelwirtschaft</span>
+        </div>
+        <p>Lokales Dokumentenmanagement für Privathaushalte. Rechnungen, Belege und Dokumente — automatisch geordnet, sicher zuhause.</p>
+        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.7.0 · AGPL-3.0</div>
+      </div>
+      <div>
+        <h4>Seiten</h4>
+        <ul>
+          <li><a href="index.html#funktionen">Funktionen</a></li>
+          <li><a href="anleitungen.html">Anleitungen</a></li>
+          <li><a href="hilfe.html">FAQ</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Rechtliches</h4>
+        <ul>
+          <li><a href="impressum.html">Impressum</a></li>
+          <li><a href="datenschutz.html">Datenschutz</a></li>
+          <li><a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Quellcode (GitHub)</a></li>
+          <li><a href="https://www.gnu.org/licenses/agpl-3.0.de.html" rel="noopener noreferrer">AGPL-3.0 Lizenz</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-note">
+      <span>© <span data-year>2026</span> Manuel Rödig · 85405 Nandlstadt</span>
+      <span>Kein Cloud-Zwang · Keine Telemetrie · 100&nbsp;% lokal</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

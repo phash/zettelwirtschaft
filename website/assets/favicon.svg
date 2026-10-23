@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zettelwirtschaft">
+  <rect width="64" height="64" rx="12" fill="#F4ECD8"/>
+  <g transform="rotate(-4 32 32)">
+    <rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#B23A2E" stroke-width="3"/>
+    <rect x="16" y="16" width="32" height="32" rx="3" fill="none" stroke="#B23A2E" stroke-width="1.4" opacity="0.55"/>
+    <path d="M22 23 H42 L24 41 H42" fill="none" stroke="#B23A2E" stroke-width="4.4" stroke-linecap="square" stroke-linejoin="miter"/>
+  </g>
+</svg>
