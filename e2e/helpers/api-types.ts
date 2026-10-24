@@ -558,6 +558,7 @@ export interface RunPreview {
   no_text_excluded: number;
   deleted_or_missing: number;
   estimate_seconds: number;
+  model: string;
 }
 
 export interface RunFailure {

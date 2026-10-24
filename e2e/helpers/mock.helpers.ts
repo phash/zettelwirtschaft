@@ -746,7 +746,7 @@ export function makeMockRun(overrides: Partial<RunResponse> = {}): RunResponse {
 }
 
 export function makeMockRunPreview(overrides: Partial<RunPreview> = {}): RunPreview {
-  return { eligible: 5, reviewed_excluded: 0, no_text_excluded: 0, deleted_or_missing: 0, estimate_seconds: 150, ...overrides };
+  return { eligible: 5, reviewed_excluded: 0, no_text_excluded: 0, deleted_or_missing: 0, estimate_seconds: 150, model: 'gemma4:e2b-it-qat', ...overrides };
 }
 
 export const MOCK_EMAIL_ACCOUNTS = [

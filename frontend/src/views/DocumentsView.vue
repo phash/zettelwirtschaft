@@ -188,9 +188,12 @@ const dialogStarting = ref(false)
 const dialogWithOcr = ref(false)
 let previewRequestId = 0
 
-const dialogTitle = computed(() => (
-  dialogMode.value === 'outdated' ? 'Mit aktuellem Modell neu analysieren' : 'Ausgewählte Dokumente neu analysieren'
-))
+const dialogTitle = computed(() => {
+  if (dialogMode.value !== 'outdated') return 'Ausgewählte Dokumente neu analysieren'
+  // Das Modell nennt erst die Vorschau (Backend: OLLAMA_MODEL).
+  const model = dialogPreview.value?.model
+  return model ? `Alle, die nicht mit ${model} analysiert wurden` : 'Mit aktuellem Modell neu analysieren'
+})
 
 function runBody() {
   return {

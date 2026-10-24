@@ -8,6 +8,9 @@ import { formatAmount, formatDate } from '../../utils/formatters'
 const props = defineProps({
   proposal: { type: Object, required: true },
   busy: { type: Boolean, default: false },
+  // Gesetzt: Übernehmen/Verwerfen gesperrt, der Text nennt den Grund
+  // (z.B. ungespeicherte Eingaben im Formular der Detailseite).
+  blockedReason: { type: String, default: null },
 })
 
 // apply: fields = string[] (Auswahl) oder null (alles übernehmen)
@@ -30,6 +33,7 @@ watch(
 )
 
 const hasSelection = computed(() => selected.value.size > 0)
+const locked = computed(() => props.busy || !!props.blockedReason)
 const discardedWorse = computed(() => props.proposal.ocr_note === 'discarded_worse')
 
 function toggle(field, checked) {
@@ -160,20 +164,27 @@ function applySelection() {
       </table>
     </div>
 
+    <p
+      v-if="blockedReason"
+      class="text-right text-xs text-amber-700"
+      role="status"
+      data-testid="proposal-blocked"
+    >{{ blockedReason }}</p>
+
     <div class="flex flex-wrap justify-end gap-2 pt-1">
-      <button type="button" class="btn-secondary" :disabled="busy" @click="emit('discard')">Verwerfen</button>
+      <button type="button" class="btn-secondary" :disabled="locked" @click="emit('discard')">Verwerfen</button>
       <button
         v-if="changes.length"
         type="button"
         class="btn-secondary"
-        :disabled="busy || !hasSelection"
+        :disabled="locked || !hasSelection"
         @click="applySelection"
       >Auswahl übernehmen</button>
       <button
         v-if="changes.length"
         type="button"
         class="btn-primary"
-        :disabled="busy"
+        :disabled="locked"
         @click="emit('apply', null)"
       >Alles übernehmen</button>
     </div>

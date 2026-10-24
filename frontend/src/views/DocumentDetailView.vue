@@ -173,19 +173,41 @@ function startReanalysis({ withOcr }) {
   reanalysis.start(() => reanalyzeDocument(id, { withOcr }))
 }
 
-async function finishProposal(action, successText, errorText) {
-  if (proposalBusy.value) return
+// Ungespeicherte Eingaben sperren Übernehmen/Verwerfen: die Übernahme lädt das
+// Dokument neu und überschriebe sonst das Formular.
+const UNSAVED_PROPOSAL_HINT = 'Bitte erst speichern oder Änderungen verwerfen.'
+const proposalBlockedReason = computed(() => (isDirty.value ? UNSAVED_PROPOSAL_HINT : null))
+
+// Nur Modell, Vorschlags-Kennzeichen und Vorschlag neu holen — das Formular bleibt.
+async function refreshProposalState() {
+  await refreshAnalysisInfo()
+  if (doc.value?.has_proposal) {
+    await loadProposal()
+  } else {
+    proposal.value = null
+  }
+}
+
+async function finishProposal(action, successText, errorText, { reloadDocument = false } = {}) {
+  if (proposalBusy.value || isDirty.value) return
   proposalBusy.value = true
+  let succeeded = false
   try {
     await action()
+    succeeded = true
     notify.success(successText)
   } catch (e) {
     notify.error(apiErrorMessage(e, errorText))
   } finally {
     proposalBusy.value = false
   }
-  // Auch nach einem Fehler (z.B. 409): Stand des Dokuments und Vorschlags neu holen.
-  await loadDocument({ silent: true })
+  if (succeeded && reloadDocument) {
+    // Übernommene Felder ins Formular holen (es war beim Start nicht geändert).
+    await loadDocument({ silent: true })
+    return
+  }
+  // Verworfen oder fehlgeschlagen (z.B. 409): Vorschlagsstand neu holen.
+  await refreshProposalState()
 }
 
 function handleApplyProposal(fields) {
@@ -193,6 +215,7 @@ function handleApplyProposal(fields) {
     () => applyProposal(doc.value.id, fields),
     'Änderungen übernommen.',
     'Änderungen konnten nicht übernommen werden.',
+    { reloadDocument: true },
   )
 }
 
@@ -596,6 +619,7 @@ onMounted(async () => {
           v-if="proposal"
           :proposal="proposal"
           :busy="proposalBusy"
+          :blocked-reason="proposalBlockedReason"
           @apply="handleApplyProposal"
           @discard="handleDiscardProposal"
         />

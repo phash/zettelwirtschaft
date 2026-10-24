@@ -153,6 +153,29 @@ test.describe('Neu analysieren am Dokument', () => {
     await expect(page.getByText('Das Dokument wurde inzwischen geändert.')).toBeVisible();
   });
 
+  test('detail: ungespeicherte Eingaben sperren Übernehmen und Verwerfen', async ({ page }) => {
+    await page.route(`**/api/documents/${DOC.id}`, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ json: { ...DOC, has_proposal: true } }) : route.fallback(),
+    );
+    await page.route(`**/api/reanalysis/proposals/${DOC.id}`, (route) => route.fulfill({ json: makeMockProposal() }));
+
+    await page.goto(DOC_URL);
+    const diff = page.getByTestId('proposal-diff');
+    const buttons = ['Auswahl übernehmen', 'Alles übernehmen', 'Verwerfen'].map((name) => diff.getByRole('button', { name }));
+    for (const button of buttons) await expect(button).toBeEnabled();
+    await expect(diff.getByTestId('proposal-blocked')).toHaveCount(0);
+
+    const title = page.getByLabel('Titel');
+    await title.fill('Eigener Titel');
+    for (const button of buttons) await expect(button).toBeDisabled();
+    await expect(diff.getByTestId('proposal-blocked')).toHaveText('Bitte erst speichern oder Änderungen verwerfen.');
+
+    // Eingabe zurückgenommen -> wieder frei.
+    await title.fill(DOC.title);
+    for (const button of buttons) await expect(button).toBeEnabled();
+    await expect(diff.getByTestId('proposal-blocked')).toHaveCount(0);
+  });
+
   test('detail: unverändert zeigt Toast mit Modell', async ({ page }) => {
     await page.route(`**/api/documents/${DOC.id}`, (route) =>
       route.request().method() === 'GET' ? route.fulfill({ json: { ...DOC, analysis_model: MODEL } }) : route.fallback(),
@@ -482,13 +505,15 @@ test.describe('Massenlauf in der Dokumentliste', () => {
   test('liste: Mit aktuellem Modell zeigt Vorschau-Zahlen und OCR lädt neu', async ({ page }) => {
     const { previews, starts } = await mockRunEndpoints(page, {
       preview: (body) => body.with_ocr
-        ? makeMockRunPreview({ eligible: 9, no_text_excluded: 0, reviewed_excluded: 3 })
-        : makeMockRunPreview({ eligible: 5, no_text_excluded: 2, reviewed_excluded: 3 }),
+        ? makeMockRunPreview({ eligible: 9, no_text_excluded: 0, reviewed_excluded: 3, model: MODEL })
+        : makeMockRunPreview({ eligible: 5, no_text_excluded: 2, reviewed_excluded: 3, model: MODEL }),
     });
     await page.goto('/dokumente');
 
     await page.getByRole('button', { name: 'Mit aktuellem Modell neu analysieren …' }).click();
     const dialog = page.getByRole('dialog');
+    // Der Titel nennt das aktuelle Modell (aus der Vorschau).
+    await expect(dialog.getByRole('heading')).toHaveText(`Alle, die nicht mit ${MODEL} analysiert wurden`);
     const preview = dialog.getByTestId('reanalyze-preview');
     await expect(preview).toContainText('5 Dokumente, ca. 3 Min.');
     await expect(preview).toContainText('3 freigegebene bleiben unverändert');
