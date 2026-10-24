@@ -16,11 +16,14 @@ from app.models.audit_log import AuditAction, AuditLog
 from app.models.correction_mapping import CorrectionMapping
 from app.models.document import Document, DocumentStatus, DocumentTag, DocumentType, ReviewStatus, Tag
 from app.models.filing_scope import FilingScope
+from app.models.reanalysis import ReanalysisProposal
 from app.models.review_question import ReviewQuestion
 from app.models.warranty_info import WarrantyInfo
 from app.services.analysis_service import AnalysisResult
+from app.services.reanalysis_service import apply_proposal
 from app.services.task_service import shutdown_tasks, wait_for_task
 from tests.factories import make_document
+from tests.support.reanalysis_fixtures import make_analysis
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -341,63 +344,40 @@ class TestReviewActions:
 # ---------------------------------------------------------------------------
 
 
-def _analysis(**overrides) -> AnalysisResult:
-    values = dict(
-        document_type="ARZTRECHNUNG",
-        confidence=0.91,
-        title="Arztrechnung Dr. Muster",
-        sender="Praxis Dr. Muster",
-        recipient="Max Mustermann",
-        document_date="2025-02-14",
-        amount=95.5,
-        currency="EUR",
-        reference_number="R-2025-7",
-        tags=["arzt", "gesundheit"],
-        summary="Rechnung über eine Behandlung.",
-        tax_relevant=True,
-        tax_category="Aussergewoehnliche_Belastungen",
-        tax_year=None,
-        warranty_info=None,
-        needs_review=False,
-        review_questions=[],
-    )
-    values.update(overrides)
-    return AnalysisResult(**values)
-
-
 @pytest.fixture
-def fake_pipeline(monkeypatch):
-    """Ersetzt analyze_document (Haupt-Pipeline) und zeichnet die Aufrufe auf."""
-    state = {"result": _analysis(), "calls": []}
+def reanalyze(client, test_session_factory, test_settings):
+    """Startet die Neu-Analyse (Vorschlag) und uebernimmt danach alle Aenderungen.
 
-    async def fake_analyze(file_path, file_type, settings, filing_scopes=None, session=None, pre_ocr_text=None):
-        state["calls"].append({"pre_ocr_text": pre_ocr_text, "session": session, "scopes": filing_scopes})
-        return None, state["result"]
+    Bis die Apply-Route existiert, wird ``apply_proposal`` direkt aufgerufen.
+    """
 
-    monkeypatch.setattr("app.services.reanalysis_service.analyze_document", fake_analyze)
-    return state
+    async def run(doc_id: str) -> dict:
+        resp = await client.post(f"/api/review/documents/{doc_id}/reanalyze")
+        assert resp.status_code == 202, resp.text
+        task = resp.json()
+        assert task["kind"] == "reanalyze" and task["key"] == doc_id
+        await wait_for_task(task["id"], timeout=5)
+        task = (await client.get(f"/api/tasks/{task['id']}")).json()
+        if task["status"] == "SUCCEEDED" and task["result"]["status"] == "proposed":
+            async with test_session_factory() as session:
+                task["applied"] = await apply_proposal(session, doc_id, test_settings)
+        return task
 
-
-async def _run_reanalysis(client, doc_id: str) -> dict:
-    resp = await client.post(f"/api/review/documents/{doc_id}/reanalyze")
-    assert resp.status_code == 202, resp.text
-    task = resp.json()
-    assert task["kind"] == "reanalyze" and task["key"] == doc_id
-    await wait_for_task(task["id"], timeout=5)
-    return (await client.get(f"/api/tasks/{task['id']}")).json()
+    return run
 
 
 class TestReanalysis:
     async def test_overwrites_all_ai_fields_via_main_pipeline(
-        self, client, db_session, fake_pipeline, _no_vectorizing,
+        self, client, db_session, fake_pipeline, _no_vectorizing, reanalyze, test_settings,
     ):
         doc = await _doc(db_session, await _scope(db_session), title="Alt", ocr_text="Arzt OCR")
         doc_id = doc.id
         await db_session.commit()
 
-        task = await _run_reanalysis(client, doc_id)
+        task = await reanalyze(doc_id)
         assert task["status"] == "SUCCEEDED", task
-        assert task["result"]["document_type"] == "ARZTRECHNUNG"
+        assert task["result"]["status"] == "proposed"
+        assert "document_type" in task["applied"]
         assert _no_vectorizing == [("revectorize", doc_id)]
         assert fake_pipeline["calls"][0]["pre_ocr_text"] == "Arzt OCR"
         assert fake_pipeline["calls"][0]["session"] is not None  # Few-Shot-Korrekturen
@@ -426,9 +406,12 @@ class TestReanalysis:
         audit = (await db_session.execute(
             select(AuditLog).where(AuditLog.document_id == doc_id, AuditLog.action == AuditAction.REANALYZED)
         )).scalar_one()
-        assert "title" in json.loads(audit.details)["overwritten"]
+        details = json.loads(audit.details)
+        assert "title" in details["applied"]
+        assert details["model"] == test_settings.OLLAMA_MODEL
+        assert d.analysis_model == test_settings.OLLAMA_MODEL
 
-    async def test_user_edits_and_manual_tags_are_protected(self, client, db_session, fake_pipeline):
+    async def test_user_edits_and_manual_tags_are_protected(self, client, db_session, fake_pipeline, reanalyze):
         scope = await _scope(db_session)
         doc = await _doc(db_session, scope, review_status=ReviewStatus.OK)
         doc_id = doc.id
@@ -442,9 +425,9 @@ class TestReanalysis:
         db_session.add(DocumentTag(document_id=doc_id, tag_id=auto.id))
         await db_session.commit()
 
-        task = await _run_reanalysis(client, doc_id)
+        task = await reanalyze(doc_id)
         assert task["status"] == "SUCCEEDED", task
-        assert task["result"]["protected_fields"] == ["title"]
+        assert "title" not in task["applied"]
 
         db_session.expire_all()
         d = await db_session.get(Document, doc_id)
@@ -455,8 +438,8 @@ class TestReanalysis:
         )).scalars().all()
         assert sorted(tags) == ["arzt", "gesundheit", "wichtig"]
 
-    async def test_questions_kept_replaced_and_status(self, client, db_session, fake_pipeline):
-        fake_pipeline["result"] = _analysis(needs_review=True, review_questions=["Ist der Betrag korrekt?"])
+    async def test_questions_kept_replaced_and_status(self, client, db_session, fake_pipeline, reanalyze):
+        fake_pipeline["result"] = make_analysis(needs_review=True, review_questions=["Ist der Betrag korrekt?"])
         scope = await _scope(db_session)
         doc = await _doc(db_session, scope)
         answered = await _question(db_session, doc, "title", is_answered=True, answer="X")
@@ -465,9 +448,9 @@ class TestReanalysis:
         ids = (doc.id, answered.id, stale.id, unrelated.id)
         await db_session.commit()
 
-        task = await _run_reanalysis(client, ids[0])
+        task = await reanalyze(ids[0])
         assert task["status"] == "SUCCEEDED", task
-        assert task["result"]["needs_review"] is True
+        assert task["result"]["status"] == "proposed"
 
         db_session.expire_all()
         remaining = {q.id: q for q in (await db_session.execute(
@@ -479,8 +462,8 @@ class TestReanalysis:
         assert any(q.question == "Ist der Betrag korrekt?" for q in remaining.values())
         assert (await db_session.get(Document, ids[0])).review_status == ReviewStatus.NEEDS_REVIEW
 
-    async def test_creates_and_removes_warranty(self, client, db_session, fake_pipeline):
-        fake_pipeline["result"] = _analysis(warranty_info={
+    async def test_creates_and_removes_warranty(self, client, db_session, fake_pipeline, reanalyze):
+        fake_pipeline["result"] = make_analysis(warranty_info={
             "has_warranty": True, "product_name": "Laptop", "purchase_date": "2025-02-14",
             "warranty_duration_months": 24, "warranty_end_date": None, "store_name": "Shop",
         })
@@ -488,31 +471,32 @@ class TestReanalysis:
         doc_id = doc.id
         await db_session.commit()
 
-        assert (await _run_reanalysis(client, doc_id))["status"] == "SUCCEEDED"
+        assert (await reanalyze(doc_id))["status"] == "SUCCEEDED"
         w = (await db_session.execute(select(WarrantyInfo).where(WarrantyInfo.document_id == doc_id))).scalar_one()
         assert w.warranty_end_date == date(2027, 2, 14)
 
-        fake_pipeline["result"] = _analysis(warranty_info=None)
-        assert (await _run_reanalysis(client, doc_id))["status"] == "SUCCEEDED"
+        fake_pipeline["result"] = make_analysis(warranty_info=None)
+        assert (await reanalyze(doc_id))["status"] == "SUCCEEDED"
         db_session.expire_all()
         assert (await db_session.execute(
             select(WarrantyInfo).where(WarrantyInfo.document_id == doc_id)
         )).scalar_one_or_none() is None
 
-    async def test_llm_failure_leaves_document_untouched(self, client, db_session, fake_pipeline):
+    async def test_llm_failure_leaves_document_untouched(self, client, db_session, fake_pipeline, reanalyze):
         fake_pipeline["result"] = AnalysisResult(needs_review=True, llm_error="unreachable")
         doc = await _doc(db_session, await _scope(db_session), title="Bleibt")
         doc_id = doc.id
         await db_session.commit()
 
-        task = await _run_reanalysis(client, doc_id)
+        task = await reanalyze(doc_id)
         assert task["status"] == "FAILED"
         assert "nicht erreichbar" in task["error"]
         db_session.expire_all()
         assert (await db_session.get(Document, doc_id)).title == "Bleibt"
+        assert (await db_session.execute(select(ReanalysisProposal))).scalars().all() == []
 
-    async def test_auto_apply_corrections(self, client, db_session, fake_pipeline):
-        fake_pipeline["result"] = _analysis(sender="AMAZON EU S.A R.L.")
+    async def test_auto_apply_corrections(self, client, db_session, fake_pipeline, reanalyze):
+        fake_pipeline["result"] = make_analysis(sender="AMAZON EU S.A R.L.")
         db_session.add(CorrectionMapping(
             field="issuer", original_value="Amazon EU S.a r.l.", corrected_value="Amazon",
             occurrence_count=3, auto_apply=True,
@@ -521,11 +505,11 @@ class TestReanalysis:
         doc_id = doc.id
         await db_session.commit()
 
-        assert (await _run_reanalysis(client, doc_id))["status"] == "SUCCEEDED"
+        assert (await reanalyze(doc_id))["status"] == "SUCCEEDED"
         db_session.expire_all()
         assert (await db_session.get(Document, doc_id)).issuer == "Amazon"
 
-    async def test_scope_change_moves_file(self, client, db_session, fake_pipeline, test_settings):
+    async def test_scope_change_moves_file(self, client, db_session, fake_pipeline, test_settings, reanalyze):
         archive = Path(test_settings.ARCHIVE_DIR)
         privat = await _scope(db_session)
         praxis = FilingScope(name="Praxis", slug="praxis", is_default=False, keywords='["Dr. Muster"]')
@@ -537,7 +521,7 @@ class TestReanalysis:
         doc_id, praxis_id = doc.id, praxis.id
         await db_session.commit()
 
-        assert (await _run_reanalysis(client, doc_id))["status"] == "SUCCEEDED"
+        assert (await reanalyze(doc_id))["status"] == "SUCCEEDED"
         db_session.expire_all()
         d = await db_session.get(Document, doc_id)
         assert d.filing_scope_id == praxis_id
@@ -545,7 +529,7 @@ class TestReanalysis:
         assert Path(d.file_path).is_relative_to((archive / "praxis").resolve())
         assert not source.exists()
 
-    async def test_validation_errors(self, client, db_session, fake_pipeline):
+    async def test_validation_errors(self, client, db_session, fake_pipeline, reanalyze):
         scope = await _scope(db_session)
         deleted = await _doc(db_session, scope, status=DocumentStatus.DELETED)
         empty = await _doc(db_session, scope, ocr_text="  ")

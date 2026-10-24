@@ -254,8 +254,9 @@ async def reanalyze_document(
 ) -> TaskResponse:
     """Startet die KI-Analyse erneut als Hintergrund-Vorgang (HTTP 202).
 
-    Status/Ergebnis über ``GET /api/tasks/{id}``. Nutzt die Haupt-Pipeline;
-    vom Benutzer bearbeitete Felder bleiben erhalten (siehe reanalysis_service).
+    Status/Ergebnis über ``GET /api/tasks/{id}``. Nutzt die Haupt-Pipeline und
+    legt nur einen Änderungsvorschlag an — das Dokument ändert sich erst beim
+    Übernehmen (siehe reanalysis_service).
     """
     doc = await _get_document_or_404(session, document_id)
     if not (doc.ocr_text or "").strip():
