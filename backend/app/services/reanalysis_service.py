@@ -313,8 +313,20 @@ def _target_tag_names(
     return wanted | {name for name in current if name in manual_added}
 
 
-async def _plan_changes(session: AsyncSession, doc: Document, proposal: ReanalysisProposal) -> _Plan:
-    """Echte Unterschiede Vorschlag <-> aktuelles Dokument, ohne geschuetzte Felder."""
+async def _plan_changes(
+    session: AsyncSession,
+    doc: Document,
+    proposal: ReanalysisProposal,
+    *,
+    use_proposed_date: bool = True,
+) -> _Plan:
+    """Echte Unterschiede Vorschlag <-> aktuelles Dokument, ohne geschuetzte Felder.
+
+    Steuerjahr und Garantie haengen vom Belegdatum ab. ``use_proposed_date``
+    legt fest, ob dafuer das vorgeschlagene (Vorschau, Datum wird mit
+    uebernommen) oder das aktuelle Belegdatum des Dokuments gilt (Datum
+    abgelehnt).
+    """
     analysis = proposal.analysis_result()
     protected = await user_edited_fields(session, doc.id)
     values = _analysis_values(analysis, doc.original_filename)
@@ -323,10 +335,12 @@ async def _plan_changes(session: AsyncSession, doc: Document, proposal: Reanalys
         """Wert nach der Uebernahme: geschuetzte Felder behalten den Dokumentwert."""
         return getattr(doc, field) if field in protected else values[field]
 
+    base_date = effective("document_date") if use_proposed_date else doc.document_date
+
     # Wie ensure_tax_year nach dem Uebernehmen — sonst erschiene ein
     # abgeleitetes Steuerjahr als Scheinaenderung "2025 -> leer".
     if values["tax_year"] is None and effective("tax_relevant"):
-        values["tax_year"] = derive_tax_year_for(doc, effective("document_date"))
+        values["tax_year"] = derive_tax_year_for(doc, base_date)
 
     planned: list[_PlannedChange] = []
     for field in REANALYZED_FIELDS:
@@ -358,7 +372,7 @@ async def _plan_changes(session: AsyncSession, doc: Document, proposal: Reanalys
         planned.append(_PlannedChange(FieldChange("tags", sorted(current_tags), sorted(target_tags)), target_tags))
 
     if not any(key.startswith(WARRANTY_AUDIT_PREFIX) for key in protected):
-        new_warranty = _build_warranty_info(analysis.warranty_info, doc.id, effective("document_date"))
+        new_warranty = _build_warranty_info(analysis.warranty_info, doc.id, base_date)
         old_dict, new_dict = _warranty_dict(doc.warranty_info), _warranty_dict(new_warranty)
         if old_dict != new_dict:
             planned.append(_PlannedChange(FieldChange("warranty", old_dict, new_dict), new_warranty))
@@ -534,9 +548,17 @@ async def _sync_warranty(session: AsyncSession, doc: Document, new: WarrantyInfo
         existing.rearm_reminders()
 
 
-async def _replace_questions(session: AsyncSession, doc: Document, plan: _Plan, accepted: set[str]) -> None:
+async def _replace_questions(
+    session: AsyncSession, doc: Document, plan: _Plan, accepted: set[str], *, complete: bool,
+) -> None:
     """Rueckfragen nur fuer uebernommene Felder (bzw. Freitext ohne Feld) ersetzen
-    und den Review-Status daraus neu bestimmen; REVIEWED bleibt REVIEWED."""
+    und den Review-Status daraus neu bestimmen; REVIEWED bleibt REVIEWED.
+
+    ``analysis.needs_review`` zaehlt nur, wenn der Vorschlag vollstaendig
+    (``complete``) uebernommen wurde — sonst koennte ein abgelehntes Feld
+    (z.B. unplausibler Betrag) das Dokument ohne offene Frage in die Pruefung
+    schicken. Bei teilweiser Uebernahme entscheiden nur die offenen Fragen.
+    """
     analysis = plan.analysis
     replaced = set(accepted)
     if SCOPE_FIELD in accepted:
@@ -570,7 +592,7 @@ async def _replace_questions(session: AsyncSession, doc: Document, plan: _Plan, 
         session.add(question)
 
     if doc.review_status != ReviewStatus.REVIEWED:
-        needs_review = analysis.needs_review or kept or new_questions
+        needs_review = (complete and analysis.needs_review) or kept or new_questions
         doc.review_status = ReviewStatus.NEEDS_REVIEW if needs_review else ReviewStatus.OK
 
 
@@ -598,12 +620,16 @@ async def apply_proposal(
     document_id: str,
     settings: Settings,
     fields: set[str] | None = None,
+    *,
+    session_factory=None,
 ) -> list[str]:
     """Uebernimmt die angenommenen Felder des offenen Vorschlags und committet.
 
     ``fields=None`` nimmt alle aktuellen Aenderungen (:func:`compute_changes`)
     an; Felder, die inzwischen keine Aenderung mehr sind (z.B. vom Benutzer
     bearbeitet), werden uebersprungen. Der Vorschlag ist danach erledigt.
+
+    ``session_factory`` dient der Revektorisierung nach dem Commit.
 
     Committet selbst: die Datei eines Bereichswechsels wird vor dem Commit
     kopiert und erst danach am alten Ort geloescht (rollback-sicher).
@@ -622,7 +648,11 @@ async def apply_proposal(
 
     plan = await _plan_changes(session, doc, proposal)
     offered = [planned.change.field for planned in plan.changes]
-    applied = [field for field in offered if fields is None or field in fields]
+    wanted = {field for field in offered if fields is None or field in fields}
+    if "document_date" in offered and "document_date" not in wanted:
+        # Datum abgelehnt: Steuerjahr/Garantie vom aktuellen Belegdatum ableiten.
+        plan = await _plan_changes(session, doc, proposal, use_proposed_date=False)
+    applied = [planned.change.field for planned in plan.changes if planned.change.field in wanted]
     rejected = [field for field in offered if field not in applied]
     accepted = {planned.change.field: planned.value for planned in plan.changes if planned.change.field in applied}
 
@@ -648,7 +678,7 @@ async def apply_proposal(
         if applied:
             doc.ai_confidence = plan.analysis.confidence
             ensure_tax_year(doc)
-            await _replace_questions(session, doc, plan, set(applied))
+            await _replace_questions(session, doc, plan, set(applied), complete=not rejected)
 
         doc.analysis_model = proposal.model
         await session.delete(proposal)
@@ -673,9 +703,10 @@ async def apply_proposal(
         "Vorschlag fuer Dokument %s uebernommen: %s, abgelehnt: %s", document_id, applied, rejected,
     )
     if applied:
-        # Post-commit, best effort (Fehler loggt der Helfer selbst). Gleiche
-        # Engine wie die Session des Aufrufers.
-        session_factory = async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False)
+        # Post-commit, best effort (Fehler loggt der Helfer selbst). Ohne
+        # uebergebene Factory: gleiche Engine wie die Session des Aufrufers.
+        if session_factory is None:
+            session_factory = async_sessionmaker(session.bind, class_=AsyncSession, expire_on_commit=False)
         await vectorize_service.revectorize_document_safe(document_id, settings, session_factory)
     return applied
 

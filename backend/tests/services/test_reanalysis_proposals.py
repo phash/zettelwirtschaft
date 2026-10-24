@@ -384,3 +384,114 @@ async def test_apply_missing_file_conflict(db_session, test_session_factory, tes
     assert d.analysis_model is None
     assert len(await _proposals(test_session_factory)) == 1
     assert await _audits(test_session_factory, doc_id) == []
+
+
+async def test_partial_apply_ignores_needs_review_of_rejected_fields(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    # needs_review z.B. wegen unplausiblem Betrag — der Betrag wird abgelehnt.
+    fake_pipeline["result"] = make_analysis(needs_review=True, amount=60000.0)
+    doc = await _doc(db_session, await _scope(db_session), tags=["arzt"])
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+
+    assert await _apply(test_session_factory, doc_id, test_settings, {"tags"}) == ["tags"]
+
+    d = await _fresh_doc(test_session_factory, doc_id)
+    assert d.review_status == ReviewStatus.OK
+    assert d.amount == Decimal("95.50")
+    assert sorted(t.name for t in d.tags) == ["arzt", "gesundheit"]
+
+
+async def test_full_apply_honours_needs_review(db_session, test_session_factory, test_settings, fake_pipeline):
+    fake_pipeline["result"] = make_analysis(needs_review=True, amount=60000.0)
+    doc = await _doc(db_session, await _scope(db_session), tags=["arzt"])
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+
+    assert await _apply(test_session_factory, doc_id, test_settings) == ["amount", "tags"]
+
+    assert (await _fresh_doc(test_session_factory, doc_id)).review_status == ReviewStatus.NEEDS_REVIEW
+
+
+async def test_rejected_date_keeps_derived_values_on_old_date(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    fake_pipeline["result"] = make_analysis(warranty_info={
+        "has_warranty": True, "product_name": "Laptop", "purchase_date": None,
+        "warranty_duration_months": 24, "store_name": "Shop",
+    })
+    doc = await _doc(db_session, await _scope(db_session), document_date=date(2024, 12, 1), tax_year=None)
+    doc_id = doc.id
+    outcome = await _create(test_session_factory, doc_id, test_settings)
+    preview = {c.field: c for c in outcome.changes}
+    assert preview["warranty"].new["purchase_date"] == "2025-02-14"  # Vorschau: neues Datum
+    assert preview["tax_year"].new == 2025
+
+    applied = await _apply(test_session_factory, doc_id, test_settings, {"warranty", "tax_year"})
+
+    assert applied == ["tax_year", "warranty"]
+    d = await _fresh_doc(test_session_factory, doc_id)
+    assert d.document_date == date(2024, 12, 1)
+    assert d.tax_year == 2024
+    assert (d.warranty_info.purchase_date, d.warranty_info.warranty_end_date) == (date(2024, 12, 1), date(2026, 12, 1))
+    assert (await _audits(test_session_factory, doc_id))[0]["rejected"] == ["document_date"]
+
+
+async def test_apply_uses_given_session_factory(
+    db_session, test_session_factory, test_settings, fake_pipeline, monkeypatch,
+):
+    doc = await _doc(db_session, await _scope(db_session), issuer="Alt GmbH")
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+    seen = []
+
+    async def fake_revectorize(document_id, settings, session_factory):
+        seen.append(session_factory)
+
+    from app.services import vectorize_service
+    monkeypatch.setattr(vectorize_service, "revectorize_document_safe", fake_revectorize)
+    async with test_session_factory() as session:
+        await apply_proposal(session, doc_id, test_settings, session_factory=test_session_factory)
+
+    assert seen == [test_session_factory]
+
+
+async def _user_audit(db: AsyncSession, doc_id: str, action: AuditAction, details: dict) -> None:
+    db.add(AuditLog(document_id=doc_id, action=action, details=json.dumps(details)))
+    await db.commit()
+
+
+async def test_user_edited_warranty_not_proposed(db_session, test_session_factory, test_settings, fake_pipeline):
+    fake_pipeline["result"] = make_analysis(
+        sender="Neue Praxis",
+        warranty_info={"has_warranty": True, "product_name": "Laptop", "warranty_duration_months": 24},
+    )
+    doc = await _doc(db_session, await _scope(db_session))
+    await _user_audit(db_session, doc.id, AuditAction.UPDATED, {"warranty_info.product_name": {"old": "A", "new": "B"}})
+
+    outcome = await _create(test_session_factory, doc.id, test_settings)
+
+    assert [c.field for c in outcome.changes] == ["issuer"]
+
+
+async def test_user_set_scope_not_proposed(db_session, test_session_factory, test_settings, fake_pipeline):
+    fake_pipeline["result"] = make_analysis(sender="Neue Praxis")
+    privat = await _scope(db_session)
+    await _scope(db_session, name="Praxis", slug="praxis", is_default=False, keywords='["Dr. Muster"]')
+    doc = await _doc(db_session, privat)
+    await _user_audit(db_session, doc.id, AuditAction.UPDATED, {"filing_scope_id": {"old": None, "new": privat.id}})
+
+    outcome = await _create(test_session_factory, doc.id, test_settings)
+
+    assert [c.field for c in outcome.changes] == ["issuer"]
+
+
+async def test_manually_removed_tag_not_reproposed(db_session, test_session_factory, test_settings, fake_pipeline):
+    fake_pipeline["result"] = make_analysis(sender="Neue Praxis")
+    doc = await _doc(db_session, await _scope(db_session), tags=["arzt"])
+    await _user_audit(db_session, doc.id, AuditAction.TAG_REMOVED, {"tag": "gesundheit"})
+
+    outcome = await _create(test_session_factory, doc.id, test_settings)
+
+    assert [c.field for c in outcome.changes] == ["issuer"]
