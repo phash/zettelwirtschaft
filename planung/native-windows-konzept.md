@@ -426,6 +426,42 @@ Solche Installationen kennt weder der Registry-Upgrade-Pfad des Setups noch
    Programmordner unveraendert -> Setup erneut ausfuehren (Datenordner = Ordner der
    bisherigen `config.toml`) oder alten Dienst mit den Befehlen aus Schritt 5 registrieren.
 
+### 7.5 Runbook: Docker → Native von Hand (getestet 2026-05)
+
+Auf einer echten Installation (35 Dokumente, 29 MB Archiv) durchgespielt.
+
+1. **Backup** (Pflicht vor Migration):
+   ```powershell
+   $bak = "$env:USERPROFILE\Documents\Zettelwirtschaft-Backups"
+   Compress-Archive "$env:LOCALAPPDATA\Zettelwirtschaft\data","$env:LOCALAPPDATA\Zettelwirtschaft\.env" `
+       -DestinationPath "$bak\pre-native_$(Get-Date -f yyyyMMdd_HHmmss).zip"
+   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v "${bak}:/dst" alpine `
+       tar czf /dst/chromadb-volume.tar.gz -C /src .
+   ```
+2. **Daten kopieren** in Native-Datenordner (`robocopy` mit `/E`):
+   `robocopy %LOCALAPPDATA%\Zettelwirtschaft\data ~/Documents/Zettelwirtschaft/data /E`
+3. **config.toml generieren** aus alter `.env`:
+   `pwsh scripts/Convert-Env-To-Config.ps1 -EnvPath ... -OutPath ... -DataDir ...`
+4. **Docker stoppen**: `docker compose down` im alten AppData-Ordner.
+5. **ChromaDB-Volume migrieren** ueber `C:\Temp`-Zwischenstation (Docker kann User-Pfade auf Windows nicht direkt mounten):
+   ```
+   docker run --rm -v zettelwirtschaft_chromadb-data:/src -v C:\Temp\chroma:/dst alpine cp -r /src/. /dst/
+   robocopy C:\Temp\chroma ~/Documents/Zettelwirtschaft/data/chromadb /E
+   ```
+   Alternativ: leerer Ordner → Backend re-indexiert beim ersten Start (~ 30s pro 1000 Docs).
+6. **Service installieren:** `Zettelwirtschaft-<version>-Native-Setup.exe` ausführen und als
+   Datenordner den Ordner mit der neuen `config.toml` wählen (bestehende config.toml bleibt,
+   PIN/Keys werden nicht neu erzeugt). Früher manuell per
+   `scripts/service-install.bat <install-dir> <config> <log-dir>` (Admin) — solche
+   Installationen übernimmt das Setup ab v1.6.1 (siehe 7.4).
+7. **Ollama-Modelle** migrieren (gleicher C:\Temp-Trick) oder neu ziehen lassen: das Backend
+   pullt fehlende Modelle beim Start automatisch. Manuell: `ollama pull <EMBEDDING_MODEL>` +
+   `ollama pull <OLLAMA_MODEL>` — **exakt** die Tags aus `config.toml` (`gemma4:12b` ist ein
+   anderer Tag als `gemma4:12b-it-qat`). `Convert-Env-To-Config.ps1` uebernimmt die Modelle der
+   alten `.env`; fehlt dort ein Eintrag, lief die Installation mit dem alten Default — der
+   Konverter setzt dann bewusst `qwen2.5:7b-instruct` / `bge-m3` (nicht die neuen Defaults).
+   Ollama muss **>= 0.30.3** sein (gemma4/qwen3-embedding; getestet 0.40.5).
+
 ---
 
 ## 8. Netzwerk-Zugriff aus dem LAN
