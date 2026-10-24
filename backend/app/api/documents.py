@@ -18,6 +18,7 @@ from app.models.audit_log import AuditAction, AuditLog
 from app.models.document import Document, DocumentStatus, DocumentTag, ReviewStatus, Tag
 from app.models.filing_scope import FilingScope
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob, SplitMode
+from app.models.reanalysis import ReanalysisProposal
 from app.models.split_batch import SplitBatch
 from app.models.warranty_info import WarrantyInfo, select_active_document_warranties
 from app.schemas.document import (
@@ -36,6 +37,7 @@ from app.schemas.processing_job import (
 )
 from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.file_validation_service import FileValidationError
+from app.services.reanalysis_service import has_visible_proposal
 from app.services.search_service import (
     FTS_DOCUMENT_FIELDS,
     reindex_document_fts,
@@ -69,10 +71,14 @@ async def _get_active_document_or_404(db: AsyncSession, document_id: str) -> Doc
     return document
 
 
-async def _document_response(db: AsyncSession, document: Document) -> DocumentResponse:
+async def build_document_response(
+    db: AsyncSession, document: Document, settings: Settings,
+) -> DocumentResponse:
     """DocumentResponse inkl. Herkunft aus einem aufgeteilten Stapel (Teil x
-    von y aus „datei.pdf“). Ein fehlender Stapel wird toleriert."""
+    von y aus „datei.pdf“) und Hinweis auf einen offenen Neu-Analyse-Vorschlag.
+    Ein fehlender Stapel wird toleriert."""
     response = DocumentResponse.model_validate(document)
+    response.has_proposal = await has_visible_proposal(db, document, settings)
     if document.split_batch_id:
         batch = await db.get(SplitBatch, document.split_batch_id)
         if batch is not None:
@@ -265,10 +271,11 @@ async def list_documents(
 async def get_document(
     document_id: str,
     db: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ) -> DocumentResponse:
     """Gibt ein einzelnes Dokument mit allen Metadaten zurueck."""
     document = await _get_active_document_or_404(db, document_id)
-    return await _document_response(db, document)
+    return await build_document_response(db, document, settings)
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentResponse)
@@ -298,7 +305,7 @@ async def update_document(
             setattr(document, field, value)
 
     if not changes:
-        return await _document_response(db, document)
+        return await build_document_response(db, document, settings)
 
     # Steuerrelevant ohne Jahr -> Jahr ableiten (abgeleitet, keine Benutzer-
     # Eingabe: bewusst nicht im AuditLog, damit eine Re-Analyse es aendern darf).
@@ -340,7 +347,7 @@ async def update_document(
 
         background_tasks.add_task(update_scope_metadata, [document.id], document.filing_scope_id, settings)
 
-    return await _document_response(db, document)
+    return await build_document_response(db, document, settings)
 
 
 @router.delete("/documents/{document_id}", status_code=204)
@@ -365,6 +372,8 @@ async def delete_document(
         return Response(status_code=204)
 
     document.status = DocumentStatus.DELETED
+    # Ein offener Neu-Analyse-Vorschlag ist ohne Dokument gegenstandslos.
+    await db.execute(delete(ReanalysisProposal).where(ReanalysisProposal.document_id == document_id))
     db.add(AuditLog(
         document_id=document.id,
         action=AuditAction.DELETED,
@@ -511,7 +520,7 @@ async def add_tag_to_document(
         await db.commit()
         _schedule_revectorize(background_tasks, document.id, settings, session_factory)
 
-    return await _document_response(db, document)
+    return await build_document_response(db, document, settings)
 
 
 @router.delete("/documents/{document_id}/tags/{tag_id:int}")

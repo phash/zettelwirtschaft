@@ -95,7 +95,7 @@ async def test_active_reanalyses_are_capped(client, db_session, monkeypatch):
 
     release = asyncio.Event()
 
-    async def blocked(ctx, document_id, settings):
+    async def blocked(ctx, document_id, settings, with_ocr=False):
         await release.wait()
         return {}
 

@@ -17,6 +17,7 @@ from app.models.document import Document, DocumentStatus, ReviewStatus
 from app.models.review_question import ReviewQuestion
 from app.models.split_batch import SplitBatch, SplitBatchStatus
 from app.schemas.background_task import TaskResponse
+from app.schemas.reanalysis import ReanalyzeRequest
 from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.reanalysis_service import (
     NO_OCR_TEXT_MESSAGE,
@@ -248,22 +249,27 @@ async def accept_document(
 )
 async def reanalyze_document(
     document_id: str,
+    body: ReanalyzeRequest | None = None,
     session: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
     session_factory=Depends(get_session_factory),
 ) -> TaskResponse:
     """Startet die KI-Analyse erneut als Hintergrund-Vorgang (HTTP 202).
 
+    Optionaler Body ``{"with_ocr": true}``: der Text wird aus der Datei neu
+    erkannt (dann ist auch ein Dokument ohne gespeicherten Text zulässig).
+
     Status/Ergebnis über ``GET /api/tasks/{id}``. Nutzt die Haupt-Pipeline und
     legt nur einen Änderungsvorschlag an — das Dokument ändert sich erst beim
     Übernehmen (siehe reanalysis_service).
     """
     doc = await _get_document_or_404(session, document_id)
-    if not (doc.ocr_text or "").strip():
+    with_ocr = body.with_ocr if body is not None else False
+    if not with_ocr and not (doc.ocr_text or "").strip():
         raise HTTPException(400, NO_OCR_TEXT_MESSAGE)
 
     async def work(ctx: TaskContext):
-        return await run_reanalysis(ctx, document_id, settings)
+        return await run_reanalysis(ctx, document_id, settings, with_ocr=with_ocr)
 
     task = await start_task(
         session_factory, REANALYZE_TASK_KIND, work, key=document_id,

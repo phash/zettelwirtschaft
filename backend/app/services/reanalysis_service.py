@@ -416,6 +416,43 @@ def is_substantive(changes: list[FieldChange]) -> bool:
     return any(change.field not in TEXT_ONLY_FIELDS for change in changes)
 
 
+@dataclass
+class VisibleProposal:
+    """Offener Vorschlag mit seinen aktuellen Aenderungen (mindestens eine wesentliche)."""
+
+    document: Document
+    proposal: ReanalysisProposal
+    changes: list[FieldChange]
+
+
+async def list_visible_proposals(session: AsyncSession, settings: Settings) -> list[VisibleProposal]:
+    """Alle offenen Vorschlaege nicht geloeschter Dokumente, neueste zuerst.
+
+    Die Aenderungen werden zur Lesezeit berechnet; Vorschlaege, die inzwischen
+    nur noch Titel/Zusammenfassung aendern (oder gar nichts), erscheinen nicht.
+    """
+    rows = await session.execute(
+        select(ReanalysisProposal, Document)
+        .join(Document, Document.id == ReanalysisProposal.document_id)
+        .where(Document.status != DocumentStatus.DELETED)
+        .order_by(ReanalysisProposal.created_at.desc(), ReanalysisProposal.id)
+    )
+    visible = []
+    for proposal, doc in rows.all():
+        changes = await compute_changes(session, doc, proposal, settings)
+        if is_substantive(changes):
+            visible.append(VisibleProposal(doc, proposal, changes))
+    return visible
+
+
+async def has_visible_proposal(session: AsyncSession, doc: Document, settings: Settings) -> bool:
+    """True, wenn das Dokument einen offenen Vorschlag mit wesentlichen Aenderungen hat."""
+    proposal = await get_open_proposal(session, doc.id)
+    if proposal is None:
+        return False
+    return is_substantive(await compute_changes(session, doc, proposal, settings))
+
+
 # ---------------------------------------------------------------------------
 # Vorschlag anlegen
 # ---------------------------------------------------------------------------

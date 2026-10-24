@@ -22,6 +22,7 @@ from app.api.filing_scopes import router as filing_scopes_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.notifications import router as notifications_router
+from app.api.reanalysis import router as reanalysis_router
 from app.api.review import router as review_router
 from app.api.search import router as search_router
 from app.api.split import router as split_router, split_error_handler
@@ -338,6 +339,7 @@ app.include_router(tax_router, prefix="/api")
 app.include_router(warranties_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
+app.include_router(reanalysis_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")

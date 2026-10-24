@@ -148,6 +148,10 @@ class DocumentResponse(BaseModel):
     source_pages: str | None = None
     can_undo_split: bool = False
     split_undo_blocked_reason: str | None = None
+    # Modell der letzten Analyse/Neu-Analyse; has_proposal: offener
+    # Aenderungsvorschlag mit wesentlichen Aenderungen (setzt der Endpoint).
+    analysis_model: str | None = None
+    has_proposal: bool = False
 
     resolve_filing_scope = model_validator(mode="before")(classmethod(_resolve_scope_name))
 
