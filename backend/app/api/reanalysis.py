@@ -1,12 +1,17 @@
-"""Aenderungsvorschlaege der Neu-Analyse (Issue #39).
+"""Aenderungsvorschlaege und Massenlauf der Neu-Analyse (Issue #39).
 
 ``POST /review/documents/{id}/reanalyze`` (api/review.py) legt Vorschlaege an;
 hier werden sie angezeigt, uebernommen und verworfen — einzeln oder gesammelt.
+``/reanalysis/runs`` startet und steuert den Massenlauf
+(services/reanalysis_run_service.py).
 """
 
 import logging
+from dataclasses import asdict
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.documents import build_document_response
@@ -21,6 +26,18 @@ from app.schemas.reanalysis import (
     FieldChangeResponse,
     ProposalListResponse,
     ProposalResponse,
+    RunPreviewResponse,
+    RunRequest,
+    RunResponse,
+)
+from app.services.reanalysis_run_service import (
+    RunConflictError,
+    RunStateError,
+    current_run,
+    preview_run,
+    run_summary,
+    set_run_status,
+    start_run,
 )
 from app.services.reanalysis_service import (
     NO_PROPOSAL_MESSAGE,
@@ -230,3 +247,72 @@ async def discard_all_proposals(
             discarded += 1
     await session.commit()
     return {"discarded": discarded}
+
+
+# --- Massenlauf -----------------------------------------------------------------
+
+
+@router.post("/reanalysis/runs/preview", response_model=RunPreviewResponse)
+async def preview_reanalysis_run(
+    body: RunRequest,
+    session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+) -> RunPreviewResponse:
+    """Wie viele Dokumente ein Lauf erfassen wuerde, welche nicht (und warum), grobe Dauer."""
+    preview, _ = await preview_run(
+        session, settings,
+        document_ids=body.document_ids, outdated=body.outdated, with_ocr=body.with_ocr,
+    )
+    return RunPreviewResponse(**asdict(preview))
+
+
+@router.post("/reanalysis/runs", status_code=201, response_model=RunResponse)
+async def start_reanalysis_run(
+    body: RunRequest,
+    session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
+    session_factory=Depends(get_session_factory),
+):
+    """Startet den Massenlauf. 409 mit dem aktiven Lauf, wenn schon einer laeuft."""
+    try:
+        run = await start_run(
+            session_factory, settings,
+            document_ids=body.document_ids, outdated=body.outdated, with_ocr=body.with_ocr,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RunConflictError as exc:
+        active = await run_summary(session, exc.active_run)
+        return JSONResponse(
+            status_code=409,
+            content={"detail": exc.message, "run": active.model_dump(mode="json")},
+        )
+    return await run_summary(session, run)
+
+
+@router.get("/reanalysis/runs/current", response_model=RunResponse)
+async def get_current_reanalysis_run(
+    session: AsyncSession = Depends(get_db, scope="function"),
+) -> RunResponse:
+    """Der aktive Lauf, sonst der zuletzt beendete; 404, wenn es noch keinen gab."""
+    run = await current_run(session)
+    if run is None:
+        raise HTTPException(404, "Es gibt noch keinen Neu-Analyse-Lauf.")
+    return await run_summary(session, run)
+
+
+@router.post("/reanalysis/runs/{run_id}/{action}", response_model=RunResponse)
+async def control_reanalysis_run(
+    run_id: str,
+    action: Literal["pause", "resume", "cancel"],
+    session: AsyncSession = Depends(get_db, scope="function"),
+) -> RunResponse:
+    """Pausieren, Fortsetzen oder Abbrechen (offene Dokumente -> uebersprungen)."""
+    try:
+        run = await set_run_status(session, run_id, action)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RunStateError as exc:
+        raise HTTPException(409, exc.message) from exc
+    await session.commit()
+    return await run_summary(session, run)

@@ -93,6 +93,13 @@ async def lifespan(app: FastAPI):
     async with async_session_factory() as session:
         await recover_interrupted_batches(session, settings)
 
+    # Massenlauf der Neu-Analyse (Issue #39): durch den Neustart unterbrochene
+    # Dokumente (PROCESSING) zurueck in die Warteschlange — es gibt nur den einen
+    # In-Process-Runner, der Lauf macht danach weiter.
+    from app.services.reanalysis_run_service import recover_reanalysis_runs
+
+    await recover_reanalysis_runs(async_session_factory)
+
     # Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) laufen nur
     # in-process: beim Start verwaiste PENDING/RUNNING-Eintraege auf FAILED
     # setzen und alte abgeschlossene Eintraege aufraeumen.
@@ -128,6 +135,14 @@ async def lifespan(app: FastAPI):
         run_queue_worker(async_session_factory, settings)
     )
     background_tasks.append(queue_task)
+
+    # Massenlauf der Neu-Analyse: nimmt Dokumente nur, wenn keine neuen
+    # Eingaenge warten (Vorrang Queue-Worker).
+    from app.services.reanalysis_run_service import run_reanalysis_runner
+
+    background_tasks.append(asyncio.create_task(
+        run_reanalysis_runner(async_session_factory, settings)
+    ))
 
     # Watch-Ordner
     from app.services.watch_folder_service import run_watch_folder

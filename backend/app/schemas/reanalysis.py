@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 # Deutsche Anzeigenamen der Vorschlagsfelder (Schluessel = PROPOSAL_FIELDS).
 FIELD_LABELS: dict[str, str] = {
@@ -66,3 +66,56 @@ class BulkProposalRequest(BaseModel):
     """``field=None``: alle sichtbaren Vorschlaege; sonst nur die mit diesem Feld."""
 
     field: str | None = None
+
+
+# --- Massenlauf -----------------------------------------------------------------
+
+MAX_RUN_DOCUMENTS = 5000
+
+
+class RunRequest(BaseModel):
+    """Auswahl eines Massenlaufs: ``document_ids`` (Haekchen) ODER ``outdated``
+    ("alle, die nicht mit dem aktuellen Modell analysiert wurden")."""
+
+    document_ids: list[str] | None = Field(default=None, max_length=MAX_RUN_DOCUMENTS)
+    outdated: bool = False
+    with_ocr: bool = False
+
+    @model_validator(mode="after")
+    def _one_selection(self) -> "RunRequest":
+        if (self.document_ids is not None) == self.outdated:
+            raise ValueError("Entweder Dokumente auswählen oder „nicht mit aktuellem Modell“ wählen.")
+        return self
+
+
+class RunPreviewResponse(BaseModel):
+    eligible: int
+    reviewed_excluded: int
+    no_text_excluded: int
+    deleted_or_missing: int
+    estimate_seconds: int
+
+
+class RunFailure(BaseModel):
+    document_id: str
+    # None, wenn das Dokument nicht mehr existiert.
+    title: str | None = None
+    error: str | None = None
+
+
+class RunResponse(BaseModel):
+    id: str
+    status: str
+    model: str
+    with_ocr: bool
+    total: int
+    done: int
+    proposed: int
+    unchanged: int
+    failed: int
+    skipped: int
+    last_error: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
+    # Hoechstens RUN_FAILURES_LIMIT fehlgeschlagene/uebersprungene Dokumente mit Grund.
+    failures: list[RunFailure]

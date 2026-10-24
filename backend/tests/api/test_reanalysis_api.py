@@ -398,3 +398,98 @@ async def test_deleted_document_proposal_hidden(client, db_session, test_session
     assert (await client.get(f"/api/reanalysis/proposals/{doc.id}")).status_code == 404
     async with test_session_factory() as session:
         assert (await session.get(Document, doc.id)).status == DocumentStatus.DELETED
+
+
+# --- Massenlauf -----------------------------------------------------------------
+
+
+async def test_runs_preview_endpoint(client, db_session):
+    a = await _doc(db_session)
+    reviewed = await _doc(db_session, review_status=ReviewStatus.REVIEWED)
+    no_text = await _doc(db_session, ocr_text=None)
+
+    resp = await client.post(
+        "/api/reanalysis/runs/preview",
+        json={"document_ids": [a.id, reviewed.id, no_text.id, "fehlt"], "with_ocr": False},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "eligible": 1, "reviewed_excluded": 1, "no_text_excluded": 1,
+        "deleted_or_missing": 1, "estimate_seconds": 45,
+    }
+
+    resp = await client.post("/api/reanalysis/runs/preview", json={"outdated": True, "with_ocr": True})
+    assert resp.status_code == 200
+    assert resp.json()["eligible"] == 2
+    assert resp.json()["estimate_seconds"] == 2 * 45 * 2
+
+
+@pytest.mark.parametrize("body", [
+    {"document_ids": ["a"], "outdated": True},
+    {},
+    {"document_ids": [str(i) for i in range(5001)]},
+])
+async def test_runs_preview_invalid_body_422(client, body):
+    resp = await client.post("/api/reanalysis/runs/preview", json=body)
+    assert resp.status_code == 422
+
+
+async def test_start_run_201_and_current(client, db_session):
+    assert (await client.get("/api/reanalysis/runs/current")).status_code == 404
+
+    a = await _doc(db_session)
+    b = await _doc(db_session)
+    resp = await client.post("/api/reanalysis/runs", json={"document_ids": [a.id, b.id], "with_ocr": True})
+    assert resp.status_code == 201
+    run = resp.json()
+    assert run["status"] == "RUNNING"
+    assert run["with_ocr"] is True
+    assert (run["total"], run["done"], run["proposed"], run["failed"]) == (2, 0, 0, 0)
+    assert run["failures"] == []
+
+    current = await client.get("/api/reanalysis/runs/current")
+    assert current.status_code == 200
+    assert current.json()["id"] == run["id"]
+
+    # Beendete Laeufe bleiben als "zuletzt" abrufbar.
+    assert (await client.post(f"/api/reanalysis/runs/{run['id']}/cancel")).status_code == 200
+    current = (await client.get("/api/reanalysis/runs/current")).json()
+    assert current["id"] == run["id"]
+    assert current["status"] == "CANCELLED"
+    assert current["skipped"] == 2
+
+
+async def test_start_run_empty_422(client, db_session):
+    reviewed = await _doc(db_session, review_status=ReviewStatus.REVIEWED)
+    resp = await client.post("/api/reanalysis/runs", json={"document_ids": [reviewed.id]})
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Keine Dokumente zum Neu-Analysieren."
+
+
+async def test_start_run_conflict_409(client, db_session):
+    doc = await _doc(db_session)
+    first = (await client.post("/api/reanalysis/runs", json={"document_ids": [doc.id]})).json()
+    resp = await client.post("/api/reanalysis/runs", json={"outdated": True})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["detail"] == "Es läuft bereits eine Neu-Analyse."
+    assert body["run"]["id"] == first["id"]
+    assert body["run"]["total"] == 1
+
+
+async def test_pause_resume_cancel(client, db_session):
+    doc = await _doc(db_session)
+    run_id = (await client.post("/api/reanalysis/runs", json={"document_ids": [doc.id]})).json()["id"]
+
+    resp = await client.post(f"/api/reanalysis/runs/{run_id}/pause")
+    assert resp.status_code == 200 and resp.json()["status"] == "PAUSED"
+    resp = await client.post(f"/api/reanalysis/runs/{run_id}/resume")
+    assert resp.status_code == 200 and resp.json()["status"] == "RUNNING"
+    resp = await client.post(f"/api/reanalysis/runs/{run_id}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "CANCELLED"
+    assert resp.json()["skipped"] == 1
+
+    assert (await client.post(f"/api/reanalysis/runs/{run_id}/resume")).status_code == 409
+    assert (await client.post(f"/api/reanalysis/runs/{run_id}/explode")).status_code == 422
+    assert (await client.post("/api/reanalysis/runs/gibt-es-nicht/pause")).status_code == 404
