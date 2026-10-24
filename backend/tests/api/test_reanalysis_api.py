@@ -276,7 +276,7 @@ async def test_apply_all_task(client, db_session, test_session_factory):
     await wait_for_task(task["id"], timeout=10)
     async with test_session_factory() as session:
         stored = await session.get(BackgroundTask, task["id"])
-        assert stored.result == {"applied": 2, "conflicts": 0}
+        assert stored.result == {"applied": 2, "conflicts": 0, "errors": 0}
         assert (await session.get(Document, a.id)).amount == Decimal("120")
         assert (await session.get(Document, b.id)).issuer == "Neue Praxis"
     assert await _proposal_count(test_session_factory) == 0
@@ -294,8 +294,56 @@ async def test_apply_all_with_field_filter_counts_conflicts(client, db_session, 
     await wait_for_task(resp.json()["id"], timeout=10)
     async with test_session_factory() as session:
         stored = await session.get(BackgroundTask, resp.json()["id"])
-    assert stored.result == {"applied": 0, "conflicts": 1}
+    assert stored.result == {"applied": 0, "conflicts": 1, "errors": 0}
     assert await _proposal_count(test_session_factory) == 2  # plain hat keine Bereichs-Aenderung
+
+
+async def test_apply_all_field_filter_applies_all_changes_of_selected(client, db_session, test_session_factory):
+    doc = await _doc(db_session)
+    other = await _doc(db_session)
+    await _propose(db_session, doc, amount=120.0, sender="Neue Praxis")
+    await _propose(db_session, other, sender="Andere Praxis")
+    resp = await client.post("/api/reanalysis/proposals/apply-all", json={"field": "amount"})
+    await wait_for_task(resp.json()["id"], timeout=10)
+    async with test_session_factory() as session:
+        stored = await session.get(BackgroundTask, resp.json()["id"])
+        assert stored.result == {"applied": 1, "conflicts": 0, "errors": 0}
+        changed = await session.get(Document, doc.id)
+        assert changed.amount == Decimal("120") and changed.issuer == "Neue Praxis"
+        assert (await session.get(Document, other.id)).issuer == "Praxis Dr. Muster"
+    assert await _proposal_count(test_session_factory) == 1
+
+
+async def test_apply_all_unexpected_error_is_counted_and_continues(client, db_session, test_session_factory, monkeypatch):
+    from app.api import reanalysis as api
+    from app.services.reanalysis_service import apply_proposal as real_apply
+
+    a = await _doc(db_session)
+    b = await _doc(db_session)
+    await _propose(db_session, a, amount=120.0)
+    await _propose(db_session, b, amount=130.0)
+
+    async def flaky(session, document_id, *args, **kwargs):
+        if document_id == a.id:
+            raise RuntimeError("boom")
+        return await real_apply(session, document_id, *args, **kwargs)
+
+    monkeypatch.setattr(api, "apply_proposal", flaky)
+    resp = await client.post("/api/reanalysis/proposals/apply-all", json={})
+    await wait_for_task(resp.json()["id"], timeout=10)
+    async with test_session_factory() as session:
+        stored = await session.get(BackgroundTask, resp.json()["id"])
+        assert stored.status == TaskStatus.SUCCEEDED
+        assert stored.result == {"applied": 1, "conflicts": 0, "errors": 1}
+        assert (await session.get(Document, b.id)).amount == Decimal("130")
+
+
+async def test_apply_empty_fields_422(client, db_session, test_session_factory):
+    doc = await _doc(db_session)
+    await _propose(db_session, doc, amount=120.0)
+    resp = await client.post(f"/api/reanalysis/proposals/{doc.id}/apply", json={"fields": []})
+    assert resp.status_code == 422
+    assert await _proposal_count(test_session_factory) == 1
 
 
 async def test_apply_all_second_start_conflicts(client, db_session):

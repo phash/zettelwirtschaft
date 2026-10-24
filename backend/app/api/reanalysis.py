@@ -134,6 +134,8 @@ async def apply_document_proposal(
     """Uebernimmt die gewaehlten Felder (``fields=None``: alle) und erledigt den Vorschlag."""
     fields = body.fields if body is not None else None
     if fields is not None:
+        if not fields:
+            raise HTTPException(422, "Keine Felder ausgewählt. Zum Ablehnen den Vorschlag verwerfen.")
         for name in fields:
             _validated_field(name)
     try:
@@ -176,7 +178,9 @@ async def apply_all_proposals(
     """Uebernimmt alle sichtbaren Vorschlaege (mit ``field``: nur dieses Feld) als Hintergrund-Vorgang.
 
     Pro Dokument eigene Session; ein Konflikt (z.B. fehlende Datei) wird
-    gezaehlt und bricht den Lauf nicht ab. Ergebnis: ``{"applied", "conflicts"}``.
+    gezaehlt und bricht den Lauf nicht ab, ebenso unerwartete Fehler (``errors``).
+    Der Feldfilter waehlt nur die Dokumente aus; uebernommen werden dann alle
+    aktuellen Aenderungen des Vorschlags. Ergebnis: ``{"applied", "conflicts", "errors"}``.
     """
     field = _validated_field(body.field if body is not None else None)
     document_ids = [
@@ -184,24 +188,26 @@ async def apply_all_proposals(
         for item in await list_visible_proposals(session, settings)
         if _matches(item, field)
     ]
-    only = {field} if field is not None else None
 
     async def work(ctx: TaskContext) -> dict:
-        applied = conflicts = 0
+        applied = conflicts = errors = 0
         total = len(document_ids)
         for index, document_id in enumerate(document_ids, start=1):
             async with ctx.session_factory() as doc_session:
                 try:
                     await apply_proposal(
-                        doc_session, document_id, settings, only, session_factory=ctx.session_factory,
+                        doc_session, document_id, settings, session_factory=ctx.session_factory,
                     )
                     applied += 1
                 except ProposalConflict:
                     conflicts += 1
                 except ProposalNotFound:
                     pass  # inzwischen verworfen oder Dokument geloescht
+                except Exception:
+                    logger.exception("Vorschlag für Dokument %s konnte nicht übernommen werden", document_id)
+                    errors += 1
             await ctx.report_progress(index * 100 // total, f"{index} von {total} Vorschlägen bearbeitet …")
-        return {"applied": applied, "conflicts": conflicts}
+        return {"applied": applied, "conflicts": conflicts, "errors": errors}
 
     task = await start_task(
         session_factory, APPLY_ALL_TASK_KIND, work, key="global",
