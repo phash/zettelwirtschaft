@@ -175,6 +175,19 @@ class TestArchiveDocument:
         )
         assert result.scalar_one().action == "CREATED"
 
+    async def test_archive_sets_analysis_model(
+        self, test_settings: Settings, db_session: AsyncSession, sample_pdf: Path,
+    ):
+        doc = await _archive(test_settings, db_session, sample_pdf, _make_analysis_result())
+        assert doc.analysis_model == test_settings.OLLAMA_MODEL
+
+    async def test_archive_without_llm_leaves_analysis_model_null(
+        self, test_settings: Settings, db_session: AsyncSession, sample_pdf: Path,
+    ):
+        analysis = _make_analysis_result(llm_error="unreachable")
+        doc = await _archive(test_settings, db_session, sample_pdf, analysis)
+        assert doc.analysis_model is None
+
     async def test_duplicate_detection(
         self, test_settings: Settings, db_session: AsyncSession, tmp_path: Path,
     ):

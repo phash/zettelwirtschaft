@@ -139,6 +139,9 @@ class Document(Base):
     # Seiten im Original, z.B. "3-11,13-44"
     source_pages: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
+    # Modell-Tag der zuletzt uebernommenen bzw. geprueften KI-Analyse
+    analysis_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     # Status
     status: Mapped[str] = mapped_column(
         Enum(DocumentStatus, native_enum=False),

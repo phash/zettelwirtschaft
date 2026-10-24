@@ -79,6 +79,23 @@ class TestAnalysisResult:
         assert "warranty_info" in d
 
 
+class TestAnalysisResultRoundtrip:
+    def test_analysis_result_dict_roundtrip(self):
+        result = AnalysisResult(
+            document_type="RECHNUNG", confidence=0.8, title="T", sender="S",
+            amount=12.5, currency="EUR", tags=["a", "b"], tax_relevant=True,
+            tax_category="Werbungskosten", tax_year=2024,
+            warranty_info={"product_name": "Waschmaschine", "duration_months": 24},
+            needs_review=True,
+            review_questions=["Wer ist der Absender?", {"question": "Datum?", "field_affected": "document_date"}],
+            filing_scope="Praxis", filing_scope_confidence=0.6, llm_error=None,
+        )
+        assert AnalysisResult.from_dict(result.to_dict()) == result
+
+    def test_from_dict_ignores_unknown_keys(self):
+        assert AnalysisResult.from_dict({"title": "X", "zukunft": 1}).title == "X"
+
+
 class TestAnalyzeDocument:
     async def test_full_pipeline_success(self, test_settings: Settings, tmp_path: Path):
         """Vollstaendige Pipeline: OCR + LLM-Analyse erfolgreich."""

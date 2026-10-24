@@ -146,6 +146,9 @@ def test_detect_stamp_recognizes_split_batches(migrated_db: Path):
     conn = sqlite3.connect(migrated_db)
     try:
         cur = conn.cursor()
+        # Marker spaeterer Migrationen (019) entfernen, damit 018 das Ergebnis ist.
+        for table in ("reanalysis_run_items", "reanalysis_proposals", "reanalysis_runs"):
+            conn.execute(f"DROP TABLE {table}")
         assert migrate.detect_stamp(cur) == _REVISION
         conn.execute("DROP TABLE split_batches")
         assert migrate.detect_stamp(cur) == "016_schema_consistency"

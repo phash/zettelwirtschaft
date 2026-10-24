@@ -644,6 +644,12 @@ async def archive_document(
         tax_year=analysis.tax_year,
         tax_category=tax_category,
         filing_scope_id=scope.scope_id,
+        # Modell nur merken, wenn die KI wirklich geantwortet hat
+        analysis_model=(
+            settings.OLLAMA_MODEL
+            if analysis_result is not None and analysis.llm_error is None
+            else None
+        ),
         status=DocumentStatus.ACTIVE,
         review_status=review_status,
         ai_confidence=analysis.confidence,
