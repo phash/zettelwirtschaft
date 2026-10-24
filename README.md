@@ -193,7 +193,7 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ### Unreleased
 - **Neu analysieren mit Änderungsvorschlag (#39):** Ein Dokument lässt sich in der Detailansicht mit dem aktuellen KI-Modell neu analysieren (optional mit neuer Texterkennung). Das Ergebnis ist immer ein Vorschlag: die App zeigt die Unterschiede zum aktuellen Stand, du übernimmst alles oder nur einzelne Felder; von dir bearbeitete Felder bleiben geschützt. Ändern sich nur Titel und Zusammenfassung, gilt das Dokument als unverändert.
-- **Sammellauf:** In der Dokumentliste lassen sich mehrere Dokumente auswählen und gemeinsam neu analysieren. Der Lauf startet nur, wenn keine neuen Dokumente warten oder verarbeitet werden, wartet bei Ollama-Ausfällen und setzt nach einem Neustart fort; bereits geprüfte Dokumente werden ausgelassen. Am Ende erscheint eine Benachrichtigung; die Vorschläge stehen unter „Zu prüfen“ → „Änderungsvorschläge“ und lassen sich gesammelt übernehmen.
+- **Sammellauf:** In der Dokumentliste lassen sich mehrere Dokumente auswählen und gemeinsam neu analysieren. Der Lauf startet nur, wenn keine neuen Dokumente warten oder verarbeitet werden, wartet bei Ollama-Ausfällen und setzt nach einem Neustart fort; freigegebene Dokumente werden ausgelassen. Am Ende erscheint eine Benachrichtigung; die Vorschläge stehen unter „Zu prüfen“ → „Änderungsvorschläge“ und lassen sich gesammelt übernehmen.
 - Datenbank: Migration `019_reanalysis` (Vorschläge, Läufe, `documents.analysis_model`).
 
 ### v1.7.0
