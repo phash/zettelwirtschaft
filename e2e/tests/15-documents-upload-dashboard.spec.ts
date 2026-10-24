@@ -337,7 +337,7 @@ test.describe('Dokumentliste', () => {
     const cards = page.getByTestId('document-card');
     await expect(cards).toHaveCount(MOCK_DOCUMENTS.items.length);
     await expect(page.locator('table')).toHaveCount(0);
-    await expect(cards.first().getByRole('checkbox')).toBeVisible();
+    await expect(cards.first().getByRole('checkbox', { name: /steuerrelevant$/ })).toBeVisible();
 
     // Sortierung ist ohne Tabellenkoepfe ueber eine Auswahl erreichbar.
     const requested: string[] = [];

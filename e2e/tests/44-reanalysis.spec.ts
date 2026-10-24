@@ -1,6 +1,10 @@
 import { test, expect, Page } from '@playwright/test';
 import {
   setupDashboardMocks,
+  setupDocumentsMocks,
+  makeMockRun,
+  makeMockRunPreview,
+  MOCK_DOCUMENTS,
   setupDocumentDetailMocks,
   setupNotificationMocks,
   setupReviewMocks,
@@ -10,7 +14,7 @@ import {
   MOCK_DOCUMENT_DETAIL,
   MOCK_DOCUMENT_WITH_QUESTIONS,
 } from '../helpers/mock.helpers';
-import type { ApplyRequest, DocumentResponse, ProposalListResponse, ReanalyzeRequest } from '../helpers/api-types';
+import type { ApplyRequest, DocumentResponse, ProposalListResponse, ReanalyzeRequest, RunResponse } from '../helpers/api-types';
 
 // Neu analysieren (Issue #39): Knopf + Dialog am Dokument, Änderungsvorschlag
 // mit Diff, Übernahme nur der angehakten Felder; Re-Analyse in der Prüfung.
@@ -377,5 +381,244 @@ test.describe('Änderungsvorschläge auf der Prüfen-Seite', () => {
     await page.getByRole('button', { name: 'Neu-Analyse abgeschlossen – Vorschläge prüfen' }).click();
     await expect(page).toHaveURL(/\/pruefen\?tab=vorschlaege/);
     await expect(page.getByRole('tab', { name: 'Änderungsvorschläge (2)' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+// ------------------------------------------------------------------
+// Massenlauf aus der Dokumentliste
+// ------------------------------------------------------------------
+
+test.describe('Massenlauf in der Dokumentliste', () => {
+  const [DOC_A, DOC_B] = MOCK_DOCUMENTS.items;
+  const POLL_MS = 5000;
+  type RunBody = { document_ids: string[] | null; outdated: boolean; with_ocr: boolean };
+
+  /** Mockt Vorschau + Start; gibt die empfangenen Bodies zurück. */
+  async function mockRunEndpoints(page: Page, opts: { preview?: (body: RunBody) => object; started?: RunResponse } = {}) {
+    const previews: RunBody[] = [];
+    const starts: RunBody[] = [];
+    await page.route('**/api/reanalysis/runs/preview', (route) => {
+      const body = route.request().postDataJSON() as RunBody;
+      previews.push(body);
+      return route.fulfill({ json: opts.preview ? opts.preview(body) : makeMockRunPreview({ eligible: 2 }) });
+    });
+    await page.route('**/api/reanalysis/runs', (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      starts.push(route.request().postDataJSON() as RunBody);
+      return route.fulfill({ status: 201, json: opts.started ?? makeMockRun({ total: 2, done: 0, proposed: 0 }) });
+    });
+    return { previews, starts };
+  }
+
+  /** Mockt GET /runs/current mit einem veränderlichen Lauf. */
+  async function mockCurrentRun(page: Page, initial: RunResponse | null) {
+    const state = { run: initial, polls: 0 };
+    await page.route('**/api/reanalysis/runs/current', (route) => {
+      state.polls += 1;
+      return state.run
+        ? route.fulfill({ json: state.run })
+        : route.fulfill({ status: 404, json: { detail: 'Kein Lauf.' } });
+    });
+    return state;
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await setupDocumentsMocks(page);
+  });
+
+  test('liste: Auswahl zeigt Aktionsleiste und startet Lauf mit IDs', async ({ page }) => {
+    const { previews, starts } = await mockRunEndpoints(page);
+    await page.goto('/dokumente');
+    await expect(page.getByTestId('selection-bar')).toHaveCount(0);
+
+    await page.getByRole('checkbox', { name: `${DOC_A.title} auswählen` }).check();
+    await page.getByRole('checkbox', { name: `${DOC_B.title} auswählen` }).check();
+    const bar = page.getByTestId('selection-bar');
+    await expect(bar).toContainText('2 ausgewählt');
+    await expect(bar.getByRole('button', { name: 'Auswahl aufheben' })).toBeVisible();
+
+    await bar.getByRole('button', { name: 'Neu analysieren' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByTestId('reanalyze-preview')).toContainText('2 Dokumente');
+    expect(previews).toEqual([{ document_ids: [DOC_A.id, DOC_B.id], outdated: false, with_ocr: false }]);
+
+    await dialog.getByRole('button', { name: 'Neu analysieren' }).click();
+    await expect.poll(() => starts).toEqual([{ document_ids: [DOC_A.id, DOC_B.id], outdated: false, with_ocr: false }]);
+
+    // Auswahl geleert, Laufstatus sofort sichtbar
+    await expect(page.getByTestId('selection-bar')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByTestId('reanalysis-run-status')).toContainText('Neu-Analyse: 0 von 2');
+  });
+
+  test('liste: Auswahl aufheben leert die Auswahl', async ({ page }) => {
+    await mockRunEndpoints(page);
+    await page.goto('/dokumente');
+    const box = page.getByRole('checkbox', { name: `${DOC_A.title} auswählen` });
+    await box.check();
+    await page.getByTestId('selection-bar').getByRole('button', { name: 'Auswahl aufheben' }).click();
+    await expect(page.getByTestId('selection-bar')).toHaveCount(0);
+    await expect(box).not.toBeChecked();
+  });
+
+  test('liste: Alle auf dieser Seite wählt alle Zeilen (Desktop)', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'Tabellenkopf nur auf dem Desktop');
+    await page.goto('/dokumente');
+    const all = page.getByRole('checkbox', { name: 'Alle auf dieser Seite auswählen' });
+    await all.check();
+    await expect(page.getByTestId('selection-bar')).toContainText(`${MOCK_DOCUMENTS.items.length} ausgewählt`);
+    await all.uncheck();
+    await expect(page.getByTestId('selection-bar')).toHaveCount(0);
+  });
+
+  test('liste: Filterwechsel leert die Auswahl', async ({ page }) => {
+    await page.goto('/dokumente');
+    await page.getByRole('checkbox', { name: `${DOC_A.title} auswählen` }).check();
+    await expect(page.getByTestId('selection-bar')).toBeVisible();
+    await page.getByLabel('Typ').selectOption('RECHNUNG');
+    await expect(page.getByTestId('selection-bar')).toHaveCount(0);
+  });
+
+  test('liste: Mit aktuellem Modell zeigt Vorschau-Zahlen und OCR lädt neu', async ({ page }) => {
+    const { previews, starts } = await mockRunEndpoints(page, {
+      preview: (body) => body.with_ocr
+        ? makeMockRunPreview({ eligible: 9, no_text_excluded: 0, reviewed_excluded: 3 })
+        : makeMockRunPreview({ eligible: 5, no_text_excluded: 2, reviewed_excluded: 3 }),
+    });
+    await page.goto('/dokumente');
+
+    await page.getByRole('button', { name: 'Mit aktuellem Modell neu analysieren …' }).click();
+    const dialog = page.getByRole('dialog');
+    const preview = dialog.getByTestId('reanalyze-preview');
+    await expect(preview).toContainText('5 Dokumente, ca. 3 Min.');
+    await expect(preview).toContainText('3 freigegebene bleiben unverändert');
+    await expect(preview).toContainText('2 ohne erkannten Text');
+    expect(previews).toEqual([{ document_ids: null, outdated: true, with_ocr: false }]);
+
+    await dialog.getByLabel('Text neu erkennen (OCR) — dauert länger').check();
+    await expect(preview).toContainText('9 Dokumente');
+    await expect(preview).not.toContainText('ohne erkannten Text');
+    expect(previews.at(-1)).toEqual({ document_ids: null, outdated: true, with_ocr: true });
+
+    await dialog.getByRole('button', { name: 'Neu analysieren' }).click();
+    await expect.poll(() => starts).toEqual([{ document_ids: null, outdated: true, with_ocr: true }]);
+  });
+
+  test('liste: eligible 0 deaktiviert Start', async ({ page }) => {
+    const { starts } = await mockRunEndpoints(page, {
+      preview: () => makeMockRunPreview({ eligible: 0, reviewed_excluded: 4 }),
+    });
+    await page.goto('/dokumente');
+    await page.getByRole('button', { name: 'Mit aktuellem Modell neu analysieren …' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByTestId('reanalyze-preview')).toContainText('0 Dokumente');
+    await expect(dialog.getByRole('button', { name: 'Neu analysieren' })).toBeDisabled();
+    expect(starts).toEqual([]);
+  });
+
+  test('liste: laufender Lauf (409) zeigt Hinweis und dessen Status', async ({ page }) => {
+    const active = makeMockRun({ id: 'run-active', total: 7, done: 3 });
+    await page.route('**/api/reanalysis/runs/preview', (route) => route.fulfill({ json: makeMockRunPreview() }));
+    await page.route('**/api/reanalysis/runs', (route) =>
+      route.request().method() === 'POST'
+        ? route.fulfill({ status: 409, json: { detail: 'Es läuft bereits eine Neu-Analyse.', run: active } })
+        : route.fallback(),
+    );
+    await page.goto('/dokumente');
+    await page.getByRole('button', { name: 'Mit aktuellem Modell neu analysieren …' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Neu analysieren' }).click();
+
+    await expect(page.getByText('Es läuft bereits eine Neu-Analyse.')).toBeVisible();
+    await expect(page.getByTestId('reanalysis-run-status')).toContainText('Neu-Analyse: 3 von 7');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+
+  test('liste: Laufstatus pausieren/fortsetzen', async ({ page }) => {
+    await page.clock.install();
+    const state = await mockCurrentRun(page, makeMockRun({ total: 4, done: 1 }));
+    const actions: string[] = [];
+    await page.route(/\/api\/reanalysis\/runs\/run-1\/(pause|resume|cancel)$/, (route) => {
+      const action = route.request().url().split('/').pop() as string;
+      actions.push(action);
+      const status = action === 'pause' ? 'PAUSED' : action === 'resume' ? 'RUNNING' : 'CANCELLED';
+      state.run = makeMockRun({
+        total: 4, done: 1, status,
+        finished_at: action === 'cancel' ? new Date().toISOString() : null,
+      });
+      return route.fulfill({ json: state.run });
+    });
+    await page.goto('/dokumente');
+
+    const status = page.getByTestId('reanalysis-run-status');
+    await expect(status).toContainText('Neu-Analyse: 1 von 4');
+
+    // Polling alle 5 s übernimmt den Fortschritt
+    state.run = makeMockRun({ total: 4, done: 2 });
+    await page.clock.runFor(POLL_MS);
+    await expect(status).toContainText('Neu-Analyse: 2 von 4');
+
+    await status.getByRole('button', { name: 'Pausieren' }).click();
+    await expect(status).toContainText('pausiert');
+    await status.getByRole('button', { name: 'Fortsetzen' }).click();
+    await expect(status.getByRole('button', { name: 'Pausieren' })).toBeVisible();
+    expect(actions).toEqual(['pause', 'resume']);
+
+    // Abbrechen fragt nach
+    await status.getByRole('button', { name: 'Abbrechen' }).click();
+    const confirm = page.getByRole('alertdialog');
+    await expect(confirm).toContainText('Neu-Analyse abbrechen?');
+    await confirm.getByRole('button', { name: 'Lauf abbrechen' }).click();
+    await expect.poll(() => actions).toEqual(['pause', 'resume', 'cancel']);
+    await expect(status).toContainText('Neu-Analyse abgebrochen');
+
+    // Endzustand: kein weiteres Polling
+    const polls = state.polls;
+    await page.clock.runFor(POLL_MS * 3);
+    expect(state.polls).toBe(polls);
+  });
+
+  test('liste: wartet auf KI wird angezeigt', async ({ page }) => {
+    await mockCurrentRun(page, makeMockRun({ status: 'WAITING_AI', last_error: 'Ollama ist nicht erreichbar.' }));
+    await page.goto('/dokumente');
+    const status = page.getByTestId('reanalysis-run-status');
+    await expect(status).toContainText('wartet auf KI');
+    await expect(status).toContainText('Ollama ist nicht erreichbar.');
+  });
+
+  test('liste: fertiger Lauf zeigt Zusammenfassung, Link und Fehler', async ({ page }) => {
+    await mockCurrentRun(page, makeMockRun({
+      status: 'DONE', total: 4, done: 4, proposed: 2, unchanged: 1, failed: 1,
+      finished_at: new Date().toISOString(),
+      failures: [{ document_id: 'doc-x', title: 'Defekte Rechnung', error: 'Zeitüberschreitung' }],
+    }));
+    await page.goto('/dokumente');
+    const status = page.getByTestId('reanalysis-run-status');
+    await expect(status).toContainText('Neu-Analyse abgeschlossen');
+    await expect(status).toContainText('2 mit Vorschlag');
+    await expect(status.getByRole('link', { name: 'Vorschläge prüfen' })).toHaveAttribute('href', '/pruefen?tab=vorschlaege');
+    await status.getByText('Fehler anzeigen').click();
+    await expect(status).toContainText('Defekte Rechnung');
+    await expect(status).toContainText('Zeitüberschreitung');
+  });
+
+  test('liste: alter beendeter Lauf bleibt ausgeblendet', async ({ page }) => {
+    const state = await mockCurrentRun(page, makeMockRun({
+      status: 'DONE', total: 4, done: 4,
+      finished_at: new Date(Date.now() - 25 * 3600 * 1000).toISOString(),
+    }));
+    await page.goto('/dokumente');
+    await expect(page.getByRole('link', { name: `Dokument ${DOC_A.title} öffnen` })).toBeVisible();
+    await expect.poll(() => state.polls).toBeGreaterThan(0);
+    await expect(page.getByTestId('reanalysis-run-status')).toHaveCount(0);
+  });
+
+  test('mobile: Karten-Checkbox wählt aus', async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'Karten nur auf dem Smartphone');
+    await page.goto('/dokumente');
+    const card = page.getByTestId('document-card').filter({ hasText: DOC_A.title });
+    await card.getByRole('checkbox', { name: `${DOC_A.title} auswählen` }).check();
+    await expect(page.getByTestId('selection-bar')).toContainText('1 ausgewählt');
+    // Steuer-Checkbox bleibt eigenständig
+    await expect(card.getByRole('checkbox', { name: `${DOC_A.title} steuerrelevant` })).toBeChecked();
   });
 });

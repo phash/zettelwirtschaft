@@ -22,6 +22,8 @@ import type {
   ProposalResponse,
   ProposalListResponse,
   QueueStatus,
+  RunPreview,
+  RunResponse,
   ReviewDetailResponse,
   ReviewPendingResponse,
   ReviewStats,
@@ -722,6 +724,31 @@ export function makeMockProposal(overrides: Partial<ProposalResponse> = {}): Pro
   };
 }
 
+// Massenlauf "Neu analysieren" (GET /api/reanalysis/runs/current u.a.).
+export function makeMockRun(overrides: Partial<RunResponse> = {}): RunResponse {
+  return {
+    id: 'run-1',
+    status: 'RUNNING',
+    model: 'gemma4:12b-it-qat',
+    with_ocr: false,
+    total: 4,
+    done: 1,
+    proposed: 1,
+    unchanged: 0,
+    failed: 0,
+    skipped: 0,
+    last_error: null,
+    created_at: '2026-10-24T10:00:00Z',
+    finished_at: null,
+    failures: [],
+    ...overrides,
+  };
+}
+
+export function makeMockRunPreview(overrides: Partial<RunPreview> = {}): RunPreview {
+  return { eligible: 5, reviewed_excluded: 0, no_text_excluded: 0, deleted_or_missing: 0, estimate_seconds: 150, ...overrides };
+}
+
 export const MOCK_EMAIL_ACCOUNTS = [
   {
     id: 1,
@@ -849,6 +876,10 @@ export async function setupBaseMocks(page: Page) {
   await installApiFallback(page);
   // Onboarding-Tests entfernen den Key per eigenem addInitScript wieder.
   await markOnboardingSeen(page);
+  // Kein Massenlauf bekannt (die Statusanzeige über der Dokumentliste bleibt ausgeblendet).
+  await page.route('**/api/reanalysis/runs/current', (route) =>
+    route.fulfill({ status: 404, json: { detail: 'Kein Lauf.' } })
+  );
   await page.route('**/api/health', (route) =>
     route.fulfill({ json: MOCK_HEALTH })
   );
