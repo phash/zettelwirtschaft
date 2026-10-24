@@ -109,11 +109,14 @@ async function openNotification(n) {
   if (n.document_id) router.push(`/dokumente/${n.document_id}`)
   // Stapel wartet auf die Aufteilung: Abschnitt "Stapel zum Aufteilen" in Prüfen
   else if (n.type === 'SPLIT_NEEDED') router.push('/pruefen')
+  // Massenlauf der Neu-Analyse fertig: Tab "Änderungsvorschläge" in Prüfen
+  else if (n.type === 'REANALYSIS_DONE') router.push('/pruefen?tab=vorschlaege')
 }
 
 function notificationLabel(n) {
   if (n.document_id) return `${n.title} – Dokument öffnen`
   if (n.type === 'SPLIT_NEEDED') return `${n.title} – Stapel prüfen`
+  if (n.type === 'REANALYSIS_DONE') return `${n.title} – Vorschläge prüfen`
   return `${n.title} – als gelesen markieren`
 }
 

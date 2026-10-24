@@ -1,6 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
 import {
+  setupDashboardMocks,
   setupDocumentDetailMocks,
+  setupNotificationMocks,
   setupReviewMocks,
   makeMockTask,
   makeMockProposal,
@@ -8,7 +10,7 @@ import {
   MOCK_DOCUMENT_DETAIL,
   MOCK_DOCUMENT_WITH_QUESTIONS,
 } from '../helpers/mock.helpers';
-import type { ApplyRequest, DocumentResponse, ReanalyzeRequest } from '../helpers/api-types';
+import type { ApplyRequest, DocumentResponse, ProposalListResponse, ReanalyzeRequest } from '../helpers/api-types';
 
 // Neu analysieren (Issue #39): Knopf + Dialog am Dokument, Änderungsvorschlag
 // mit Diff, Übernahme nur der angehakten Felder; Re-Analyse in der Prüfung.
@@ -254,5 +256,126 @@ test.describe('Neu analysieren in der Prüfung', () => {
     await diff.getByRole('button', { name: 'Alles übernehmen' }).click();
     await expect.poll(() => applied).toEqual([{ fields: null }]);
     await expect(page.getByText('Änderungen übernommen.')).toBeVisible();
+  });
+});
+
+test.describe('Änderungsvorschläge auf der Prüfen-Seite', () => {
+  const PROPOSALS_URL = /\/api\/reanalysis\/proposals(\?.*)?$/;
+  const FIELD_COUNTS = { amount: 2, issuer: 2, document_date: 1 };
+
+  function proposalList(total = 2): ProposalListResponse {
+    return {
+      items: [
+        makeMockProposal({ document_id: 'doc-a', document_title: 'Stromrechnung 2026' }),
+        makeMockProposal({
+          document_id: 'doc-b',
+          document_title: 'Telefonrechnung',
+          changes: [{ field: 'amount', label: 'Betrag', old: '10.00', new: '12.00' }],
+        }),
+      ].slice(0, total),
+      total,
+      field_counts: FIELD_COUNTS,
+    };
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await setupReviewMocks(page);
+  });
+
+  test('pruefen: Tab Änderungsvorschläge zeigt Anzahl und Liste', async ({ page }) => {
+    await page.route(PROPOSALS_URL, (route) => route.fulfill({ json: proposalList() }));
+    await page.goto('/pruefen');
+
+    const tab = page.getByRole('tab', { name: 'Änderungsvorschläge (2)' });
+    await expect(tab).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Rückfragen' })).toHaveAttribute('aria-selected', 'true');
+
+    await tab.click();
+    await expect(page).toHaveURL(/\/pruefen\?tab=vorschlaege/);
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('link', { name: 'Stromrechnung 2026' })).toHaveAttribute('href', '/dokumente/doc-a');
+    await expect(page.getByRole('link', { name: 'Telefonrechnung' })).toBeVisible();
+    await expect(page.getByTestId('proposal-diff')).toHaveCount(0);
+
+    await page.getByTestId('proposal-entry-doc-a').getByRole('button', { name: 'Änderungen anzeigen' }).click();
+    await expect(page.getByTestId('proposal-diff')).toHaveCount(1);
+    await expect(page.getByTestId('proposal-row-amount')).toContainText('98,50');
+  });
+
+  test('pruefen: Feldfilter lädt mit field=amount', async ({ page }) => {
+    const fields: (string | null)[] = [];
+    await page.route(PROPOSALS_URL, (route) => {
+      fields.push(new URL(route.request().url()).searchParams.get('field'));
+      return route.fulfill({ json: proposalList() });
+    });
+    await page.goto('/pruefen?tab=vorschlaege');
+
+    const filter = page.getByLabel('Feld');
+    await expect(filter.locator('option')).toHaveText(['Alle Felder', 'Betrag (2)', 'Aussteller (2)', 'Datum (1)']);
+    await filter.selectOption({ label: 'Betrag (2)' });
+    await expect.poll(() => fields.at(-1)).toBe('amount');
+  });
+
+  test('pruefen: Alle übernehmen fragt nach und startet Task', async ({ page }) => {
+    let applied = false;
+    await page.route(PROPOSALS_URL, (route) =>
+      route.fulfill({ json: applied ? { items: [], total: 0, field_counts: {} } : proposalList() }),
+    );
+    const bodies: unknown[] = [];
+    await page.route('**/api/reanalysis/proposals/apply-all', (route) => {
+      bodies.push(route.request().postDataJSON());
+      applied = true;
+      return route.fulfill({ status: 202, json: makeMockTask({ id: 'task-all', kind: 'reanalysis_apply_all', key: 'global' }) });
+    });
+    await mockBackgroundTaskPolling(page, 'task-all', [
+      { kind: 'reanalysis_apply_all', key: 'global', status: 'SUCCEEDED', result: { applied: 1, conflicts: 1, errors: 0 } },
+    ]);
+    await page.goto('/pruefen?tab=vorschlaege');
+
+    await page.getByRole('button', { name: 'Alle übernehmen (2)' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('2 Vorschläge');
+    expect(bodies).toEqual([]);
+    await dialog.getByRole('button', { name: 'Alle übernehmen' }).click();
+
+    await expect.poll(() => bodies).toEqual([{ field: null }]);
+    await expect(page.getByText('1 übernommen, 1 mit Konflikt')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Keine offenen Änderungsvorschläge.')).toBeVisible();
+  });
+
+  test('pruefen: Alle verwerfen fragt nach und sendet den Filter', async ({ page }) => {
+    await page.route(PROPOSALS_URL, (route) => route.fulfill({ json: proposalList() }));
+    const bodies: unknown[] = [];
+    await page.route('**/api/reanalysis/proposals/discard-all', (route) => {
+      bodies.push(route.request().postDataJSON());
+      return route.fulfill({ json: { discarded: 2 } });
+    });
+    await page.goto('/pruefen?tab=vorschlaege');
+
+    await page.getByLabel('Feld').selectOption({ label: 'Betrag (2)' });
+    await page.getByRole('button', { name: 'Alle verwerfen (2)' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Alle verwerfen' }).click();
+    await expect.poll(() => bodies).toEqual([{ field: 'amount' }]);
+    await expect(page.getByText('2 Vorschläge verworfen.')).toBeVisible();
+  });
+
+  test('benachrichtigung: REANALYSIS_DONE öffnet Vorschläge-Tab', async ({ page }) => {
+    await setupDashboardMocks(page);
+    await setupNotificationMocks(page, [{
+      id: 'notif-re',
+      type: 'REANALYSIS_DONE',
+      title: 'Neu-Analyse abgeschlossen',
+      message: '12 Vorschläge warten auf Prüfung.',
+      is_read: false,
+      created_at: '2026-10-24T08:00:00Z',
+      document_id: null,
+    }]);
+    await page.route(PROPOSALS_URL, (route) => route.fulfill({ json: proposalList() }));
+    await page.goto('/');
+
+    await page.getByRole('button', { name: /Benachrichtigungen/ }).click();
+    await page.getByRole('button', { name: 'Neu-Analyse abgeschlossen – Vorschläge prüfen' }).click();
+    await expect(page).toHaveURL(/\/pruefen\?tab=vorschlaege/);
+    await expect(page.getByRole('tab', { name: 'Änderungsvorschläge (2)' })).toHaveAttribute('aria-selected', 'true');
   });
 });

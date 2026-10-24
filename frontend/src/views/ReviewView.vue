@@ -1,11 +1,13 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
 import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
+import ReanalysisProposals from '../components/reanalysis/ReanalysisProposals.vue'
 import {
   getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument,
-  getProposal, applyProposal, discardProposal, getSplitBatches, splitPageThumbnailUrl,
+  getProposal, applyProposal, discardProposal, getProposals, getSplitBatches, splitPageThumbnailUrl,
 } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
@@ -394,9 +396,30 @@ function splitProposalLabel(batch) {
   return 'Noch nicht aufgeteilt'
 }
 
+// --- Tabs: Rückfragen | Änderungsvorschläge (?tab=vorschlaege) -------------
+const route = useRoute()
+const router = useRouter()
+const tab = computed(() => (route.query.tab === 'vorschlaege' ? 'vorschlaege' : 'rueckfragen'))
+
+function selectTab(next) {
+  if (next !== tab.value) router.replace({ query: next === 'vorschlaege' ? { tab: next } : {} })
+}
+
+// Zähler im Tab = alle offenen Vorschläge (ungefiltert); null = unbekannt.
+const proposalCount = ref(null)
+
+async function loadProposalCount() {
+  try {
+    proposalCount.value = (await getProposals({ page: 1, page_size: 1 })).total
+  } catch {
+    proposalCount.value = null
+  }
+}
+
 onMounted(() => {
   loadReviewDocs()
   loadSplitBatches()
+  loadProposalCount()
 })
 </script>
 
@@ -409,6 +432,27 @@ onMounted(() => {
       </span>
     </div>
 
+    <div role="tablist" aria-label="Prüfen" class="flex gap-1 border-b border-gray-200">
+      <button
+        v-for="t in [
+          { id: 'rueckfragen', label: 'Rückfragen' },
+          { id: 'vorschlaege', label: proposalCount === null ? 'Änderungsvorschläge' : `Änderungsvorschläge (${proposalCount})` },
+        ]"
+        :key="t.id"
+        type="button"
+        role="tab"
+        :aria-selected="tab === t.id"
+        :class="[
+          '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
+          tab === t.id ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-700',
+        ]"
+        @click="selectTab(t.id)"
+      >{{ t.label }}</button>
+    </div>
+
+    <ReanalysisProposals v-if="tab === 'vorschlaege'" role="tabpanel" @changed="loadProposalCount" />
+
+    <template v-else>
     <!-- Stapel zum Aufteilen -->
     <section v-if="splitBatches.length > 0" class="card space-y-3" data-testid="review-split-batches" aria-labelledby="review-split-heading">
       <h2 id="review-split-heading" class="text-lg font-semibold text-gray-900">Stapel zum Aufteilen ({{ splitTotal }})</h2>
@@ -680,6 +724,8 @@ onMounted(() => {
         <button v-if="queue.length > 1" @click="deferDocument" class="btn-secondary">Später</button>
       </div>
     </div>
+
+    </template>
 
     <ConfirmDialog
       :show="showAcceptConfirm"

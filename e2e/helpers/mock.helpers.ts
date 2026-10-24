@@ -20,6 +20,7 @@ import type {
   Paginated,
   ProcessedEmailResponse,
   ProposalResponse,
+  ProposalListResponse,
   QueueStatus,
   ReviewDetailResponse,
   ReviewPendingResponse,
@@ -1096,6 +1097,10 @@ export async function setupReviewMocks(
   // Stapel zum Aufteilen: standardmaessig keine (Tests ueberschreiben per page.route)
   await page.route('**/api/split?*', (route) =>
     route.fulfill({ json: makeSplitBatchList([]) })
+  );
+  // Änderungsvorschläge (Tab-Zähler in Prüfen): standardmäßig keine
+  await page.route(/\/api\/reanalysis\/proposals(\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [], total: 0, field_counts: {} } satisfies ProposalListResponse })
   );
   // Mock the document file for preview
   await page.route('**/api/documents/*/file', (route) =>

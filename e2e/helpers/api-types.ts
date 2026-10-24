@@ -359,7 +359,7 @@ export interface ChatHistoryResponse {
 }
 
 // --- /api/notifications --------------------------------------------------
-export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM' | 'SPLIT_NEEDED';
+export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM' | 'SPLIT_NEEDED' | 'REANALYSIS_DONE';
 export interface NotificationResponse {
   id: Id;
   type: NotificationType;
