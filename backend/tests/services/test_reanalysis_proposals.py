@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditAction, AuditLog
@@ -34,6 +34,7 @@ from app.services.reanalysis_service import (
     is_substantive,
     load_document_for_review,
 )
+from app.services.task_service import TaskError
 from tests.factories import make_document
 from tests.support.reanalysis_fixtures import make_analysis
 
@@ -495,3 +496,193 @@ async def test_manually_removed_tag_not_reproposed(db_session, test_session_fact
     outcome = await _create(test_session_factory, doc.id, test_settings)
 
     assert [c.field for c in outcome.changes] == ["issuer"]
+
+
+# ---------------------------------------------------------------------------
+# Option "Text neu erkennen"
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_ocr(monkeypatch):
+    """Ersetzt ocr_service.extract_text im reanalysis_service; zeichnet Aufrufe auf."""
+    state = {"result": None, "calls": []}
+
+    async def fake_extract(file_path, file_type, settings):
+        state["calls"].append((file_path, file_type))
+        return state["result"]
+
+    monkeypatch.setattr("app.services.reanalysis_service.extract_text", fake_extract)
+    return state
+
+
+def _ocr_result(text_: str, confidence: float):
+    from app.services.ocr_service import OcrResult
+    return OcrResult(full_text=text_, page_count=1, average_confidence=confidence)
+
+
+def _archived_file(tmp_path) -> Path:
+    archived = tmp_path / "beleg.pdf"
+    archived.write_bytes(b"%PDF-1.4")
+    return archived
+
+
+async def _create_ocr(session_factory, doc_id: str, settings):
+    return await create_proposal(None, session_factory, doc_id, settings, with_ocr=True)
+
+
+async def test_ocr_option_uses_new_text(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    archived = _archived_file(tmp_path)
+    doc = await _doc(db_session, await _scope(db_session), file_path=str(archived), ocr_confidence=0.6)
+    doc_id = doc.id
+    fake_ocr["result"] = _ocr_result("Neuer, besserer Text", 0.9)
+
+    outcome = await _create_ocr(test_session_factory, doc_id, test_settings)
+
+    assert fake_pipeline["calls"][0]["pre_ocr_text"] == "Neuer, besserer Text"
+    assert outcome.status == "proposed"
+    assert outcome.ocr_note is None
+    change = next(c for c in outcome.changes if c.field == "ocr_text")
+    assert change.new == {"text": "Neuer, besserer Text", "confidence": 0.9}
+    assert change.old["confidence"] == 0.6
+    assert fake_ocr["calls"] == [(archived, "pdf")]
+    proposals = await _proposals(test_session_factory)
+    assert proposals[0].with_ocr is True
+    assert proposals[0].ocr_text == "Neuer, besserer Text"
+    # Das Dokument bleibt unveraendert, bis der Vorschlag uebernommen wird.
+    assert (await _fresh_doc(test_session_factory, doc_id)).ocr_text == "Rechnung der Praxis Dr. Muster"
+
+
+async def test_ocr_only_change_is_substantive(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    doc = await _doc(
+        db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)), ocr_confidence=0.6,
+    )
+    fake_ocr["result"] = _ocr_result("Anderer Text", 0.9)
+
+    outcome = await _create_ocr(test_session_factory, doc.id, test_settings)
+
+    assert [c.field for c in outcome.changes] == ["ocr_text"]
+    assert outcome.status == "proposed"
+
+
+async def test_ocr_worse_is_discarded(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    doc = await _doc(
+        db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)),
+        ocr_confidence=0.8, issuer="Alt GmbH",
+    )
+    fake_ocr["result"] = _ocr_result("Verrauschter Text", 0.4)
+
+    outcome = await _create_ocr(test_session_factory, doc.id, test_settings)
+
+    assert outcome.ocr_note == "discarded_worse"
+    assert fake_pipeline["calls"][0]["pre_ocr_text"] == "Rechnung der Praxis Dr. Muster"
+    assert "ocr_text" not in {c.field for c in outcome.changes}
+    proposals = await _proposals(test_session_factory)
+    assert proposals[0].ocr_text is None
+    assert proposals[0].ocr_note == "discarded_worse"
+
+
+async def test_ocr_failure_falls_back_to_old_text(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    doc = await _doc(
+        db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)), issuer="Alt GmbH",
+    )
+    fake_ocr["result"] = None
+
+    outcome = await _create_ocr(test_session_factory, doc.id, test_settings)
+
+    assert outcome.ocr_note == "discarded_worse"
+    assert fake_pipeline["calls"][0]["pre_ocr_text"] == "Rechnung der Praxis Dr. Muster"
+
+
+async def test_ocr_works_without_stored_text(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    doc = await _doc(
+        db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)),
+        ocr_text=None, ocr_confidence=None,
+    )
+    fake_ocr["result"] = _ocr_result("Erstmals erkannter Text", 0.7)
+
+    outcome = await _create_ocr(test_session_factory, doc.id, test_settings)
+
+    assert outcome.status == "proposed"
+    assert fake_pipeline["calls"][0]["pre_ocr_text"] == "Erstmals erkannter Text"
+    assert any(c.field == "ocr_text" for c in outcome.changes)
+
+
+async def test_ocr_without_any_text_is_task_error(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, tmp_path,
+):
+    doc = await _doc(db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)), ocr_text=None)
+    fake_ocr["result"] = None
+
+    with pytest.raises(TaskError):
+        await _create_ocr(test_session_factory, doc.id, test_settings)
+    assert fake_pipeline["calls"] == []
+
+
+async def test_ocr_missing_file_is_task_error(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr,
+):
+    doc = await _doc(db_session, await _scope(db_session))  # file_path zeigt ins Leere
+
+    with pytest.raises(TaskError, match="Datei"):
+        await _create_ocr(test_session_factory, doc.id, test_settings)
+    assert fake_ocr["calls"] == []
+
+
+async def test_ocr_releases_analysis_slot_before_analysis(
+    db_session, test_session_factory, test_settings, monkeypatch, tmp_path,
+):
+    """Die OCR haelt den Slot, gibt ihn vor der Analyse aber wieder frei (nicht reentrant)."""
+    from app.services.analysis_service import analysis_slot
+
+    doc = await _doc(db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)))
+    seen = {}
+
+    async def fake_extract(file_path, file_type, settings):
+        seen["locked_during_ocr"] = analysis_slot().locked()
+        return _ocr_result("Neuer Text", 0.99)
+
+    async def fake_analyze(file_path, file_type, settings, filing_scopes=None, session=None, pre_ocr_text=None):
+        seen["locked_during_analyze"] = analysis_slot().locked()
+        return None, make_analysis()
+
+    monkeypatch.setattr("app.services.reanalysis_service.extract_text", fake_extract)
+    monkeypatch.setattr("app.services.reanalysis_service.analyze_document", fake_analyze)
+
+    await _create_ocr(test_session_factory, doc.id, test_settings)
+
+    assert seen == {"locked_during_ocr": True, "locked_during_analyze": False}
+
+
+async def test_apply_ocr_updates_text_and_fts(
+    db_session, test_session_factory, test_settings, fake_pipeline, fake_ocr, vectorize_calls, tmp_path,
+):
+    doc = await _doc(
+        db_session, await _scope(db_session), file_path=str(_archived_file(tmp_path)), ocr_confidence=0.6,
+    )
+    doc_id = doc.id
+    fake_ocr["result"] = _ocr_result("Zahnarztrechnung Blutdruckmessung", 0.9)
+    await _create_ocr(test_session_factory, doc_id, test_settings)
+
+    applied = await _apply(test_session_factory, doc_id, test_settings, {"ocr_text"})
+
+    assert applied == ["ocr_text"]
+    d = await _fresh_doc(test_session_factory, doc_id)
+    assert d.ocr_text == "Zahnarztrechnung Blutdruckmessung"
+    assert d.ocr_confidence == pytest.approx(0.9)
+    async with test_session_factory() as session:
+        hits = (await session.execute(
+            text("SELECT doc_id FROM documents_fts WHERE documents_fts MATCH 'Blutdruckmessung'")
+        )).all()
+    assert [h[0] for h in hits] == [doc_id]
+    assert vectorize_calls == [doc_id]

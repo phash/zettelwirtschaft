@@ -51,7 +51,11 @@ from app.models.document import Document, DocumentStatus, DocumentTag, ReviewSta
 from app.models.reanalysis import ReanalysisProposal
 from app.models.warranty_info import WARRANTY_AUDIT_PREFIX, WarrantyInfo
 from app.services import vectorize_service
-from app.services.analysis_service import AnalysisResult, analyze_document
+from app.services.analysis_service import (
+    AnalysisResult,
+    analysis_slot,
+    analyze_document,
+)
 from app.services.archive_service import (
     ScopeMatch,
     _build_review_question,
@@ -75,6 +79,7 @@ from app.services.file_relocation import (
     remove_sources,
 )
 from app.services.filing_scope_service import scopes_for_analysis
+from app.services.ocr_service import extract_text
 from app.services.ollama_client import OllamaError, OllamaErrorKind
 from app.services.search_service import reindex_document_fts
 from app.services.task_service import TaskContext, TaskError
@@ -107,6 +112,14 @@ WARRANTY_FIELDS = (
 
 DOCUMENT_GONE_MESSAGE = "Das Dokument existiert nicht mehr oder wurde gelöscht."
 NO_OCR_TEXT_MESSAGE = "Kein OCR-Text vorhanden, Re-Analyse nicht möglich."
+OCR_MISSING_FILE_MESSAGE = (
+    "Die Datei des Dokuments fehlt im Archiv, der Text kann nicht neu erkannt werden."
+)
+OCR_NO_TEXT_MESSAGE = "Aus der Datei konnte kein Text erkannt werden."
+# Neue OCR gilt als schlechter, wenn ihre Konfidenz um mehr als das unter dem
+# gespeicherten Wert liegt; dann bleibt der alte Text (ocr_note).
+OCR_WORSE_MARGIN = 0.10
+OCR_NOTE_DISCARDED_WORSE = "discarded_worse"
 NO_PROPOSAL_MESSAGE = "Für dieses Dokument liegt kein offener Änderungsvorschlag vor."
 MISSING_FILE_MESSAGE = (
     "Die Datei des Dokuments fehlt im Archiv, deshalb kann der Ablagebereich nicht "
@@ -413,15 +426,52 @@ async def _report(ctx: TaskContext | None, percent: int, text: str) -> None:
         await ctx.report_progress(percent, text)
 
 
-async def _obtain_text(ocr_text: str | None, with_ocr: bool) -> _TextSource:
-    """Text fuer die Analyse: der gespeicherte OCR-Text.
+async def _obtain_text(
+    file_path: str,
+    file_type: str,
+    ocr_text: str | None,
+    ocr_confidence: float | None,
+    settings: Settings,
+    with_ocr: bool,
+) -> _TextSource:
+    """Text fuer die Analyse.
 
-    Die Option "Text neu erkennen" (``with_ocr``) setzt hier an und liefert
-    zusaetzlich den neu erkannten Text fuer den Vorschlag.
+    Ohne ``with_ocr``: der gespeicherte OCR-Text. Mit ``with_ocr`` ("Text neu
+    erkennen"): neue OCR der archivierten Datei. Ist sie fehlgeschlagen, leer
+    oder deutlich unsicherer als der gespeicherte Text (``OCR_WORSE_MARGIN``),
+    bleibt der alte Text und ``ocr_note`` meldet das; sonst geht der neue Text
+    in die Analyse und in den Vorschlag.
     """
-    if not (ocr_text or "").strip():
-        raise TaskError(NO_OCR_TEXT_MESSAGE)
-    return _TextSource(analysis_text=ocr_text)
+    has_stored_text = bool((ocr_text or "").strip())
+    if not with_ocr:
+        if not has_stored_text:
+            raise TaskError(NO_OCR_TEXT_MESSAGE)
+        return _TextSource(analysis_text=ocr_text)
+
+    path = Path(file_path)
+    if not path.is_file():
+        raise TaskError(OCR_MISSING_FILE_MESSAGE)
+    # OCR teilt sich den Analyse-Slot mit dem LLM (AVAIL-06). Der Semaphor ist
+    # nicht reentrant: hier freigeben, bevor analyze_document ihn selbst nimmt.
+    async with analysis_slot():
+        result = await extract_text(path, file_type, settings)
+
+    new_text = result.full_text if result is not None else ""
+    if not new_text.strip():
+        worse = True
+    elif has_stored_text and ocr_confidence is not None:
+        worse = result.average_confidence < ocr_confidence - OCR_WORSE_MARGIN
+    else:
+        worse = False
+    if worse:
+        if not has_stored_text:
+            raise TaskError(OCR_NO_TEXT_MESSAGE)
+        return _TextSource(analysis_text=ocr_text, ocr_note=OCR_NOTE_DISCARDED_WORSE)
+    return _TextSource(
+        analysis_text=new_text,
+        new_ocr_text=new_text,
+        new_ocr_confidence=result.average_confidence,
+    )
 
 
 async def create_proposal(
@@ -448,10 +498,11 @@ async def create_proposal(
         doc = await load_document_for_review(session, document_id)
         if doc is None:
             raise TaskError(DOCUMENT_GONE_MESSAGE)
-        file_path, file_type, ocr_text = doc.file_path, doc.file_type, doc.ocr_text
+        file_path, file_type = doc.file_path, doc.file_type
+        ocr_text, ocr_confidence = doc.ocr_text, doc.ocr_confidence
         filing_scopes = await scopes_for_analysis(session)
 
-    source = await _obtain_text(ocr_text, with_ocr)
+    source = await _obtain_text(file_path, file_type, ocr_text, ocr_confidence, settings, with_ocr)
 
     await _report(ctx, 15, "Die KI analysiert das Dokument …")
     # Eigene Session nur zum Lesen der Few-Shot-Korrekturen — keine
