@@ -19,6 +19,7 @@ import type {
   NotificationResponse,
   Paginated,
   ProcessedEmailResponse,
+  ProposalResponse,
   QueueStatus,
   ReviewDetailResponse,
   ReviewPendingResponse,
@@ -698,6 +699,24 @@ export function makeMockTask(overrides: Partial<TaskResponse> = {}): TaskRespons
     started_at: status === 'PENDING' ? null : '2026-10-17T10:00:01Z',
     finished_at: status === 'SUCCEEDED' || status === 'FAILED' ? '2026-10-17T10:00:05Z' : null,
     done: status === 'SUCCEEDED' || status === 'FAILED',
+    ...overrides,
+  };
+}
+
+// Änderungsvorschlag einer Neu-Analyse (GET /api/reanalysis/proposals/{id}).
+export function makeMockProposal(overrides: Partial<ProposalResponse> = {}): ProposalResponse {
+  return {
+    document_id: MOCK_DOCUMENT_DETAIL.id,
+    document_title: MOCK_DOCUMENT_DETAIL.title,
+    model: 'gemma4:12b-it-qat',
+    with_ocr: false,
+    ocr_note: null,
+    created_at: '2026-10-24T10:00:00Z',
+    changes: [
+      { field: 'issuer', label: 'Aussteller', old: 'Stadtwerke', new: 'Stadtwerke München GmbH' },
+      { field: 'amount', label: 'Betrag', old: '89.50', new: '98.50' },
+      { field: 'document_date', label: 'Datum', old: null, new: '2026-01-20' },
+    ],
     ...overrides,
   };
 }

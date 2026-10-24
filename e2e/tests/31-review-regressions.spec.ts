@@ -180,13 +180,13 @@ test.describe('Review regressions', () => {
     });
     const polls = await mockBackgroundTaskPolling(page, 'task-re', [
       { status: 'RUNNING', kind: 'reanalyze', key: 'a', progress_text: 'Analysiere Dokument …' },
-      { status: 'SUCCEEDED', kind: 'reanalyze', key: 'a', result: { needs_review: false, document_type: 'RECHNUNG' } },
+      { status: 'SUCCEEDED', kind: 'reanalyze', key: 'a', result: { message: 'Keine Änderungen.', status: 'unchanged', changes: 0, ocr_note: null } },
     ]);
 
     await page.goto('/pruefen');
     await expect(page.getByTestId('reanalysis-panel')).toBeVisible();
     await page.getByRole('button', { name: 'Erneut analysieren' }).click();
-    await expect(page.getByText('Analyse erfolgreich — Dokument automatisch bestätigt.')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Keine Änderungen.')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Alles geprüft!')).toBeVisible();
     expect(started).toBe(1);
     expect(polls()).toBeGreaterThanOrEqual(2);

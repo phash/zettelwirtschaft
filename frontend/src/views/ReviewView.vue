@@ -2,9 +2,10 @@
 import { ref, onMounted, computed } from 'vue'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
+import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
 import {
   getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument,
-  getSplitBatches, splitPageThumbnailUrl,
+  getProposal, applyProposal, discardProposal, getSplitBatches, splitPageThumbnailUrl,
 } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
@@ -133,6 +134,7 @@ async function showFirstInQueue() {
 
 function clearCurrent() {
   reanalysis.reset()
+  proposal.value = null
   currentId.value = null
   currentDoc.value = null
   reviewData.value = null
@@ -141,6 +143,7 @@ function clearCurrent() {
 
 async function loadDoc(docId) {
   reanalysis.reset()
+  proposal.value = null
   resetZoom()
   currentId.value = docId
   loadError.value = false
@@ -229,17 +232,26 @@ async function reviewLaterAgain() {
 }
 
 // Re-Analyse läuft als Hintergrund-Vorgang (HTTP 202 + Polling) — sie kann
-// auf CPU-Hardware Minuten dauern.
+// auf CPU-Hardware Minuten dauern. Das Ergebnis ist ein Änderungsvorschlag:
+// das Dokument ändert sich erst, wenn der Benutzer ihn übernimmt (Issue #39).
+const proposal = ref(null)
+const proposalBusy = ref(false)
+
 const reanalysis = useBackgroundTask({
   onSuccess: async (result, task) => {
     const sameDoc = currentDoc.value && String(currentDoc.value.id) === String(task?.key)
-    if (result?.needs_review) {
-      notify.success('Analyse wiederholt — bitte neue Rückfragen prüfen.')
-      if (sameDoc) await loadDoc(currentDoc.value.id)
-    } else {
-      notify.success('Analyse erfolgreich — Dokument automatisch bestätigt.')
-      await loadReviewDocs()
+    if (result?.status === 'proposed') {
+      if (!sameDoc) return
+      try {
+        proposal.value = await getProposal(currentDoc.value.id)
+      } catch (e) {
+        notify.error(apiErrorMessage(e, 'Vorschlag konnte nicht geladen werden.'))
+      }
+      return
     }
+    // Ohne Änderungen kann sich trotzdem der Prüfstatus geändert haben: Liste neu laden.
+    notify.info(result?.message || 'Keine Änderungen.')
+    await loadReviewDocs()
   },
   onError: (message) => notify.error(message),
 })
@@ -247,6 +259,34 @@ const reanalysis = useBackgroundTask({
 function doReanalyze() {
   const id = currentDoc.value.id
   reanalysis.start(() => reanalyzeDocument(id))
+}
+
+// Nach Übernehmen/Verwerfen kann das Dokument die Prüfung verlassen haben
+// (Status OK) — deshalb Liste neu laden.
+async function finishProposal(action, successText, errorText) {
+  if (proposalBusy.value) return
+  proposalBusy.value = true
+  try {
+    await action(currentDoc.value.id)
+    notify.success(successText)
+  } catch (e) {
+    notify.error(apiErrorMessage(e, errorText))
+  } finally {
+    proposalBusy.value = false
+  }
+  await loadReviewDocs()
+}
+
+function handleApplyProposal(fields) {
+  return finishProposal(
+    (id) => applyProposal(id, fields),
+    'Änderungen übernommen.',
+    'Änderungen konnten nicht übernommen werden.',
+  )
+}
+
+function handleDiscardProposal() {
+  return finishProposal(discardProposal, 'Vorschlag verworfen.', 'Vorschlag konnte nicht verworfen werden.')
 }
 
 // Primär über den strukturierten Fragetyp; der Textvergleich bleibt nur als
@@ -501,6 +541,14 @@ onMounted(() => {
             </template>
           </div>
         </div>
+
+        <ProposalDiff
+          v-if="proposal"
+          :proposal="proposal"
+          :busy="proposalBusy"
+          @apply="handleApplyProposal"
+          @discard="handleDiscardProposal"
+        />
 
         <!-- Fortschritt -->
         <div class="flex items-center gap-3">

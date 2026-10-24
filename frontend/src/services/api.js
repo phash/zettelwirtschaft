@@ -522,8 +522,64 @@ export async function deleteJob(jobId) {
   await api.delete(`/jobs/${jobId}`)
 }
 
-export async function reanalyzeDocument(documentId) {
-  const { data } = await api.post(`/review/documents/${documentId}/reanalyze`)
+// Neu-Analyse als Hintergrund-Vorgang (202 + Task). Legt nur einen Vorschlag an;
+// withOcr erkennt den Text aus der Datei neu.
+export async function reanalyzeDocument(documentId, { withOcr = false } = {}) {
+  const { data } = await api.post(`/review/documents/${documentId}/reanalyze`, { with_ocr: withOcr })
+  return data
+}
+
+// === Neu-Analyse: Vorschlaege und Massenlauf ===
+
+export async function getProposal(documentId) {
+  const { data } = await api.get(`/reanalysis/proposals/${documentId}`)
+  return data
+}
+
+// fields = null uebernimmt alle Aenderungen; liefert das aktualisierte Dokument.
+export async function applyProposal(documentId, fields = null) {
+  const { data } = await api.post(`/reanalysis/proposals/${documentId}/apply`, { fields })
+  return data
+}
+
+export async function discardProposal(documentId) {
+  await api.post(`/reanalysis/proposals/${documentId}/discard`)
+}
+
+export async function getProposals(params = {}) {
+  const { data } = await api.get('/reanalysis/proposals', { params })
+  return data
+}
+
+// Sammel-Uebernahme laeuft als Hintergrund-Vorgang (202 + Task).
+export async function applyAllProposals(field = null) {
+  const { data } = await api.post('/reanalysis/proposals/apply-all', { field })
+  return data
+}
+
+export async function discardAllProposals(field = null) {
+  const { data } = await api.post('/reanalysis/proposals/discard-all', { field })
+  return data
+}
+
+export async function previewReanalysisRun(body) {
+  const { data } = await api.post('/reanalysis/runs/preview', body)
+  return data
+}
+
+export async function startReanalysisRun(body) {
+  const { data } = await api.post('/reanalysis/runs', body)
+  return data
+}
+
+export async function getCurrentReanalysisRun() {
+  const { data } = await api.get('/reanalysis/runs/current')
+  return data
+}
+
+// action: 'pause' | 'resume' | 'cancel'
+export async function setReanalysisRunStatus(runId, action) {
+  const { data } = await api.post(`/reanalysis/runs/${runId}/${action}`)
   return data
 }
 
