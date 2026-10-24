@@ -202,6 +202,40 @@ async def test_apply_conflict_409(client, db_session, test_session_factory):
     assert await _proposal_count(test_session_factory) == 1
 
 
+async def test_apply_proposal_replaced_meanwhile_409(client, db_session, test_session_factory, monkeypatch):
+    """Neue Analyse ersetzt den Vorschlag waehrend der Uebernahme -> 409 statt 500."""
+    from app.services import reanalysis_service
+
+    doc = await _doc(db_session)
+    doc_id = doc.id
+    await _propose(db_session, doc, sender="Neue Praxis")
+    original_plan = reanalysis_service._plan_changes
+
+    async def plan_then_replace(*args, **kwargs):
+        plan = await original_plan(*args, **kwargs)
+        async with test_session_factory() as other:
+            await other.delete(await reanalysis_service.get_open_proposal(other, doc_id))
+            await other.flush()
+            other.add(ReanalysisProposal(
+                document_id=doc_id, model="gemma-neu", with_ocr=False,
+                analysis=make_analysis(tags=[], sender="Neuere Praxis").to_dict(),
+            ))
+            await other.commit()
+        monkeypatch.setattr(reanalysis_service, "_plan_changes", original_plan)
+        return plan
+
+    monkeypatch.setattr(reanalysis_service, "_plan_changes", plan_then_replace)
+
+    resp = await client.post(f"/api/reanalysis/proposals/{doc_id}/apply")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Der Vorschlag wurde inzwischen ersetzt. Bitte neu laden."
+    async with test_session_factory() as session:
+        stored = await session.get(Document, doc_id)
+        assert (stored.issuer, stored.analysis_model) == ("Praxis Dr. Muster", None)
+        remaining = (await session.execute(select(ReanalysisProposal))).scalars().all()
+    assert [p.model for p in remaining] == ["gemma-neu"]
+
+
 async def test_discard_204(client, db_session, test_session_factory):
     doc = await _doc(db_session)
     await _propose(db_session, doc, amount=120.0)
@@ -403,7 +437,7 @@ async def test_deleted_document_proposal_hidden(client, db_session, test_session
 # --- Massenlauf -----------------------------------------------------------------
 
 
-async def test_runs_preview_endpoint(client, db_session):
+async def test_runs_preview_endpoint(client, db_session, test_settings):
     a = await _doc(db_session)
     reviewed = await _doc(db_session, review_status=ReviewStatus.REVIEWED)
     no_text = await _doc(db_session, ocr_text=None)
@@ -416,6 +450,7 @@ async def test_runs_preview_endpoint(client, db_session):
     assert resp.json() == {
         "eligible": 1, "reviewed_excluded": 1, "no_text_excluded": 1,
         "deleted_or_missing": 1, "estimate_seconds": 45,
+        "model": test_settings.OLLAMA_MODEL,  # fuer "Alle, die nicht mit <model> analysiert wurden"
     }
 
     resp = await client.post("/api/reanalysis/runs/preview", json={"outdated": True, "with_ocr": True})

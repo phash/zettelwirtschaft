@@ -19,7 +19,13 @@ Modellwechsel, solange der Auto-Pull laeuft), geht der Eintrag zurueck in die
 Warteschlange, der Lauf steht auf ``WAITING_AI`` und der Runner wartet mit
 Backoff (``WAIT_BACKOFF_S``) — statt alle restlichen Dokumente als Fehler zu
 verbuchen. Nach dem naechsten Erfolg steht der Lauf wieder auf ``RUNNING`` und
-der Backoff beginnt von vorn.
+der Backoff beginnt von vorn. Zeitueberschreitung und Serverfehler koennen aber
+auch am Dokument liegen: nach ``MAX_WAIT_ATTEMPTS`` Versuchen am selben Eintrag
+(``CAPPED_WAIT_KINDS``) wird er ``FAILED`` und der Lauf macht mit dem naechsten
+weiter — sonst stuende er wegen eines Dokuments die ganze Nacht.
+
+Vor jeder Analyse wird geprueft, ob das Dokument noch da und nicht inzwischen
+freigegeben ist (``REVIEWED`` wird sonst nur beim Start ausgeschlossen).
 
 Pausieren waehrend einer Analyse: das laufende Dokument wird fertig, danach
 steht der Lauf. Abbrechen waehrend einer Analyse: das Ergebnis des laufenden
@@ -75,12 +81,18 @@ WAIT_KINDS = frozenset({
     OllamaErrorKind.MODEL_MISSING,
     OllamaErrorKind.SERVER_ERROR,
 })
+# Diese KI-Fehler koennen an einem einzelnen Dokument haengen: hoechstens
+# MAX_WAIT_ATTEMPTS Versuche je Eintrag, danach FAILED. UNREACHABLE und
+# MODEL_MISSING liegen nie am Dokument -> warten ohne Obergrenze.
+CAPPED_WAIT_KINDS = frozenset({OllamaErrorKind.TIMEOUT, OllamaErrorKind.SERVER_ERROR})
+MAX_WAIT_ATTEMPTS = 3
 
 EMPTY_SELECTION_MESSAGE = "Keine Dokumente zum Neu-Analysieren."
 RUN_CONFLICT_MESSAGE = "Es läuft bereits eine Neu-Analyse."
 RUN_NOT_FOUND_MESSAGE = "Diesen Neu-Analyse-Lauf gibt es nicht."
 RUN_FINISHED_MESSAGE = "Der Neu-Analyse-Lauf ist bereits beendet."
 RUN_FAILURES_LIMIT = 50
+REVIEWED_MEANWHILE_MESSAGE = "Das Dokument wurde inzwischen freigegeben."
 
 _INTAKE_STATUSES = (JobStatus.PENDING, JobStatus.PROCESSING)
 _OPEN_ITEM_STATUSES = (RunItemStatus.PENDING, RunItemStatus.PROCESSING)
@@ -115,6 +127,7 @@ class RunPreview:
     no_text_excluded: int
     deleted_or_missing: int
     estimate_seconds: int
+    model: str
 
 
 class _Backoff:
@@ -133,10 +146,14 @@ class _Backoff:
 
 
 _backoff = _Backoff()
+# Versuche mit CAPPED_WAIT_KINDS je Eintrag (prozesslokal; ein Neustart beginnt
+# wieder bei 0 — dann gibt es eben bis zu MAX_WAIT_ATTEMPTS weitere Versuche).
+_wait_attempts: dict[int, int] = {}
 
 
 def reset_backoff() -> None:
     _backoff.reset()
+    _wait_attempts.clear()
 
 
 def _now() -> datetime:
@@ -206,6 +223,7 @@ async def preview_run(
         no_text_excluded=no_text,
         deleted_or_missing=missing,
         estimate_seconds=len(selected) * SECONDS_PER_DOCUMENT * factor,
+        model=settings.OLLAMA_MODEL,
     )
     return preview, selected
 
@@ -262,7 +280,7 @@ async def start_run(
                 raise
             raise RunConflictError(active) from None
         await session.refresh(run)
-    _backoff.reset()  # Ausfaelle eines frueheren Laufs zaehlen nicht mit
+    reset_backoff()  # Ausfaelle eines frueheren Laufs zaehlen nicht mit
     logger.info("Neu-Analyse-Lauf %s gestartet: %d Dokumente (OCR=%s)", run.id, run.total, with_ocr)
     return run
 
@@ -303,24 +321,58 @@ async def _document_available(session_factory, document_id: str) -> bool:
         ))
 
 
+async def _skip_reason(session_factory, document_id: str) -> str | None:
+    """Grund, das Dokument nicht (mehr) zu analysieren: geloescht oder inzwischen freigegeben."""
+    async with session_factory() as session:
+        row = (await session.execute(
+            select(Document.review_status).where(Document.id == document_id)
+            .where(Document.status != DocumentStatus.DELETED)
+        )).first()
+    if row is None:
+        return DOCUMENT_GONE_MESSAGE
+    if row.review_status == ReviewStatus.REVIEWED:
+        return REVIEWED_MEANWHILE_MESSAGE
+    return None
+
+
 @dataclass
 class _ItemResult:
     status: RunItemStatus | None  # None = KI nicht erreichbar, erneut versuchen
     error: str | None = None
+    wait_kind: OllamaErrorKind | None = None  # bei status None: Art des KI-Ausfalls
+    # Eintrag nach MAX_WAIT_ATTEMPTS aufgegeben: der Lauf wartet nicht mehr.
+    gave_up_waiting: bool = False
 
 
 async def _analyse_item(
+    session_factory, settings: Settings, run_id: str, item_id: int, document_id: str, *, with_ocr: bool,
+) -> _ItemResult:
+    """Analysiert einen Eintrag; begrenzt die Versuche bei ``CAPPED_WAIT_KINDS``."""
+    result = await _analyse_document(session_factory, settings, run_id, document_id, with_ocr=with_ocr)
+    if result.status is None and result.wait_kind in CAPPED_WAIT_KINDS:
+        attempts = _wait_attempts.get(item_id, 0) + 1
+        if attempts < MAX_WAIT_ATTEMPTS:
+            _wait_attempts[item_id] = attempts
+            return result
+        result = _ItemResult(RunItemStatus.FAILED, result.error, gave_up_waiting=True)
+    if result.status is not None:
+        _wait_attempts.pop(item_id, None)
+    return result
+
+
+async def _analyse_document(
     session_factory, settings: Settings, run_id: str, document_id: str, *, with_ocr: bool,
 ) -> _ItemResult:
-    if not await _document_available(session_factory, document_id):
-        return _ItemResult(RunItemStatus.SKIPPED, DOCUMENT_GONE_MESSAGE)
+    skip = await _skip_reason(session_factory, document_id)
+    if skip is not None:
+        return _ItemResult(RunItemStatus.SKIPPED, skip)
     try:
         outcome = await create_proposal(
             None, session_factory, document_id, settings, with_ocr=with_ocr, run_id=run_id,
         )
     except ReanalysisLLMError as exc:
         if exc.kind in WAIT_KINDS:
-            return _ItemResult(None, exc.message)
+            return _ItemResult(None, exc.message, wait_kind=exc.kind)
         return _ItemResult(RunItemStatus.FAILED, exc.message)
     except TaskError as exc:
         # Waehrend der Analyse geloescht -> uebersprungen, sonst echter Fehler.
@@ -420,8 +472,10 @@ async def _record_wait(session: AsyncSession, run_id: str, item_id: int, error: 
 async def _record_outcome(session: AsyncSession, run_id: str, item_id: int, result: _ItemResult) -> None:
     """Ergebnis vermerken — auch in einem inzwischen abgebrochenen Lauf (Vorschlag bleibt)."""
     # Nur ein Erfolg zeigt, dass die KI wieder antwortet (uebersprungene
-    # oder fehlgeschlagene Dokumente erreichen sie evtl. gar nicht).
-    if result.status in (RunItemStatus.PROPOSED, RunItemStatus.UNCHANGED):
+    # oder fehlgeschlagene Dokumente erreichen sie evtl. gar nicht). Ein nach
+    # MAX_WAIT_ATTEMPTS aufgegebener Eintrag beendet das Warten ebenfalls: der
+    # naechste Eintrag beginnt mit frischem Backoff.
+    if result.status in (RunItemStatus.PROPOSED, RunItemStatus.UNCHANGED) or result.gave_up_waiting:
         _backoff.reset()
         await session.execute(
             update(ReanalysisRun).where(ReanalysisRun.id == run_id)
@@ -546,7 +600,9 @@ async def process_next_item(
 
     # Ab hier keine offene Transaktion: create_proposal oeffnet eigene Sessions.
     try:
-        result = await _analyse_item(session_factory, settings, run_id, document_id, with_ocr=with_ocr)
+        result = await _analyse_item(
+            session_factory, settings, run_id, item_id, document_id, with_ocr=with_ocr,
+        )
         delay = await _record_result(session_factory, run_id, item_id, result)
     except Exception:
         # z.B. "database is locked": der Eintrag darf nicht in PROCESSING haengen

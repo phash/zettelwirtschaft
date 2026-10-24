@@ -401,6 +401,77 @@ async def test_new_run_starts_backoff_from_scratch(db_session, test_session_fact
     assert waits == [30, 60, 120, 30]
 
 
+@pytest.mark.parametrize("kind", [OllamaErrorKind.TIMEOUT, OllamaErrorKind.SERVER_ERROR])
+async def test_capped_wait_kind_fails_item_after_max_attempts(
+    db_session, test_session_factory, settings, fake_proposal, waits, kind,
+):
+    """Ein Dokument, das immer in die Zeitueberschreitung laeuft, blockiert den Lauf nicht."""
+    stuck = await _doc(db_session)
+    ok = await _doc(db_session)
+    error = ReanalysisLLMError("Die KI hat nicht rechtzeitig geantwortet.", kind)
+    fake_proposal["results"] = {stuck.id: [error] * 10}
+    run = await _start(test_session_factory, settings, [stuck.id, ok.id])
+    max_attempts = reanalysis_run_service.MAX_WAIT_ATTEMPTS
+
+    for _ in range(max_attempts - 1):
+        assert await process_next_item(test_session_factory, settings) is True
+        assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PENDING
+        assert (await _run(test_session_factory, run.id)).status == RunStatus.WAITING_AI
+
+    assert await process_next_item(test_session_factory, settings) is True  # letzter Versuch
+    item = (await _items(test_session_factory, run.id))[0]
+    assert (item.status, item.error) == (RunItemStatus.FAILED, "Die KI hat nicht rechtzeitig geantwortet.")
+    running = await _run(test_session_factory, run.id)
+    assert (running.status, running.last_error) == (RunStatus.RUNNING, None)
+    assert waits == list(reanalysis_run_service.WAIT_BACKOFF_S[:max_attempts - 1])
+
+    await run_until_idle(test_session_factory, settings)
+    assert [i.status for i in await _items(test_session_factory, run.id)] == [
+        RunItemStatus.FAILED, RunItemStatus.PROPOSED,
+    ]
+    assert (await _run(test_session_factory, run.id)).status == RunStatus.DONE
+    assert len([c for c in fake_proposal["calls"] if c["document_id"] == stuck.id]) == max_attempts
+    assert len(waits) == max_attempts - 1  # danach kein Warten mehr
+
+
+@pytest.mark.parametrize("kind", [OllamaErrorKind.UNREACHABLE, OllamaErrorKind.MODEL_MISSING])
+async def test_uncapped_wait_kind_keeps_waiting(
+    db_session, test_session_factory, settings, fake_proposal, waits, kind,
+):
+    """Ist die KI ganz weg, liegt es nicht am Dokument: kein Aufgeben nach MAX_WAIT_ATTEMPTS."""
+    doc = await _doc(db_session)
+    attempts = reanalysis_run_service.MAX_WAIT_ATTEMPTS * 2
+    fake_proposal["results"] = {doc.id: [ReanalysisLLMError("weg", kind)] * attempts + ["proposed"]}
+    run = await _start(test_session_factory, settings, [doc.id])
+
+    for _ in range(attempts):
+        await process_next_item(test_session_factory, settings)
+        assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PENDING
+    assert (await _run(test_session_factory, run.id)).status == RunStatus.WAITING_AI
+
+    await run_until_idle(test_session_factory, settings)
+    assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PROPOSED
+    assert len(waits) == attempts
+
+
+async def test_wait_attempts_are_counted_per_item(db_session, test_session_factory, settings, fake_proposal, waits):
+    """Ein Erfolg zwischendurch setzt den Zaehler des Eintrags zurueck (neuer Eintrag, neue Versuche)."""
+    a = await _doc(db_session)
+    b = await _doc(db_session)
+    timeout = ReanalysisLLMError("zu langsam", OllamaErrorKind.TIMEOUT)
+    max_attempts = reanalysis_run_service.MAX_WAIT_ATTEMPTS
+    fake_proposal["results"] = {
+        a.id: [timeout] * (max_attempts - 1) + ["proposed"],
+        b.id: [timeout] * (max_attempts - 1) + ["unchanged"],
+    }
+    run = await _start(test_session_factory, settings, [a.id, b.id])
+
+    await run_until_idle(test_session_factory, settings)
+    assert [i.status for i in await _items(test_session_factory, run.id)] == [
+        RunItemStatus.PROPOSED, RunItemStatus.UNCHANGED,
+    ]
+
+
 async def test_wait_for_ai_sleeps_in_slices_and_stops_on_status_change(
     db_session, test_session_factory, settings, no_sleep,
 ):
@@ -553,6 +624,26 @@ async def test_run_skips_deleted_document(db_session, test_session_factory, sett
     assert summary.status == RunStatus.DONE
     assert summary.skipped == 2
     assert note.message == "1 Vorschläge, 0 unverändert, 0 Fehler"
+
+
+async def test_run_skips_document_approved_during_run(db_session, test_session_factory, settings, fake_proposal):
+    """REVIEWED wird nicht nur beim Start ausgeschlossen: waehrend des Laufs freigegeben -> SKIPPED."""
+    approved = await _doc(db_session)
+    ok = await _doc(db_session)
+    run = await _start(test_session_factory, settings, [approved.id, ok.id])
+
+    approved.review_status = ReviewStatus.REVIEWED  # nach dem Start freigegeben
+    await db_session.commit()
+
+    await run_until_idle(test_session_factory, settings)
+    items = await _items(test_session_factory, run.id)
+    assert [(i.status, i.error) for i in items] == [
+        (RunItemStatus.SKIPPED, reanalysis_run_service.REVIEWED_MEANWHILE_MESSAGE),
+        (RunItemStatus.PROPOSED, None),
+    ]
+    assert "inzwischen freigegeben" in reanalysis_run_service.REVIEWED_MEANWHILE_MESSAGE
+    assert [call["document_id"] for call in fake_proposal["calls"]] == [ok.id]
+    assert (await _run(test_session_factory, run.id)).status == RunStatus.DONE
 
 
 async def test_run_recovers_after_restart(db_session, test_session_factory, settings, fake_proposal):

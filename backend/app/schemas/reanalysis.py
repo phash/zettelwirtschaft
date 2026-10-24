@@ -94,6 +94,7 @@ class RunPreviewResponse(BaseModel):
     no_text_excluded: int
     deleted_or_missing: int
     estimate_seconds: int
+    model: str  # OLLAMA_MODEL: "Alle, die nicht mit <model> analysiert wurden"
 
 
 class RunFailure(BaseModel):

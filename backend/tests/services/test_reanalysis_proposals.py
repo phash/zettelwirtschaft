@@ -387,6 +387,45 @@ async def test_apply_missing_file_conflict(db_session, test_session_factory, tes
     assert await _audits(test_session_factory, doc_id) == []
 
 
+async def test_apply_conflicts_when_proposal_replaced_meanwhile(
+    db_session, test_session_factory, test_settings, fake_pipeline, monkeypatch,
+):
+    """Ersetzt eine neue Analyse den Vorschlag waehrend der Uebernahme: 409 statt 500, nichts geaendert."""
+    from app.services import reanalysis_service
+
+    privat = await _scope(db_session)
+    doc = await _doc(db_session, privat, issuer="Alt GmbH")
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+    original_plan = reanalysis_service._plan_changes
+
+    async def plan_then_replace(*args, **kwargs):
+        plan = await original_plan(*args, **kwargs)
+        # Wie create_proposal: alten Vorschlag loeschen, neuen anlegen (andere Session).
+        async with test_session_factory() as other:
+            old = await get_open_proposal(other, doc_id)
+            await other.delete(old)
+            await other.flush()
+            other.add(ReanalysisProposal(
+                document_id=doc_id, model=old.model, with_ocr=False, analysis=old.analysis,
+            ))
+            await other.commit()
+        monkeypatch.setattr(reanalysis_service, "_plan_changes", original_plan)
+        return plan
+
+    monkeypatch.setattr(reanalysis_service, "_plan_changes", plan_then_replace)
+
+    with pytest.raises(ProposalConflict) as exc_info:
+        await _apply(test_session_factory, doc_id, test_settings)
+
+    assert exc_info.value.message == reanalysis_service.PROPOSAL_REPLACED_MESSAGE
+    d = await _fresh_doc(test_session_factory, doc_id)
+    assert d.issuer == "Alt GmbH"
+    assert d.analysis_model is None
+    assert len(await _proposals(test_session_factory)) == 1  # der neue Vorschlag bleibt
+    assert await _audits(test_session_factory, doc_id) == []
+
+
 async def test_partial_apply_ignores_needs_review_of_rejected_fields(
     db_session, test_session_factory, test_settings, fake_pipeline,
 ):

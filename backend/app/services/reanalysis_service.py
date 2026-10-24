@@ -121,6 +121,7 @@ OCR_NO_TEXT_MESSAGE = "Aus der Datei konnte kein Text erkannt werden."
 OCR_WORSE_MARGIN = 0.10
 OCR_NOTE_DISCARDED_WORSE = "discarded_worse"
 NO_PROPOSAL_MESSAGE = "Für dieses Dokument liegt kein offener Änderungsvorschlag vor."
+PROPOSAL_REPLACED_MESSAGE = "Der Vorschlag wurde inzwischen ersetzt. Bitte neu laden."
 MISSING_FILE_MESSAGE = (
     "Die Datei des Dokuments fehlt im Archiv, deshalb kann der Ablagebereich nicht "
     "gewechselt werden. Es wurde nichts geändert."
@@ -332,6 +333,7 @@ async def _plan_changes(
     proposal: ReanalysisProposal,
     *,
     use_proposed_date: bool = True,
+    scopes: list[dict] | None = None,
 ) -> _Plan:
     """Echte Unterschiede Vorschlag <-> aktuelles Dokument, ohne geschuetzte Felder.
 
@@ -363,7 +365,8 @@ async def _plan_changes(
         if _comparable(field, old) != _comparable(field, new):
             planned.append(_PlannedChange(FieldChange(field, _json_value(old), _json_value(new)), new))
 
-    scopes = await scopes_for_analysis(session)
+    if scopes is None:
+        scopes = await scopes_for_analysis(session)
     scope_match = None
     if scopes and SCOPE_FIELD not in protected:
         by_id = {scope["id"]: scope for scope in scopes}
@@ -404,10 +407,19 @@ async def _plan_changes(
 
 
 async def compute_changes(
-    session: AsyncSession, doc: Document, proposal: ReanalysisProposal, settings: Settings,
+    session: AsyncSession,
+    doc: Document,
+    proposal: ReanalysisProposal,
+    settings: Settings,
+    *,
+    scopes: list[dict] | None = None,
 ) -> list[FieldChange]:
-    """Aenderungen des Vorschlags gegenueber dem aktuellen Dokument (Reihenfolge = PROPOSAL_FIELDS)."""
-    plan = await _plan_changes(session, doc, proposal)
+    """Aenderungen des Vorschlags gegenueber dem aktuellen Dokument (Reihenfolge = PROPOSAL_FIELDS).
+
+    ``scopes``: bereits geladene Ablagebereiche (:func:`scopes_for_analysis`),
+    damit Listen sie nicht pro Vorschlag neu abfragen.
+    """
+    plan = await _plan_changes(session, doc, proposal, scopes=scopes)
     return [planned.change for planned in plan.changes]
 
 
@@ -438,8 +450,9 @@ async def list_visible_proposals(session: AsyncSession, settings: Settings) -> l
         .order_by(ReanalysisProposal.created_at.desc(), ReanalysisProposal.id)
     )
     visible = []
+    scopes = await scopes_for_analysis(session)  # einmal fuer alle Vorschlaege
     for proposal, doc in rows.all():
-        changes = await compute_changes(session, doc, proposal, settings)
+        changes = await compute_changes(session, doc, proposal, settings, scopes=scopes)
         if is_substantive(changes):
             visible.append(VisibleProposal(doc, proposal, changes))
     return visible
@@ -727,7 +740,8 @@ async def apply_proposal(
 
     Raises:
         ProposalNotFound: kein offener Vorschlag.
-        ProposalConflict: Datei fuer den Bereichswechsel fehlt — nichts geaendert.
+        ProposalConflict: Datei fuer den Bereichswechsel fehlt oder der Vorschlag
+            wurde waehrenddessen durch eine neue Analyse ersetzt — nichts geaendert.
     """
     doc = await load_document_for_review(session, document_id)
     proposal = await get_open_proposal(session, document_id) if doc is not None else None
@@ -739,7 +753,7 @@ async def apply_proposal(
     wanted = {field for field in offered if fields is None or field in fields}
     if "document_date" in offered and "document_date" not in wanted:
         # Datum abgelehnt: Steuerjahr/Garantie vom aktuellen Belegdatum ableiten.
-        plan = await _plan_changes(session, doc, proposal, use_proposed_date=False)
+        plan = await _plan_changes(session, doc, proposal, use_proposed_date=False, scopes=plan.scopes)
     applied = [planned.change.field for planned in plan.changes if planned.change.field in wanted]
     rejected = [field for field in offered if field not in applied]
     accepted = {planned.change.field: planned.value for planned in plan.changes if planned.change.field in applied}
@@ -769,7 +783,14 @@ async def apply_proposal(
             await _replace_questions(session, doc, plan, set(applied), complete=not rejected)
 
         doc.analysis_model = proposal.model
-        await session.delete(proposal)
+        # Bedingt statt session.delete(): hat eine neue Analyse den Vorschlag
+        # inzwischen ersetzt (create_proposal), trifft das DELETE keine Zeile —
+        # die ORM meldete das nur als Warnung und uebernaehme den alten Stand.
+        removed = await session.execute(
+            delete(ReanalysisProposal).where(ReanalysisProposal.id == proposal.id)
+        )
+        if removed.rowcount != 1:
+            raise ProposalConflict(PROPOSAL_REPLACED_MESSAGE)
         session.add(AuditLog(
             document_id=doc.id,
             action=AuditAction.REANALYZED,
