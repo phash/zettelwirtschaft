@@ -262,6 +262,7 @@ async def start_run(
                 raise
             raise RunConflictError(active) from None
         await session.refresh(run)
+    _backoff.reset()  # Ausfaelle eines frueheren Laufs zaehlen nicht mit
     logger.info("Neu-Analyse-Lauf %s gestartet: %d Dokumente (OCR=%s)", run.id, run.total, with_ocr)
     return run
 
@@ -345,6 +346,9 @@ async def _count_items(session: AsyncSession, run_id: str) -> dict[str, int]:
 async def _finish_if_complete(session: AsyncSession, run_id: str) -> bool:
     """Lauf auf DONE + Benachrichtigung, wenn kein Eintrag mehr offen ist.
 
+    Nur RUNNING/WAITING_AI-Laeufe werden abgeschlossen: ein Lauf, der waehrend
+    seines letzten Dokuments pausiert wurde, bleibt PAUSED und wird erst nach
+    dem Fortsetzen (naechster ``process_next_item``-Aufruf) DONE.
     Der bedingte UPDATE sorgt dafuer, dass nur genau ein Aufruf benachrichtigt.
     Der Aufrufer committet.
     """
@@ -374,50 +378,127 @@ async def _finish_if_complete(session: AsyncSession, run_id: str) -> bool:
 
 
 async def _record_result(session_factory, run_id: str, item_id: int, result: _ItemResult) -> int | None:
-    """Vermerkt das Ergebnis; gibt bei KI-Ausfall die Backoff-Wartezeit zurueck."""
+    """Vermerkt das Ergebnis; gibt bei KI-Ausfall die Backoff-Wartezeit zurueck.
+
+    Alle Schreibzugriffe sind bedingte UPDATEs: ein gleichzeitig committetes
+    Abbrechen kann den Eintrag nicht wieder in die Warteschlange eines
+    beendeten Laufs stellen (er wird dann SKIPPED).
+    """
     async with session_factory() as session:
-        run_status = RunStatus(await session.scalar(
-            select(ReanalysisRun.status).where(ReanalysisRun.id == run_id)
-        ))
-        delay: int | None = None
         if result.status is None:
-            if run_status == RunStatus.CANCELLED:
-                item_status, item_error = RunItemStatus.SKIPPED, None
-            else:
-                item_status, item_error = RunItemStatus.PENDING, None
-                await session.execute(
-                    update(ReanalysisRun).where(ReanalysisRun.id == run_id)
-                    .where(ReanalysisRun.status.in_(ACTIVE_RUN_STATUSES))
-                    .values(last_error=result.error)
-                )
-                await session.execute(
-                    update(ReanalysisRun).where(ReanalysisRun.id == run_id)
-                    .where(ReanalysisRun.status == RunStatus.RUNNING)
-                    .values(status=RunStatus.WAITING_AI)
-                )
-                # Pausiert: kein Warten, das Fortsetzen soll sofort wirken.
-                if run_status in _WORKING_RUN_STATUSES:
-                    delay = _backoff.next_delay()
+            delay = await _record_wait(session, run_id, item_id, result.error)
         else:
-            item_status, item_error = result.status, result.error
-            # Nur ein Erfolg zeigt, dass die KI wieder antwortet (uebersprungene
-            # oder fehlgeschlagene Dokumente erreichen sie evtl. gar nicht).
-            if result.status in (RunItemStatus.PROPOSED, RunItemStatus.UNCHANGED):
-                _backoff.reset()
-                await session.execute(
-                    update(ReanalysisRun).where(ReanalysisRun.id == run_id)
-                    .where(ReanalysisRun.status == RunStatus.WAITING_AI)
-                    .values(status=RunStatus.RUNNING, last_error=None)
-                )
-        await session.execute(
-            update(ReanalysisRunItem)
-            .where(ReanalysisRunItem.id == item_id)
-            .where(ReanalysisRunItem.status == RunItemStatus.PROCESSING)
-            .values(status=item_status, error=item_error)
-        )
+            delay = None
+            await _record_outcome(session, run_id, item_id, result)
         await _finish_if_complete(session, run_id)
         await session.commit()
     return delay
+
+
+async def _record_wait(session: AsyncSession, run_id: str, item_id: int, error: str | None) -> int | None:
+    """KI nicht erreichbar: Eintrag zurueck in die Warteschlange, Lauf WAITING_AI."""
+    if not await _requeue_or_skip(session, run_id, item_id):
+        return None  # Lauf inzwischen beendet -> Eintrag SKIPPED, kein Warten
+    await session.execute(
+        update(ReanalysisRun).where(ReanalysisRun.id == run_id)
+        .where(ReanalysisRun.status.in_(ACTIVE_RUN_STATUSES))
+        .values(last_error=error)
+    )
+    await session.execute(
+        update(ReanalysisRun).where(ReanalysisRun.id == run_id)
+        .where(ReanalysisRun.status == RunStatus.RUNNING)
+        .values(status=RunStatus.WAITING_AI)
+    )
+    # Nach den UPDATEs haelt die Session die Schreibsperre: der Status ist stabil.
+    run_status = await session.scalar(select(ReanalysisRun.status).where(ReanalysisRun.id == run_id))
+    # Pausiert: kein Warten, das Fortsetzen soll sofort wirken.
+    if run_status not in _WORKING_RUN_STATUSES:
+        return None
+    return _backoff.next_delay()
+
+
+async def _record_outcome(session: AsyncSession, run_id: str, item_id: int, result: _ItemResult) -> None:
+    """Ergebnis vermerken — auch in einem inzwischen abgebrochenen Lauf (Vorschlag bleibt)."""
+    # Nur ein Erfolg zeigt, dass die KI wieder antwortet (uebersprungene
+    # oder fehlgeschlagene Dokumente erreichen sie evtl. gar nicht).
+    if result.status in (RunItemStatus.PROPOSED, RunItemStatus.UNCHANGED):
+        _backoff.reset()
+        await session.execute(
+            update(ReanalysisRun).where(ReanalysisRun.id == run_id)
+            .where(ReanalysisRun.status == RunStatus.WAITING_AI)
+            .values(status=RunStatus.RUNNING, last_error=None)
+        )
+    await session.execute(
+        update(ReanalysisRunItem)
+        .where(ReanalysisRunItem.id == item_id)
+        .where(ReanalysisRunItem.status == RunItemStatus.PROCESSING)
+        .values(status=result.status, error=result.error)
+    )
+
+
+async def _requeue_or_skip(session: AsyncSession, run_id: str, item_id: int) -> bool:
+    """PROCESSING-Eintrag zurueck auf PENDING, solange der Lauf aktiv ist, sonst SKIPPED.
+
+    Der Laufstatus wird im selben Statement geprueft (kein Lesen-dann-Schreiben).
+    ``True``, wenn der Eintrag wieder eingereiht wurde. Der Aufrufer committet.
+    """
+    run_active = (
+        exists().where(ReanalysisRun.id == run_id)
+        .where(ReanalysisRun.status.in_(ACTIVE_RUN_STATUSES))
+    )
+    requeued = await session.execute(
+        update(ReanalysisRunItem)
+        .where(ReanalysisRunItem.id == item_id)
+        .where(ReanalysisRunItem.status == RunItemStatus.PROCESSING)
+        .where(run_active)
+        .values(status=RunItemStatus.PENDING)
+    )
+    await session.execute(
+        update(ReanalysisRunItem)
+        .where(ReanalysisRunItem.id == item_id)
+        .where(ReanalysisRunItem.status == RunItemStatus.PROCESSING)
+        .values(status=RunItemStatus.SKIPPED)
+    )
+    return requeued.rowcount == 1
+
+
+async def _release_orphaned_items(session: AsyncSession) -> None:
+    """Selbstheilung: zwischen zwei Aufrufen gibt es keinen legitimen PROCESSING-Eintrag.
+
+    Es gibt genau einen In-Process-Runner, und ``process_next_item`` laeuft
+    sequenziell. Ein PROCESSING-Eintrag stammt also aus einem Fehler, bei dem
+    selbst das Freigeben scheiterte: zurueck auf PENDING (aktiver Lauf) bzw.
+    SKIPPED (beendeter Lauf). Committet selbst (nur wenn es etwas gab).
+    """
+    orphaned = (await session.execute(
+        select(ReanalysisRunItem.id, ReanalysisRunItem.run_id)
+        .where(ReanalysisRunItem.status == RunItemStatus.PROCESSING)
+    )).all()
+    if not orphaned:
+        return
+    for item_id, run_id in orphaned:
+        await _requeue_or_skip(session, run_id, item_id)
+    await session.commit()
+    logger.warning("%d haengende Neu-Analyse-Eintraege freigegeben", len(orphaned))
+
+
+async def wait_for_ai(session_factory, run_id: str, delay: float) -> None:
+    """Backoff-Wartezeit in kurzen Abschnitten (``IDLE_POLL_S``).
+
+    Endet vorzeitig, sobald der Lauf nicht mehr auf die KI wartet (pausiert,
+    fortgesetzt, abgebrochen) — sonst wirkte eine Aktion erst nach bis zu 15 min.
+    """
+    remaining = delay
+    while remaining > 0:
+        step = min(IDLE_POLL_S, remaining)
+        await _sleep(step)
+        remaining -= step
+        async with session_factory() as session:
+            status = await session.scalar(
+                select(ReanalysisRun.status).where(ReanalysisRun.id == run_id)
+            )
+        if status != RunStatus.WAITING_AI:
+            return
 
 
 async def process_next_item(
@@ -434,6 +515,7 @@ async def process_next_item(
     if is_queue_paused():
         return False
     async with session_factory() as session:
+        await _release_orphaned_items(session)
         run = await _active_run(session)
         if run is None or run.status == RunStatus.PAUSED:
             return False
@@ -463,13 +545,26 @@ async def process_next_item(
             return True  # inzwischen abgebrochen oder anderweitig erledigt
 
     # Ab hier keine offene Transaktion: create_proposal oeffnet eigene Sessions.
-    result = await _analyse_item(session_factory, settings, run_id, document_id, with_ocr=with_ocr)
-    delay = await _record_result(session_factory, run_id, item_id, result)
+    try:
+        result = await _analyse_item(session_factory, settings, run_id, document_id, with_ocr=with_ocr)
+        delay = await _record_result(session_factory, run_id, item_id, result)
+    except Exception:
+        # z.B. "database is locked": der Eintrag darf nicht in PROCESSING haengen
+        # bleiben. Scheitert auch das Freigeben, raeumt der naechste Aufruf auf
+        # (_release_orphaned_items).
+        logger.exception("Neu-Analyse-Lauf %s: Dokument %s wird erneut eingereiht", run_id, document_id)
+        try:
+            async with session_factory() as session:
+                await _requeue_or_skip(session, run_id, item_id)
+                await session.commit()
+        except Exception:
+            logger.exception("Neu-Analyse-Lauf %s: Freigeben von Eintrag %s fehlgeschlagen", run_id, item_id)
+        return False
     if delay is not None:
         logger.warning(
             "Neu-Analyse-Lauf %s wartet %d s auf die KI: %s", run_id, delay, result.error,
         )
-        await _sleep(delay)
+        await wait_for_ai(session_factory, run_id, delay)
     return True
 
 

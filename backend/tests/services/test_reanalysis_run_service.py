@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.models.document import DocumentStatus, ReviewStatus
 from app.models.notification import Notification, NotificationType
@@ -58,6 +59,18 @@ def no_sleep(monkeypatch):
     reanalysis_run_service.reset_backoff()
     yield sleeps
     reanalysis_run_service.reset_backoff()
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    """Backoff-Wartezeiten (Sekunden) je KI-Ausfall, ohne zu warten."""
+    delays: list[float] = []
+
+    async def fake_wait(session_factory, run_id, delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(reanalysis_run_service, "wait_for_ai", fake_wait)
+    return delays
 
 
 @pytest.fixture
@@ -330,7 +343,7 @@ async def test_run_completes_and_notifies(db_session, test_session_factory, sett
     assert await process_next_item(test_session_factory, settings) is False
 
 
-async def test_run_waits_when_ollama_unreachable(db_session, test_session_factory, settings, fake_proposal, no_sleep):
+async def test_run_waits_when_ollama_unreachable(db_session, test_session_factory, settings, fake_proposal, waits):
     doc = await _doc(db_session)
     fake_proposal["results"] = {doc.id: [
         ReanalysisLLMError("Ollama ist nicht erreichbar.", OllamaErrorKind.UNREACHABLE),
@@ -343,7 +356,7 @@ async def test_run_waits_when_ollama_unreachable(db_session, test_session_factor
     waiting = await _run(test_session_factory, run.id)
     assert waiting.status == RunStatus.WAITING_AI
     assert waiting.last_error == "Ollama ist nicht erreichbar."
-    assert no_sleep == [reanalysis_run_service.WAIT_BACKOFF_S[0]]
+    assert waits == [reanalysis_run_service.WAIT_BACKOFF_S[0]]
 
     assert await process_next_item(test_session_factory, settings) is True
     item = (await _items(test_session_factory, run.id))[0]
@@ -353,7 +366,7 @@ async def test_run_waits_when_ollama_unreachable(db_session, test_session_factor
     assert finished.last_error is None
 
 
-async def test_backoff_grows_and_resets(db_session, test_session_factory, settings, fake_proposal, no_sleep):
+async def test_backoff_grows_and_resets(db_session, test_session_factory, settings, fake_proposal, waits):
     a = await _doc(db_session)
     b = await _doc(db_session)
     down = ReanalysisLLMError("weg", OllamaErrorKind.MODEL_MISSING)
@@ -365,10 +378,101 @@ async def test_backoff_grows_and_resets(db_session, test_session_factory, settin
 
     for _ in range(8):
         await process_next_item(test_session_factory, settings)
-    assert no_sleep == [30, 60, 120, 300, 900, 900, 900]
+    assert waits == [30, 60, 120, 300, 900, 900, 900]
 
     await run_until_idle(test_session_factory, settings)
-    assert no_sleep[-1] == 30  # nach einem Erfolg beginnt der Backoff von vorn
+    assert waits[-1] == 30  # nach einem Erfolg beginnt der Backoff von vorn
+
+
+async def test_new_run_starts_backoff_from_scratch(db_session, test_session_factory, settings, fake_proposal, waits):
+    a = await _doc(db_session)
+    b = await _doc(db_session)
+    down = ReanalysisLLMError("weg", OllamaErrorKind.UNREACHABLE)
+    fake_proposal["results"] = {a.id: [down, down, down], b.id: [down]}
+    first = await _start(test_session_factory, settings, [a.id])
+    for _ in range(3):
+        await process_next_item(test_session_factory, settings)
+    async with test_session_factory() as session:
+        await set_run_status(session, first.id, "cancel")
+        await session.commit()
+
+    await _start(test_session_factory, settings, [b.id])
+    await process_next_item(test_session_factory, settings)
+    assert waits == [30, 60, 120, 30]
+
+
+async def test_wait_for_ai_sleeps_in_slices_and_stops_on_status_change(
+    db_session, test_session_factory, settings, no_sleep,
+):
+    doc = await _doc(db_session)
+    run = await _start(test_session_factory, settings, [doc.id])
+    async with test_session_factory() as session:
+        stored = await session.get(ReanalysisRun, run.id)
+        stored.status = RunStatus.WAITING_AI
+        await session.commit()
+
+    await reanalysis_run_service.wait_for_ai(test_session_factory, run.id, 12)
+    assert no_sleep == [5, 5, 2]
+
+    no_sleep.clear()
+    async with test_session_factory() as session:
+        await set_run_status(session, run.id, "pause")  # waehrend des Wartens
+        await session.commit()
+    await reanalysis_run_service.wait_for_ai(test_session_factory, run.id, 900)
+    assert no_sleep == [reanalysis_run_service.IDLE_POLL_S]
+
+
+async def test_transient_db_error_after_claim_requeues_item(
+    db_session, test_session_factory, settings, fake_proposal, monkeypatch,
+):
+    doc = await _doc(db_session)
+    run = await _start(test_session_factory, settings, [doc.id])
+    original = reanalysis_run_service._record_result
+    calls = {"n": 0}
+
+    async def flaky_record(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("UPDATE ...", {}, Exception("database is locked"))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(reanalysis_run_service, "_record_result", flaky_record)
+
+    assert await process_next_item(test_session_factory, settings) is False
+    assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PENDING
+
+    await run_until_idle(test_session_factory, settings)
+    assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PROPOSED
+    assert (await _run(test_session_factory, run.id)).status == RunStatus.DONE
+
+
+async def test_orphaned_processing_item_is_released(db_session, test_session_factory, settings, fake_proposal):
+    """Scheitert auch das Freigeben, raeumt der naechste Aufruf den Eintrag auf."""
+    doc = await _doc(db_session)
+    run = await _start(test_session_factory, settings, [doc.id])
+    async with test_session_factory() as session:
+        item = (await session.execute(select(ReanalysisRunItem))).scalar_one()
+        item.status = RunItemStatus.PROCESSING
+        await session.commit()
+
+    await run_until_idle(test_session_factory, settings)
+    assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.PROPOSED
+    assert (await _run(test_session_factory, run.id)).status == RunStatus.DONE
+
+
+async def test_requeue_is_conditional_on_active_run(db_session, test_session_factory, settings):
+    """Abbruch zwischen Analyse und Vermerk: Eintrag wird SKIPPED, nicht wieder PENDING."""
+    doc = await _doc(db_session)
+    run = await _start(test_session_factory, settings, [doc.id])
+    async with test_session_factory() as session:
+        item = (await session.execute(select(ReanalysisRunItem))).scalar_one()
+        item.status = RunItemStatus.PROCESSING
+        await session.commit()
+        await set_run_status(session, run.id, "cancel")
+        await session.commit()
+        assert await reanalysis_run_service._requeue_or_skip(session, run.id, item.id) is False
+        await session.commit()
+    assert (await _items(test_session_factory, run.id))[0].status == RunItemStatus.SKIPPED
 
 
 async def test_waiting_run_stays_waiting_until_success(db_session, test_session_factory, settings, fake_proposal):
