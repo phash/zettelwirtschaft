@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.classList.add('js')</script>
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#221C15">
+<link rel="canonical" href="https://zettelwirtschaft.mr-development.de/hilfe.html">
+<title>FAQ &amp; Schnellstart — Zettelwirtschaft (lokales DMS mit KI)</title>
+<meta name="description" content="Häufige Fragen zu Zettelwirtschaft: Hardware, Windows ohne Docker, KI-Modelle, Datenschutz, PIN, Backups, Netzwerkscanner, E-Mail-Import, Updates und Fehlerbehebung — kurz beantwortet.">
+<meta property="og:url" content="https://zettelwirtschaft.mr-development.de/hilfe.html">
+<meta property="og:title" content="FAQ — Zettelwirtschaft">
+<meta property="og:description" content="Häufige Fragen zum lokalen Dokumentenarchiv mit KI — kurz beantwortet.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://zettelwirtschaft.mr-development.de/assets/og-image.png">
+<meta property="og:site_name" content="Zettelwirtschaft">
+<meta property="og:locale" content="de_DE">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "BreadcrumbList",
+   "itemListElement": [
+    {
+     "@type": "ListItem",
+     "position": 1,
+     "name": "Start",
+     "item": "https://zettelwirtschaft.mr-development.de/"
+    },
+    {
+     "@type": "ListItem",
+     "position": 2,
+     "name": "FAQ",
+     "item": "https://zettelwirtschaft.mr-development.de/hilfe.html"
+    }
+   ]
+  },
+  {
+   "@type": "FAQPage",
+   "mainEntity": [
+    {
+     "@type": "Question",
+     "name": "Welche Hardware brauche ich?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Empfohlen sind mindestens 8 GB RAM und rund 10 GB freier Plattenplatz für Modelle und Archiv. Die Dokumentenanalyse dauert auf reiner CPU etwa 40 Sekunden pro Dokument, mit einer NVIDIA-GPU nur wenige Sekunden. Eine GPU ist optional und beschleunigt nur das Sprachmodell."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Brauche ich zwingend Docker?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Nein. Es gibt drei Betriebsmodi: Docker (klassischer Stack, Multi-Plattform), Native Windows (Setup.exe installiert einen Hintergrunddienst, ChromaDB embedded) und Dev (direkt aus dem Quellcode mit uvicorn und npm run dev). Für Linux-Server ist Docker der einfachste Weg."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Welche KI-Modelle werden verwendet?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Standardmäßig gemma4:e2b-it-qat für die Analyse und qwen3-embedding:4b für die Embeddings der semantischen Suche — ausgewählt in einem Vergleich von 13 Sprachmodellen auf 70 echten und synthetischen Belegen. Auf Rechnern mit NVIDIA-GPU ab 10 GB Grafikspeicher schlagen die Installer gemma4:12b-it-qat vor, bei weniger als 12 GB RAM qwen3-embedding:0.6b. Alles läuft lokal über Ollama (ab Version 0.30.3); die Modelle (zusammen rund 7 GB) werden beim ersten Start geladen. Über OLLAMA_MODEL bzw. EMBEDDING_MODEL lassen sich andere Modelle einstellen; bestehende Installationen behalten beim Update ihre Modelle."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Werden Daten in die Cloud gesendet?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Nein. Dokumente verlassen nie deinen Rechner. Es gibt keinen Cloud-Anbieter, keinen Account-Zwang und keine Telemetrie. OCR, KI-Analyse und Vektorsuche laufen vollständig auf deiner eigenen Hardware. Einzige automatische Internet-Verbindung ist der einmalige Download der KI-Modelle durch Ollama (abschaltbar mit OLLAMA_AUTO_PULL=false); die Update-Prüfung ist optional und standardmäßig aus. Die Anwendung ist als Open Source jederzeit überprüfbar."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Wie sichere ich den Zugang ab?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Mit einem PIN. Das Windows-Setup vergibt automatisch einen zufälligen sechsstelligen PIN und zeigt ihn am Ende an. Bei Docker setzt du PIN_ENABLED=true und PIN_CODE in der .env; im Native-Modus stehen die Werte in der config.toml. Fehlversuche sind begrenzt, danach folgt eine Sperre. Ist der Schutz aus, zeigt die App einen Hinweis. Die App gehört ins Heimnetz — nicht direkt ins Internet stellen."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Wo liegen meine Dokumente und Backups?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Im Datenordner (Windows-Standard: Dokumente\\Zettelwirtschaft, Docker: data/): hochgeladene Originale unter data/uploads, der Scanner-Eingang unter data/watch, das geordnete Archiv unter data/archive/{bereich}/{jahr}/{monat}/{typ}/ und Sicherungen unter data/backups. Täglich läuft automatisch ein Datenbank-Backup; das Vollbackup sichert zusätzlich alle Dokumente. Kopiere Sicherungen regelmäßig auf ein anderes Laufwerk — siehe Anleitung Backup."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Wie binde ich mein E-Mail-Postfach an?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Unter Einstellungen → E-Mail-Konten. Zettelwirtschaft holt per IMAP neue Nachrichten ab, ein lokales Sprachmodell entscheidet über die Relevanz, und passende Anhänge werden in die normale Verarbeitungs-Pipeline eingespeist. Das Postfach-Passwort wird Fernet-verschlüsselt gespeichert — dafür muss EMAIL_ENCRYPTION_KEY gesetzt sein (der Installer erzeugt ihn automatisch)."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Wie aktualisiere ich auf eine neue Version?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Windows (Setup.exe): einfach die neue Setup.exe starten. Sie erkennt die Installation, sichert vorher Datenbank und config.toml und behält Daten, Einstellungen und PIN. Docker: neues Quellpaket entpacken, .env übernehmen und docker compose up -d --build ausführen. Datenbank-Migrationen laufen in beiden Fällen automatisch beim Start. Details: Anleitung Update."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Etwas funktioniert nicht — wo schaue ich nach?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Prüfe zuerst den Health-Check unter http://localhost:8080/api/health. Logs im Docker-Modus: docker compose logs -f backend. Häufigste Ursache bei fehlender Analyse ist ein noch nicht geladenes Ollama-Modell — dann landet das Dokument im Status NEEDS_REVIEW statt abzustürzen (Graceful Degradation). Der Vektor-Index lässt sich in der System-Wartung neu aufbauen."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Was kostet Zettelwirtschaft?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Nichts. Die Software steht unter der AGPL-3.0 und ist vollständig quelloffen. Keine Abos, keine Lizenzschlüssel, keine versteckten Cloud-Kosten."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Kann mein Netzwerkscanner direkt in Zettelwirtschaft scannen?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Ja. In der Windows-Version richtest du im Setup oder über Startmenü › Zettelwirtschaft › Scanner-Freigabe einrichten eine Freigabe für den Eingangsordner ein. Pfad, Benutzer und Passwort trägst du im Scanner unter „Scan to Network Folder“ (SMB, mindestens SMB2) ein. Alternativ darf der Eingangsordner auf einer NAS liegen. Zur Anleitung."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Mein Scanner legt mehrere Briefe in eine PDF — was passiert?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Ab Version 1.7.0 prüft die App PDFs ab drei Seiten auf Dokumentgrenzen, z. B. „Seite 1 von 2“, eine neue Anschrift oder ein Trennblatt. Findet sie mehrere Dokumente, erscheint der Stapel unter „Zu prüfen“ › „Stapel zum Aufteilen“. Im Editor bestätigst oder korrigierst du die Schnitte. Ohne deine Bestätigung wird nichts aufgeteilt. Zur Anleitung."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Brauche ich eine Internetverbindung?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Nur einmal für die Installation und den Download der KI-Modelle (zusammen ca. 5–10 GB). Danach laufen Erfassung, Texterkennung, KI-Analyse und Suche vollständig offline."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Wie gut erkennt die KI meine Belege?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Im Vergleich auf 70 echten und synthetischen Belegen erkannte das Standardmodell gemma4:e2b-it-qat die Kernfelder (Typ, Datum, Betrag, Aussteller) zu rund 85 %, das größere gemma4:12b-it-qat zu rund 90 %. Unsichere Ergebnisse landen unter „Zu prüfen“ statt ungeprüft im Archiv. Korrekturen merkt sich die App und wendet sie ab dem dritten gleichen Fall automatisch an."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Kann ich die App aus dem Internet erreichbar machen?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Davon raten wir ab. Zettelwirtschaft ist für das Heimnetz gebaut: Es gibt einen PIN, aber keine Benutzerverwaltung. Für unterwegs ist ein VPN ins Heimnetz (z. B. über den Router) die sichere Lösung."
+     }
+    }
+   ]
+  }
+ ]
+}
+</script>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/site.css?v=20261023">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<header class="site-head">
+  <div class="wrap site-head__bar">
+    <a class="brand" href="index.html" aria-label="Zettelwirtschaft — Startseite">
+      <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#FBF5E7"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#B23A2E" stroke-width="3"/><rect x="16" y="16" width="32" height="32" rx="3" fill="none" stroke="#B23A2E" stroke-width="1.4" opacity=".55"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#B23A2E" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+      <span><span class="brand__name">Zettelwirtschaft</span><span class="brand__tag">Lokales Dokumentenarchiv</span></span>
+    </a>
+    <button class="burger" id="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Menü öffnen"><span></span></button>
+    <nav class="nav" id="primary-nav" aria-label="Hauptnavigation">
+      <a href="index.html#funktionen">Funktionen</a>
+      <a href="index.html#betrieb">Betrieb</a>
+      <a href="anleitungen.html">Anleitungen</a>
+      <a href="hilfe.html" aria-current="page">FAQ</a>
+      <a href="download.html">Download</a>
+      <a class="btn btn--stamp nav__cta" href="download.html">Herunterladen <span class="ar">→</span></a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="page-hero">
+  <div class="wrap">
+    <nav class="crumbs" aria-label="Brotkrumen"><a href="index.html">Start</a> <span aria-hidden="true">›</span> <span aria-current="page">FAQ</span></nav>
+    <span class="kicker">Handbuch</span>
+    <h1>FAQ &amp; <span class="ink-accent">Schnellstart</span></h1>
+    <p class="lead">Kurze Antworten auf häufige Fragen. Ausführliche Schritt-für-Schritt-Anleitungen für Installation, Scanner, E-Mail, Backup und Update stehen unter <a href="anleitungen.html">Anleitungen</a>.</p>
+  </div>
+</section>
+
+<!-- QUICKSTART -->
+<section class="section section--paper" style="padding-top:1rem">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Schnellstart</span>
+      <h2>Docker: in drei Minuten startklar.</h2>
+      <p>Für Linux, Server und NAS mit Docker Engine. <b>Unter Windows</b> ist die Setup.exe einfacher — siehe <a href="anleitungen.html#windows">Windows-Anleitung</a>. Lade zuerst das <a href="download.html">Quellpaket</a> herunter.</p>
+    </div>
+    <pre class="code reveal" data-d="1"><span class="c"># 1 · Quellpaket entpacken und hineinwechseln</span>
+<span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz &amp;&amp; cd zettelwirtschaft-1.7.0</b>
+
+<span class="c"># 2 · Konfiguration anlegen</span>
+<span class="p">$</span> <b>cp .env.example .env</b>
+
+<span class="c"># 3 · Stack starten</span>
+<span class="p">$</span> <b>docker compose up -d --build</b>
+
+<span class="c"># 4 · KI-Modelle einmalig laden (LLM + Embeddings)</span>
+<span class="p">$</span> <b>docker compose exec ollama ollama pull gemma4:e2b-it-qat</b>
+<span class="p">$</span> <b>docker compose exec ollama ollama pull qwen3-embedding:4b</b>
+
+<span class="c"># 5 · Öffnen</span>
+<span class="c">#    Web-Oberfläche:  http://localhost:8080</span>
+<span class="c">#    Health-Check:    http://localhost:8080/api/health</span></pre>
+    <p class="note"><b>Smartphone-Scan:</b> Die Kamera funktioniert im Browser nur über HTTPS. Richte einmal ein selbstsigniertes Zertifikat ein, öffne die App im Handy (gleiches WLAN) und füge sie zum Startbildschirm hinzu — siehe <a href="anleitungen.html#smartphone">Anleitung Smartphone-Scan</a>.</p>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section">
+  <div class="wrap">
+    <div class="eyebrow-head reveal">
+      <span class="kicker">Häufige Fragen</span>
+      <h2>Antworten auf einen Blick.</h2>
+    </div>
+
+    <div class="faq reveal" data-d="1">
+      <details open>
+        <summary><span class="qno">01</span> Welche Hardware brauche ich?</summary>
+        <div class="faq__body"><p>Empfohlen sind mindestens <b>8&nbsp;GB RAM</b> und rund <b>10&nbsp;GB freier Plattenplatz</b> für Modelle und Archiv. Die Dokumentenanalyse dauert auf reiner CPU etwa 40&nbsp;Sekunden pro Dokument, mit einer NVIDIA-GPU nur wenige Sekunden. Eine GPU ist optional und beschleunigt nur das Sprachmodell.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">02</span> Brauche ich zwingend Docker?</summary>
+        <div class="faq__body"><p>Nein. Es gibt drei Betriebsmodi: <b>Docker</b> (klassischer Stack, Multi-Plattform), <b>Native Windows</b> (Setup.exe installiert einen Hintergrunddienst, ChromaDB embedded) und <b>Dev</b> (direkt aus dem Quellcode mit <code>uvicorn</code> und <code>npm run dev</code>). Für Linux-Server ist Docker der einfachste Weg.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">03</span> Welche KI-Modelle werden verwendet?</summary>
+        <div class="faq__body"><p>Standardmäßig <code>gemma4:e2b-it-qat</code> für die Analyse und <code>qwen3-embedding:4b</code> für die Embeddings der semantischen Suche — ausgewählt in einem Vergleich von 13 Sprachmodellen auf 70 echten und synthetischen Belegen. Auf Rechnern mit NVIDIA-GPU ab 10&nbsp;GB Grafikspeicher schlagen die Installer <code>gemma4:12b-it-qat</code> vor, bei weniger als 12&nbsp;GB RAM <code>qwen3-embedding:0.6b</code>. Alles läuft lokal über Ollama (ab Version 0.30.3); die Modelle (zusammen rund 7&nbsp;GB) werden beim ersten Start geladen. Über <code>OLLAMA_MODEL</code> bzw. <code>EMBEDDING_MODEL</code> lassen sich andere Modelle einstellen; bestehende Installationen behalten beim Update ihre Modelle.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">04</span> Werden Daten in die Cloud gesendet?</summary>
+        <div class="faq__body"><p>Nein. Dokumente verlassen nie deinen Rechner. Es gibt keinen Cloud-Anbieter, keinen Account-Zwang und keine Telemetrie. OCR, KI-Analyse und Vektorsuche laufen vollständig auf deiner eigenen Hardware. Einzige automatische Internet-Verbindung ist der einmalige Download der KI-Modelle durch Ollama (abschaltbar mit <code>OLLAMA_AUTO_PULL=false</code>); die Update-Prüfung ist optional und standardmäßig aus. Die Anwendung ist als <a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Open Source</a> jederzeit überprüfbar.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">05</span> Wie sichere ich den Zugang ab?</summary>
+        <div class="faq__body"><p>Mit einem <b>PIN</b>. Das Windows-Setup vergibt automatisch einen zufälligen sechsstelligen PIN und zeigt ihn am Ende an. Bei Docker setzt du <code>PIN_ENABLED=true</code> und <code>PIN_CODE</code> in der <code>.env</code>; im Native-Modus stehen die Werte in der <code>config.toml</code>. Fehlversuche sind begrenzt, danach folgt eine Sperre. Ist der Schutz aus, zeigt die App einen Hinweis. Die App gehört ins Heimnetz — nicht direkt ins Internet stellen.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">06</span> Wo liegen meine Dokumente und Backups?</summary>
+        <div class="faq__body"><p>Im Datenordner (Windows-Standard: <code>Dokumente\Zettelwirtschaft</code>, Docker: <code>data/</code>): hochgeladene Originale unter <code>data/uploads</code>, der Scanner-Eingang unter <code>data/watch</code>, das geordnete Archiv unter <code>data/archive/{bereich}/{jahr}/{monat}/{typ}/</code> und Sicherungen unter <code>data/backups</code>. Täglich läuft automatisch ein Datenbank-Backup; das <b>Vollbackup</b> sichert zusätzlich alle Dokumente. Kopiere Sicherungen regelmäßig auf ein anderes Laufwerk — siehe <a href="anleitungen.html#backup">Anleitung Backup</a>.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">07</span> Wie binde ich mein E-Mail-Postfach an?</summary>
+        <div class="faq__body"><p>Unter <b>Einstellungen → E-Mail-Konten</b>. Zettelwirtschaft holt per IMAP neue Nachrichten ab, ein lokales Sprachmodell entscheidet über die Relevanz, und passende Anhänge werden in die normale Verarbeitungs-Pipeline eingespeist. Das Postfach-Passwort wird Fernet-verschlüsselt gespeichert — dafür muss <code>EMAIL_ENCRYPTION_KEY</code> gesetzt sein (der Installer erzeugt ihn automatisch).</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">08</span> Wie aktualisiere ich auf eine neue Version?</summary>
+        <div class="faq__body"><p><b>Windows (Setup.exe):</b> einfach die neue Setup.exe starten. Sie erkennt die Installation, sichert vorher Datenbank und <code>config.toml</code> und behält Daten, Einstellungen und PIN. <b>Docker:</b> neues Quellpaket entpacken, <code>.env</code> übernehmen und <code>docker compose up -d --build</code> ausführen. Datenbank-Migrationen laufen in beiden Fällen automatisch beim Start. Details: <a href="anleitungen.html#update">Anleitung Update</a>.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">09</span> Etwas funktioniert nicht — wo schaue ich nach?</summary>
+        <div class="faq__body"><p>Prüfe zuerst den Health-Check unter <code>http://localhost:8080/api/health</code>. Logs im Docker-Modus: <code>docker compose logs -f backend</code>. Häufigste Ursache bei fehlender Analyse ist ein noch nicht geladenes Ollama-Modell — dann landet das Dokument im Status <em>NEEDS_REVIEW</em> statt abzustürzen (Graceful Degradation). Der Vektor-Index lässt sich in der System-Wartung neu aufbauen.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">10</span> Was kostet Zettelwirtschaft?</summary>
+        <div class="faq__body"><p>Nichts. Die Software steht unter der <a href="https://www.gnu.org/licenses/agpl-3.0.de.html" rel="noopener noreferrer">AGPL-3.0</a> und ist vollständig quelloffen. Keine Abos, keine Lizenzschlüssel, keine versteckten Cloud-Kosten.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">11</span> Kann mein Netzwerkscanner direkt in Zettelwirtschaft scannen?</summary>
+        <div class="faq__body"><p>Ja. In der Windows-Version richtest du im Setup oder über <b>Startmenü › Zettelwirtschaft › Scanner-Freigabe einrichten</b> eine Freigabe für den Eingangsordner ein. Pfad, Benutzer und Passwort trägst du im Scanner unter „Scan to Network Folder“ (SMB, mindestens SMB2) ein. Alternativ darf der Eingangsordner auf einer NAS liegen. <a href="anleitungen.html#netzwerkscanner">Zur Anleitung</a>.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">12</span> Mein Scanner legt mehrere Briefe in eine PDF — was passiert?</summary>
+        <div class="faq__body"><p>Ab Version 1.7.0 prüft die App PDFs ab drei Seiten auf Dokumentgrenzen, z.&nbsp;B. „Seite 1 von 2“, eine neue Anschrift oder ein Trennblatt. Findet sie mehrere Dokumente, erscheint der Stapel unter „Zu prüfen“ › „Stapel zum Aufteilen“. Im Editor bestätigst oder korrigierst du die Schnitte. Ohne deine Bestätigung wird nichts aufgeteilt. <a href="anleitungen.html#aufteilen">Zur Anleitung</a>.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">13</span> Brauche ich eine Internetverbindung?</summary>
+        <div class="faq__body"><p>Nur einmal für die Installation und den Download der KI-Modelle (zusammen ca. 5–10&nbsp;GB). Danach laufen Erfassung, Texterkennung, KI-Analyse und Suche vollständig offline.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">14</span> Wie gut erkennt die KI meine Belege?</summary>
+        <div class="faq__body"><p>Im Vergleich auf 70 echten und synthetischen Belegen erkannte das Standardmodell <code>gemma4:e2b-it-qat</code> die Kernfelder (Typ, Datum, Betrag, Aussteller) zu rund 85&nbsp;%, das größere <code>gemma4:12b-it-qat</code> zu rund 90&nbsp;%. Unsichere Ergebnisse landen unter „Zu prüfen“ statt ungeprüft im Archiv. Korrekturen merkt sich die App und wendet sie ab dem dritten gleichen Fall automatisch an.</p></div>
+      </details>
+      <details>
+        <summary><span class="qno">15</span> Kann ich die App aus dem Internet erreichbar machen?</summary>
+        <div class="faq__body"><p>Davon raten wir ab. Zettelwirtschaft ist für das Heimnetz gebaut: Es gibt einen PIN, aber keine Benutzerverwaltung. Für unterwegs ist ein VPN ins Heimnetz (z.&nbsp;B. über den Router) die sichere Lösung.</p></div>
+      </details>
+    </div>
+
+    <div class="reveal" style="margin-top:2.6rem;display:flex;gap:.9rem;flex-wrap:wrap">
+      <a class="btn btn--stamp" href="download.html">Jetzt herunterladen <span class="ar">→</span></a>
+      <a class="btn btn--ghost" href="anleitungen.html">Alle Anleitungen</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-brand">
+          <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#1E342D"/><g transform="rotate(-4 32 32)"><rect x="11" y="11" width="42" height="42" rx="6" fill="none" stroke="#D8B877" stroke-width="3"/><path d="M22 23 H42 L24 41 H42" fill="none" stroke="#D8B877" stroke-width="4.4" stroke-linecap="square"/></g></svg>
+          <span class="brand__name" style="font-family:var(--display);font-size:1.3rem">Zettelwirtschaft</span>
+        </div>
+        <p>Lokales Dokumentenmanagement für Privathaushalte. Rechnungen, Belege und Dokumente — automatisch geordnet, sicher zuhause.</p>
+        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.7.0 · AGPL-3.0</div>
+      </div>
+      <div>
+        <h4>Seiten</h4>
+        <ul>
+          <li><a href="index.html#funktionen">Funktionen</a></li>
+          <li><a href="anleitungen.html">Anleitungen</a></li>
+          <li><a href="hilfe.html">FAQ</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Rechtliches</h4>
+        <ul>
+          <li><a href="impressum.html">Impressum</a></li>
+          <li><a href="datenschutz.html">Datenschutz</a></li>
+          <li><a href="https://github.com/phash/zettelwirtschaft" rel="noopener noreferrer">Quellcode (GitHub)</a></li>
+          <li><a href="https://www.gnu.org/licenses/agpl-3.0.de.html" rel="noopener noreferrer">AGPL-3.0 Lizenz</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-note">
+      <span>© <span data-year>2026</span> Manuel Rödig · 85405 Nandlstadt</span>
+      <span>Kein Cloud-Zwang · Keine Telemetrie · 100&nbsp;% lokal</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

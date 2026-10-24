@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zettelwirtschaft.mr-development.de/sitemap.xml

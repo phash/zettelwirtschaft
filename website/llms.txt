@@ -1,0 +1,31 @@
+# Zettelwirtschaft
+
+> Zettelwirtschaft ist ein kostenloses Open-Source-Dokumentenmanagementsystem (DMS) für Privathaushalte. Es erfasst Rechnungen, Belege, Verträge und Behördenschreiben per Upload, Smartphone, Netzwerkscanner, Watch-Ordner oder E-Mail (IMAP), erkennt den Text per OCR und analysiert ihn mit einer lokalen KI (Ollama). Dokumente werden geordnet abgelegt und sind per Volltextsuche und KI-Assistent durchsuchbar. Alles läuft lokal auf dem eigenen PC oder Server — keine Cloud, kein Konto, kein Abo, keine Telemetrie.
+
+Wichtige Fakten:
+
+- Aktuelle Version: 1.7.0 (18.10.2026)
+- Lizenz: AGPL-3.0, kostenlos; Quellcode: https://github.com/phash/zettelwirtschaft
+- Systeme: Windows 10/11 als Windows-Dienst (Setup.exe, ohne Docker) oder Linux/NAS mit Docker Compose
+- Hardware: ab 8 GB RAM und ca. 10 GB Speicher; NVIDIA-GPU optional
+- KI-Modelle (lokal via Ollama ≥ 0.30.3): Analyse gemma4:e2b-it-qat (mit GPU ab 10 GB VRAM gemma4:12b-it-qat), Suche qwen3-embedding:4b (unter 12 GB RAM qwen3-embedding:0.6b)
+- Dauer: ca. 40 Sekunden pro Dokument auf CPU, wenige Sekunden mit GPU
+- Erkennungsgenauigkeit (Kernfelder Typ, Datum, Betrag, Aussteller; 70 Testbelege): ca. 85 % mit dem Standardmodell, ca. 90 % mit gemma4:12b
+- Formate: PDF, JPG, PNG, TIFF, BMP bis 50 MB
+- Funktionen: OCR, KI-Klassifikation (15 Dokumenttypen), Volltextsuche, KI-Assistent mit Quellen (RAG), Steuerpaket-Export (ZIP mit PDF + CSV), Garantie-Tracker, Smartphone-Scan (PWA), E-Mail-Import, Netzwerkscanner-Freigabe, NAS-Ordner, Mehrdokument-Scans aufteilen, Ablagebereiche, PIN-Schutz, tägliche Backups
+- Sprache: deutsche Oberfläche; OCR Deutsch + Englisch
+- Einsatz: nur im Heimnetz; nicht für den direkten Betrieb im Internet gedacht
+- Autor: Manuel Rödig, MR Development (https://www.mr-development.de/)
+
+## Seiten
+
+- [Startseite](https://zettelwirtschaft.mr-development.de/): Überblick, Funktionen, Betriebsmodi, Datenschutz
+- [Anleitungen](https://zettelwirtschaft.mr-development.de/anleitungen.html): Schritt-für-Schritt für Windows- und Docker-Installation, erstes Dokument, Smartphone-Scan, Netzwerkscanner/NAS, Mehrdokument-Scans, E-Mail-Import, Steuerpaket, Backup, Update
+- [FAQ](https://zettelwirtschaft.mr-development.de/hilfe.html): häufige Fragen zu Hardware, KI-Modellen, Datenschutz, PIN, Backups, Updates, Fehlerbehebung
+- [Download](https://zettelwirtschaft.mr-development.de/download.html): Windows-Setup, Docker-Images, Quellpaket, SHA-256-Prüfsummen
+
+## Optional
+
+- [Changelog im README](https://github.com/phash/zettelwirtschaft#changelog)
+- [Update-Manifest](https://zettelwirtschaft.mr-development.de/latest.json)
+- [Datenschutzerklärung](https://zettelwirtschaft.mr-development.de/datenschutz.html)
