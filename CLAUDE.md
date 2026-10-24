@@ -250,6 +250,7 @@ zettelwirtschaft/
         processed_email.py       # ProcessedEmail + EmailStatus Enum
         background_task.py       # BackgroundTask + TaskStatus (lang laufende Vorgaenge, 202 + Polling)
         split_batch.py           # SplitBatch + SplitOrigin/SplitBatchStatus (aufzuteilende Stapel-PDFs, v1.7)
+        reanalysis.py            # ReanalysisProposal + ReanalysisRun/-RunItem + RunStatus/RunItemStatus (Neu analysieren mit Vorschlag, #39)
       schemas/
         document.py              # DocumentResponse, DocumentListItem, DocumentUpdate, TagResponse, DashboardStats etc.
         filing_scope.py          # FilingScopeCreate, FilingScopeUpdate, FilingScopeResponse
@@ -262,6 +263,7 @@ zettelwirtschaft/
         email.py                 # EmailAccountCreate/Update/Response, EmailTestResult, EmailFetchResult, ProcessedEmailResponse, EmailStatsResponse
         background_task.py       # TaskResponse (202-Antwort + GET /api/tasks/{id})
         split.py                 # SplitBatchResponse, SplitPage, SplitBoundary, SplitConfirmRequest, SplitSettings*
+        reanalysis.py            # Vorschlag (Diff), Apply-Request, Massenlauf-Status; DocumentResponse.analysis_model/has_proposal
       api/
         auth.py                  # PIN-Login, Session-Status, Logout (in-memory Sessions)
         documents.py             # CRUD + Upload + Tags + Stats + Thumbnails
@@ -278,6 +280,7 @@ zettelwirtschaft/
         email.py                 # E-Mail-Konten CRUD + Test + Fetch + History + Stats
         tasks.py                 # GET /api/tasks/{id}, /api/tasks — Status der Background-Tasks
         split.py                 # /api/split: Stapel-Liste/-Detail, Seitenbilder, confirm/keep-whole/discard/undo/retry-failed
+        reanalysis.py            # /api/reanalysis/proposals... (Liste, Detail, apply, discard, apply-all als Task) und /runs... (Massenlauf)
       services/
         upload_service.py        # Datei-Upload-Verarbeitung
         file_validation_service.py # Dateityp- und Magic-Byte-Validierung
@@ -303,7 +306,8 @@ zettelwirtschaft/
         task_service.py          # start_task/TaskContext: Background-Tasks (Re-Analyse, Mail-Abruf, Backup, Vektor-Rebuild)
         correction_service.py    # CorrectionMapping zaehlen + auto_apply (ab 3x) nach der LLM-Analyse
         notification_service.py  # REVIEW_NEEDED / SYSTEM-Benachrichtigungen aus dem Worker
-        reanalysis_service.py    # Re-Analyse ueber die Haupt-Pipeline, user-editierte Felder bleiben
+        reanalysis_service.py    # Neu analysieren: create_proposal/compute_changes/apply_proposal/discard_proposal (Haupt-Pipeline, Vorschlag statt Ueberschreiben)
+        reanalysis_run_service.py # Massenlauf-Runner (Lifespan nach Recovery): nur ohne wartende Jobs, Backoff bei Ollama-Ausfall, selbstheilend
         review_answers.py        # Antworten auf Rueckfragen parsen + anwenden (AnswerError -> 422, Frage bleibt offen)
         filing_scope_service.py  # gemeinsame Ablagebereich-Logik (API + Review-Antwort "NEU: ...")
         file_relocation.py       # Archivdateien bei Scope-Wechsel verschieben (copy -> commit -> delete)
@@ -430,10 +434,10 @@ zettelwirtschaft/
 - **Ollama-Versionscheck:** `ollama_client.ollama_health` fragt `/api/version` ab; aelter als `OLLAMA_MIN_VERSION` (0.30.3) -> Health-`warning` "Ollama <v> ist älter als <min> — bitte aktualisieren" (nie `error`), Version + Mindestversion im System-Health (`components.ollama.version/min_version`). Dev-Builds ("0.0.0") und fehlende Version -> keine Warnung. Gleicher Wert in `scripts/model-tiers.ps1` und `setup-native.nsi` (Test `test_ollama_min_version_is_consistent`). Quelle: GitHub-Release-Notes (gemma4 ab v0.20.0, gemma4:12b ab v0.30.3); fuer die QAT-Tags und qwen3-embedding nennt keine Release-Note eine Version.
 - **E-Mail-Integration (Issue #18):** IMAP-Polling-Service als Backend Background-Task. Importiert werden bewusst nur UNGELESENE Mails (`UNSEEN`) — so steht es auch in den E-Mail-Einstellungen der UI. LLM entscheidet ueber E-Mail-Relevanz. Relevante Anhaenge + Body werden als ProcessingJobs in bestehende Pipeline eingespeist. Passwoerter Fernet-verschluesselt (AES-128-CBC, `EMAIL_ENCRYPTION_KEY` in `.env`). Scheduling: CRON (via croniter, ausgewertet in der lokalen Zeitzone `TIMEZONE`, Default `Europe/Berlin`, `tzdata` fuer Windows), MANUAL (API-Trigger), IDLE (alle 5 Minuten). Verarbeitete E-Mails werden in IMAP-Ordner verschoben. Konfiguration ueber Web-UI (SettingsView).
 - **Watch-Ordner:** Originale werden nur im app-verwalteten Standard-Watch-Ordner nach der Verarbeitung geloescht. Bei einem vom Benutzer gewaehlten Ordner werden sie in den Unterordner `verarbeitet` verschoben (wird angelegt) — Benutzerdateien werden nie geloescht. Abgelehnte Dateien landen in `<watch_dir>/rejected`; Temp-/Systemdateien (`.tmp`, `.part`, `.crdownload`, `~$…`, versteckte) werden ignoriert.
-- **Lang laufende Vorgaenge** (Re-Analyse `reanalyze`, manueller E-Mail-Abruf `email_fetch`, Backup `backup`, Vektor-Index-Rebuild `rebuild_vectors` — auch die initiale Vektorisierung beim Start): HTTP 202 + `TaskResponse`, Status per `GET /api/tasks/{id}`; Frontend pollt ueber `useBackgroundTask`. Pro (kind, key) hoechstens ein aktiver Task (409 mit dem laufenden Task). `work()` oeffnet eigene kurze Sessions — nie eine Schreib-Transaktion ueber OCR/LLM/IMAP halten.
+- **Lang laufende Vorgaenge** (Re-Analyse `reanalyze`, Alle-Vorschlaege-uebernehmen `reanalysis_apply_all` (key `global`), manueller E-Mail-Abruf `email_fetch`, Backup `backup`, Vektor-Index-Rebuild `rebuild_vectors` — auch die initiale Vektorisierung beim Start): HTTP 202 + `TaskResponse`, Status per `GET /api/tasks/{id}`; Frontend pollt ueber `useBackgroundTask`. Pro (kind, key) hoechstens ein aktiver Task (409 mit dem laufenden Task). `work()` oeffnet eigene kurze Sessions — nie eine Schreib-Transaktion ueber OCR/LLM/IMAP halten.
 - **SQLite-Locking:** `busy_timeout` pro Connection (`database.SQLITE_BUSY_TIMEOUT_MS`), kein WAL. Der Worker-Heartbeat committet in eigener kurzer Transaktion.
 - **Review-Aktionen:** "Später" aendert den Review-Status nicht (Zurueckstellen nur clientseitig); "So übernehmen" akzeptiert das KI-Ergebnis (REVIEWED/OK); "Freigeben" ist auch mit offenen Fragen erlaubt (explizite Annahme).
-- **Re-Analyse:** nutzt die Haupt-Pipeline (inkl. OCR-Sanitizer + Verifier). Vom Benutzer editierte Felder (AuditLog UPDATED) bleiben erhalten, alle anderen KI-Felder werden komplett ersetzt (Auto-Tags, Garantie, Scope sofern nicht user-gesetzt); unbeteiligte offene Fragen bleiben stehen.
+- **Re-Analyse (Neu analysieren, #39):** JEDE Neu-Analyse ist ein Vorschlag (`ReanalysisProposal`), nie ein direktes Ueberschreiben. Sie nutzt die Haupt-Pipeline (inkl. OCR-Sanitizer + Verifier), optional mit neuer OCR (`OCR_WORSE_MARGIN` 0.10: deutlich schlechtere OCR-Konfidenz wird nicht uebernommen). Der Diff wird beim Lesen berechnet (`compute_changes`), nicht gespeichert; vom Benutzer editierte Felder (AuditLog UPDATED) sind geschuetzt. Teilweise Uebernahme: Rueckfragen nur fuer akzeptierte Felder, `needs_review` nur bei voller Uebernahme. Aendern sich nur Titel/Zusammenfassung, gilt der Vorschlag als unveraendert (das Modell wird in `documents.analysis_model` vermerkt); abgelehnte/verworfene Vorschlaege vermerken ebenfalls das Modell. Massenlauf (`ReanalysisRun`, Runner `reanalysis_run_service` im Lifespan nach der Recovery): laeuft nur, wenn keine PENDING/PROCESSING-`ProcessingJob`s existieren, die Queue nicht pausiert und der Analyse-Slot frei ist (neue Eingaenge haben Vorrang); wartet mit Backoff bei Ollama-Ausfall, heilt haengende Eintraege selbst, hoechstens ein aktiver Lauf (Partial Unique Index `ux_reanalysis_runs_active`); Dokumente mit Review-Status REVIEWED sind ausgeschlossen. Ende: Benachrichtigung `REANALYSIS_DONE` (`document_id` NULL, Frontend -> `/pruefen?tab=vorschlaege`). "Alle uebernehmen" (Task `reanalysis_apply_all`) waehlt per Filter Dokumente und uebernimmt alle ihre Aenderungen. Frontend: `components/reanalysis/` (ProposalDiff, ReanalyzeDialog, ReanalysisProposals, ReanalysisRunStatus), Detailansicht "Neu analysieren", Tab "Änderungsvorschläge" unter /pruefen, Checkboxen + Massenlauf in DocumentsView. Unbeteiligte offene Fragen bleiben stehen.
 - **PWA Service Worker Caching:** `navigateFallbackDenylist: [/^\/api\//]` verhindert dass der SW API-Requests mit `index.html` beantwortet. File/Thumbnail-Endpunkte sind `NetworkOnly` (Binaerdaten duerfen nicht gecacht werden, da sonst iframes die App statt das Dokument laden). API-JSON-Responses sind `NetworkFirst` mit 5min Cache.
 - **Lizenz:** AGPL-3.0 (verhindert proprietaere SaaS-Forks).
 - **PIN Rate-Limiting:** In-Memory Per-IP-Lockout mit exponentiellem Backoff (30 s, 60 s, ... max. 1 h; Counter erst 24 h nach Lockout-Ende vergessen) + globales Budget (30 Fehlversuche/h ueber alle IPs -> Login fuer Nicht-Loopback gesperrt + SYSTEM-Notification). Host-/Origin-Pruefung gegen DNS-Rebinding/CSRF: `core/host_guard.py`. Docker Desktop kann die Quell-IP verlieren (dann ein gemeinsamer Lockout fuer alle Geraete) -> einmalige Log-Warnung. `secrets.compare_digest` fuer constant-time Vergleich. Client-IP ueber `core/rate_limit.trusted_client_ip` — `X-Real-IP` von nginx nur im Docker-Betrieb aus `TRUSTED_PROXIES`, Native/Dev nutzen die Socket-Adresse.
@@ -476,9 +480,10 @@ zettelwirtschaft/
 - `AuditLog` - Aenderungsprotokoll (CREATED/UPDATED/DELETED/RESTORED/EXPORTED/TAG_ADDED/TAG_REMOVED/REVIEWED/REANALYZED; Aufteilung: SPLIT am Original, SPLIT_CREATED an jedem Teil, SPLIT_UNDONE). UPDATED/TAG_*/REVIEWED schreibt nur die API — sie sperren "Aufteilung rückgängig"
 - `SavedSearch` - Gespeicherte Suchanfragen (Name + JSON-Parameter)
 - `documents_fts` - FTS5 Virtual Table (title, ocr_text, issuer, summary, tags)
-- `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, SYSTEM, SPLIT_NEEDED — `document_id` NULL, Frontend leitet auf `/pruefen`). REVIEW_NEEDED/SYSTEM (Job fehlgeschlagen) erzeugt der Queue-Worker; PROCESSING_DONE wurde entfernt (nie gespeichert, VARCHAR ohne CHECK)
+- `Notification` - Benachrichtigungen (WARRANTY_EXPIRING, WARRANTY_EXPIRED, REVIEW_NEEDED, SYSTEM, SPLIT_NEEDED, REANALYSIS_DONE — `document_id` NULL, Frontend leitet auf `/pruefen`, bei REANALYSIS_DONE auf `/pruefen?tab=vorschlaege`). REVIEW_NEEDED/SYSTEM (Job fehlgeschlagen) erzeugt der Queue-Worker; PROCESSING_DONE wurde entfernt (nie gespeichert, VARCHAR ohne CHECK)
 - `CorrectionMapping` - Lerneffekt aus Benutzer-Korrekturen: ab 2x Few-Shot-Beispiel im Prompt, ab 3x `auto_apply` (deterministisch nach der LLM-Analyse, vor der Archivierung; `correction_service.apply_auto_corrections`)
 - `BackgroundTask` - lang laufende Vorgaenge: kind, key, status (PENDING/RUNNING/SUCCEEDED/FAILED), progress, result/error; Neustart markiert offene Tasks als FAILED
+- `ReanalysisProposal` - Vorschlag einer Neu-Analyse zu genau einem Dokument (Analyse-/OCR-Ergebnis, Modell, Status, `run_id` ohne FK); `ReanalysisRun`/`ReanalysisRunItem` - Massenlauf ueber viele Dokumente (RunStatus/RunItemStatus, Fortschritt, hoechstens ein aktiver Lauf). `Document.analysis_model` = Modell der letzten Analyse/Pruefung
 - `ChatMessage` - RAG-Chat-Verlauf (question, answer, sources JSON, scope_filter, created_at)
 - `EmailAccount` - E-Mail-Konten: name, imap_host/port, use_ssl, username, encrypted_password, folder_inbox/processed, schedule_type (CRON/MANUAL/IDLE), cron_expression, is_active, filing_scope_id (FK)
 - `ProcessedEmail` - Verarbeitete E-Mails: email_account_id (FK), message_id (UNIQUE pro Account), subject, sender, received_at, status (RELEVANT/IRRELEVANT/FAILED), processing_job_id (FK)
@@ -713,12 +718,13 @@ Tray-Icon, Code-Signing (Authenticode-Cert).
 - `016_schema_consistency` - Partial Unique Index `ux_documents_file_hash_active` (WHERE status != 'DELETED', Re-Upload geloeschter Dateien legt neues Dokument an), fehlende 006/011-Indizes in create_all-DBs, FK processing_jobs.email_account_id, review_questions.priority NOT NULL
 - `017_review_data_fixes` - Datenmigration: leere Scope-Slugs, UUID-Scope-Korrekturen -> Namen, Steuerjahr fuer steuerrelevante Dokumente ohne tax_year
 - `018_document_split` - Tabelle `split_batches` (+ Index `ix_split_batches_status_created`), Aufteilungs-Spalten auf `processing_jobs` (`split_batch_id` FK SET NULL, `split_role`, `split_part_index`, `page_from/to`, `split_mode` NOT NULL default `'AUTO'`, `page_ocr`) und `documents` (`split_batch_id` FK SET NULL, `split_part_index`, `source_pages`); partielle Unique-Indizes `ux_processing_jobs_split_part` (WHERE split_role='PART', idempotente Teil-Jobs) und `ux_documents_split_part_active` (WHERE status!='DELETED')
+- `019_reanalysis` - `documents.analysis_model`, Tabellen `reanalysis_proposals` (ein Vorschlag je Dokument, FK CASCADE), `reanalysis_runs` (Partial Unique Index `ux_reanalysis_runs_active`: hoechstens ein aktiver Lauf) und `reanalysis_run_items`; `NotificationType.REANALYSIS_DONE` braucht keine DDL
 
 `migrate.py` ruft `init_db()` nicht mehr auf. Frische (leere) DBs: Schema via
 `create_fresh_schema` (create_all) + Stamp auf head — die Alembic-Chain allein kann
 eine leere DB nicht aufbauen (001 = ALTER ohne CREATE). Bestands-DBs: Alembic-Chain.
 `detect_stamp` erkennt Legacy-DBs ohne `alembic_version`
-auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013), 014 (Tabelle background_tasks), 015 (processing_jobs.document_id), 016 (Index ux_documents_file_hash_active), 018 (Tabelle split_batches, geprueft vor 017); 017 ist reine idempotente Datenmigration ohne Merkmal.
+auch fuer 010 (FK-Typ), 011 (Index-Existenz), 012 (column_type), 013 (FK-Existenz auf chat_messages — nicht nur Index, sonst stempelt zufaellig vorhandener Index falsch auf 013), 014 (Tabelle background_tasks), 015 (processing_jobs.document_id), 016 (Index ux_documents_file_hash_active), 019 (Index ux_reanalysis_runs_active, geprueft vor 018), 018 (Tabelle split_batches, geprueft vor 017); 017 ist reine idempotente Datenmigration ohne Merkmal.
 Die Kette ist linear (Guard-Test `test_revision_chain_is_linear`): neue Migrationen immer auf den aktuellen Head setzen, parallel entstandene vor dem Merge verketten. `migrate.py` liest den DB-Pfad aus den Settings (`settings.sqlite_db_path`, wie Native).
 
 **Native-Pfad** (`app/entrypoint.py`) wie Docker: Bei leerer DB → `Base.metadata.create_all`
