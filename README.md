@@ -191,10 +191,12 @@ Nach dem ersten Start werden folgende Verzeichnisse unter `data/` angelegt:
 
 ## Changelog
 
-### Unreleased
+### v1.8.0
 - **Neu analysieren mit Änderungsvorschlag (#39):** Ein Dokument lässt sich in der Detailansicht mit dem aktuellen KI-Modell neu analysieren (optional mit neuer Texterkennung). Das Ergebnis ist immer ein Vorschlag: die App zeigt die Unterschiede zum aktuellen Stand, du übernimmst alles oder nur einzelne Felder; von dir bearbeitete Felder bleiben geschützt. Ändern sich nur Titel und Zusammenfassung, gilt das Dokument als unverändert. Ebenso geschützt: von dir vergebene Tags (auch die beim Aufteilen vom Original übernommenen) und ein vorgegebener Ablagebereich (E-Mail-Konto, aufgeteiltes Original). Wählst du das neue Datum ab, zeigt die Vorschau, was dann für Steuerjahr und Garantie gilt.
 - **Sammellauf:** In der Dokumentliste lassen sich mehrere Dokumente auswählen und gemeinsam neu analysieren. Der Lauf startet nur, wenn keine neuen Dokumente warten oder verarbeitet werden, wartet bei Ollama-Ausfällen und setzt nach einem Neustart fort; freigegebene Dokumente werden ausgelassen. Am Ende erscheint eine Benachrichtigung; die Vorschläge stehen unter „Zu prüfen“ → „Änderungsvorschläge“ und lassen sich gesammelt übernehmen.
 - Datenbank: Migration `019_reanalysis` (Vorschläge, Läufe, `documents.analysis_model`).
+- Website: Seiten versioniert, Anleitungen und Suchmaschinen-Angaben überarbeitet.
+- Tests: Backend **1823** (1 übersprungen), E2E **728** (Desktop + Mobile, 4 übersprungen), Vitest 53.
 
 ### v1.7.0
 - **Mehrdokument-Scans aufteilen:** Legt der Einzugsscanner mehrere Briefe und Rechnungen in eine PDF, erkennt die App das jetzt vor der Analyse. PDFs ab 3 Seiten aus Upload, Watch-Ordner und E-Mail-Anhängen werden Seite für Seite gelesen; Seitenzähler („Seite 1 von …“), neue Anschrift mit Anrede, Referenz- und Vertragsnummern, Trennblätter, Formatwechsel und Duplex-Blätter ergeben einen Aufteilungsvorschlag. Wurden mehrere Dokumente gefunden oder ist eine Stelle unsicher, erscheint der Stapel unter „Zu prüfen“ → „Stapel zum Aufteilen“ (mit Benachrichtigung). Ein einzelnes Dokument läuft ohne Umweg normal weiter.
