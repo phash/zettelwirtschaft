@@ -20,8 +20,11 @@ from app.models.document import (
     ReviewStatus,
     Tag,
 )
+from app.models.email_account import EmailAccount, ScheduleType
 from app.models.filing_scope import FilingScope
+from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.models.reanalysis import ReanalysisProposal
+from app.models.split_batch import SplitBatch, SplitBatchStatus, SplitOrigin
 from app.models.review_question import ReviewQuestion
 from app.services.reanalysis_service import (
     FieldChange,
@@ -32,8 +35,8 @@ from app.services.reanalysis_service import (
     discard_proposal,
     get_open_proposal,
     is_substantive,
-    load_document_for_review,
 )
+from app.services.document_lookup import load_active_document
 from app.services.task_service import TaskError
 from tests.factories import make_document
 from tests.support.reanalysis_fixtures import make_analysis
@@ -104,7 +107,7 @@ async def _create(session_factory, doc_id: str, settings):
 
 async def _changes(session_factory, doc_id: str, settings) -> list:
     async with session_factory() as session:
-        doc = await load_document_for_review(session, doc_id)
+        doc = await load_active_document(session, doc_id)
         proposal = await get_open_proposal(session, doc_id)
         assert proposal is not None
         return await compute_changes(session, doc, proposal, settings)
@@ -198,7 +201,7 @@ async def test_identical_values_yield_no_change(db_session, test_session_factory
     doc = await _doc(db_session, await _scope(db_session))
     doc_id = doc.id
     async with test_session_factory() as session:
-        loaded = await load_document_for_review(session, doc_id)
+        loaded = await load_active_document(session, doc_id)
         proposal = ReanalysisProposal(
             document_id=doc_id, model=test_settings.OLLAMA_MODEL, analysis=make_analysis().to_dict(),
         )
@@ -397,7 +400,7 @@ async def test_apply_conflicts_when_proposal_replaced_meanwhile(
     doc = await _doc(db_session, privat, issuer="Alt GmbH")
     doc_id = doc.id
     await _create(test_session_factory, doc_id, test_settings)
-    original_plan = reanalysis_service._plan_changes
+    original_plan = reanalysis_service._plan
 
     async def plan_then_replace(*args, **kwargs):
         plan = await original_plan(*args, **kwargs)
@@ -410,10 +413,10 @@ async def test_apply_conflicts_when_proposal_replaced_meanwhile(
                 document_id=doc_id, model=old.model, with_ocr=False, analysis=old.analysis,
             ))
             await other.commit()
-        monkeypatch.setattr(reanalysis_service, "_plan_changes", original_plan)
+        monkeypatch.setattr(reanalysis_service, "_plan", original_plan)
         return plan
 
-    monkeypatch.setattr(reanalysis_service, "_plan_changes", plan_then_replace)
+    monkeypatch.setattr(reanalysis_service, "_plan", plan_then_replace)
 
     with pytest.raises(ProposalConflict) as exc_info:
         await _apply(test_session_factory, doc_id, test_settings)
@@ -725,3 +728,197 @@ async def test_apply_ocr_updates_text_and_fts(
         )).all()
     assert [h[0] for h in hits] == [doc_id]
     assert vectorize_calls == [doc_id]
+
+
+# --- Vorgaben beim Archivieren, Wettlauf beim Verwerfen, Datumsabhaengigkeit, Abfragen ---
+
+
+async def _split_part_of(db: AsyncSession, original: Document, scope: FilingScope, **overrides) -> Document:
+    """Teil eines "Dokument aufteilen"-Stapels (MANUAL) des Originals."""
+    batch = SplitBatch(
+        origin=SplitOrigin.MANUAL, status=SplitBatchStatus.DONE, source_document_id=original.id,
+        job_source="SPLIT_REQUEST", original_filename="stapel.pdf", file_path="/x/stapel.pdf",
+        file_hash=uuid.uuid4().hex, page_count=2,
+    )
+    db.add(batch)
+    await db.flush()
+    return await _doc(db, scope, split_batch_id=batch.id, split_part_index=1, **overrides)
+
+
+async def test_inherited_manual_tags_of_split_part_are_kept(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    """Beim Aufteilen geerbte manuelle Tags tragen kein TAG_ADDED am Teil — sie bleiben trotzdem."""
+    privat = await _scope(db_session)
+    original = await _doc(db_session, privat, tags=[], status=DocumentStatus.DELETED)
+    steuer = Tag(name="steuer2025", is_auto_generated=True)
+    db_session.add(steuer)
+    await db_session.flush()
+    db_session.add(DocumentTag(document_id=original.id, tag_id=steuer.id))
+    db_session.add(AuditLog(document_id=original.id, action=AuditAction.TAG_ADDED, details=json.dumps({"tag": "steuer2025"})))
+    part = await _split_part_of(db_session, original, privat, issuer="Alt GmbH", tags=["arzt", "gesundheit"])
+    db_session.add(DocumentTag(document_id=part.id, tag_id=steuer.id))
+    await db_session.commit()
+    part_id = part.id
+
+    outcome = await _create(test_session_factory, part_id, test_settings)
+
+    assert {c.field for c in outcome.changes} == {"issuer"}
+    await _apply(test_session_factory, part_id, test_settings)
+    d = await _fresh_doc(test_session_factory, part_id)
+    assert sorted(t.name for t in d.tags) == ["arzt", "gesundheit", "steuer2025"]
+
+
+async def test_user_created_tag_counts_as_manual(db_session, test_session_factory, test_settings, fake_pipeline):
+    """Selbst angelegte Tags (is_auto_generated=False) gelten wie beim Aufteilen als manuell."""
+    doc = await _doc(db_session, await _scope(db_session))
+    own = Tag(name="eigenes", is_auto_generated=False)
+    db_session.add(own)
+    await db_session.flush()
+    db_session.add(DocumentTag(document_id=doc.id, tag_id=own.id))
+    await db_session.commit()
+
+    outcome = await _create(test_session_factory, doc.id, test_settings)
+
+    assert outcome.status == "unchanged"
+
+
+async def test_email_account_scope_is_not_changed(db_session, test_session_factory, test_settings, fake_pipeline):
+    """Vom E-Mail-Konto vorgegebener Bereich geht wie beim Archivieren Keywords vor."""
+    await _scope(db_session, keywords='["Praxis"]')
+    praxis = await _scope(db_session, name="Praxis", slug="praxis", is_default=False)
+    account = EmailAccount(
+        name="Praxis-Post", imap_host="imap.test", username="praxis@test",
+        encrypted_password=uuid.uuid4().hex, schedule_type=ScheduleType.MANUAL, filing_scope_id=praxis.id,
+    )
+    db_session.add(account)
+    await db_session.flush()
+    doc = await _doc(db_session, praxis, issuer="Alt GmbH")
+    db_session.add(ProcessingJob(
+        original_filename="mail.pdf", stored_filename="m.pdf", file_path="/x/m.pdf", file_type="pdf",
+        file_size_bytes=1, source=JobSource.EMAIL, status=JobStatus.COMPLETED,
+        email_account_id=account.id, document_id=doc.id,
+    ))
+    await db_session.commit()
+
+    outcome = await _create(test_session_factory, doc.id, test_settings)
+
+    assert {c.field for c in outcome.changes} == {"issuer"}
+
+
+async def test_split_original_scope_is_not_changed(db_session, test_session_factory, test_settings, fake_pipeline):
+    await _scope(db_session, keywords='["Praxis"]')
+    praxis = await _scope(db_session, name="Praxis", slug="praxis", is_default=False)
+    original = await _doc(db_session, praxis, tags=[], status=DocumentStatus.DELETED)
+    part = await _split_part_of(db_session, original, praxis, issuer="Alt GmbH")
+
+    outcome = await _create(test_session_factory, part.id, test_settings)
+
+    assert {c.field for c in outcome.changes} == {"issuer"}
+
+
+async def test_discard_conflicts_when_proposal_replaced_meanwhile(
+    db_session, test_session_factory, test_settings, fake_pipeline, monkeypatch,
+):
+    """Ersetzt eine neue Analyse den Vorschlag beim Verwerfen: Konflikt, der neue bleibt offen."""
+    from app.services import reanalysis_service
+
+    doc = await _doc(db_session, await _scope(db_session), issuer="Alt GmbH")
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+    original_load = reanalysis_service.load_active_document
+
+    async def load_then_replace(session, document_id):
+        loaded = await original_load(session, document_id)
+        async with test_session_factory() as other:
+            old = await get_open_proposal(other, doc_id)
+            await other.delete(old)
+            await other.flush()
+            other.add(ReanalysisProposal(document_id=doc_id, model="neu", with_ocr=False, analysis=old.analysis))
+            await other.commit()
+        return loaded
+
+    monkeypatch.setattr(reanalysis_service, "load_active_document", load_then_replace)
+    async with test_session_factory() as session:
+        with pytest.raises(ProposalConflict) as exc_info:
+            await discard_proposal(session, doc_id)
+        await session.commit()
+
+    assert exc_info.value.message == reanalysis_service.PROPOSAL_REPLACED_MESSAGE
+    proposals = await _proposals(test_session_factory)
+    assert [p.model for p in proposals] == ["neu"]
+    assert (await _fresh_doc(test_session_factory, doc_id)).analysis_model is None
+    assert await _audits(test_session_factory, doc_id) == []
+
+
+async def test_preview_shows_values_for_rejected_date(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    """Die Vorschau nennt, was Steuerjahr/Garantie ohne das neue Datum wird."""
+    fake_pipeline["result"] = make_analysis(warranty_info={
+        "has_warranty": True, "product_name": "Laptop", "purchase_date": None,
+        "warranty_duration_months": 24, "store_name": "Shop",
+    })
+    doc = await _doc(db_session, await _scope(db_session), document_date=date(2024, 12, 1), tax_year=2024)
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+
+    changes = {c.field: c for c in await _changes(test_session_factory, doc_id, test_settings)}
+
+    assert changes["tax_year"].without_new_date == {"unchanged": True}  # 2024 bleibt
+    assert changes["warranty"].without_new_date["new"]["purchase_date"] == "2024-12-01"
+    assert changes["document_date"].without_new_date is None
+
+
+async def test_dependent_field_dropped_with_rejected_date_is_not_rejected(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    """Ohne neues Datum entfaellt die Steuerjahr-Aenderung: sie ist weder uebernommen
+    noch abgelehnt — abgelehnt ist nur, was der Benutzer abgewaehlt hat."""
+    doc = await _doc(db_session, await _scope(db_session), document_date=date(2024, 12, 1), tax_year=2024)
+    doc_id = doc.id
+    await _create(test_session_factory, doc_id, test_settings)
+
+    applied = await _apply(test_session_factory, doc_id, test_settings, {"tax_year"})
+
+    assert applied == []
+    audit = (await _audits(test_session_factory, doc_id))[0]
+    assert audit["rejected"] == ["document_date"]
+
+
+async def test_list_query_count_does_not_grow_with_proposals(
+    db_session, test_session_factory, test_settings, fake_pipeline,
+):
+    """Die Vorschlagsliste laedt Schutz-Informationen gemeinsam (keine Abfragen je Vorschlag)."""
+    from sqlalchemy import event
+
+    from app.services.reanalysis_service import list_visible_proposals
+
+    scope = await _scope(db_session)
+
+    async def count_queries() -> tuple[int, int]:
+        statements = []
+        engine = db_session.bind.sync_engine
+
+        def record(conn, cursor, statement, *args):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            async with test_session_factory() as session:
+                visible = await list_visible_proposals(session, test_settings)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        return len(visible), len(statements)
+
+    for _ in range(2):
+        doc = await _doc(db_session, scope, issuer="Alt GmbH", tags=[])
+        await _create(test_session_factory, doc.id, test_settings)
+    few, few_queries = await count_queries()
+    for _ in range(5):
+        doc = await _doc(db_session, scope, issuer="Alt GmbH", tags=[])
+        await _create(test_session_factory, doc.id, test_settings)
+    many, many_queries = await count_queries()
+
+    assert (few, many) == (2, 7)
+    assert many_queries == few_queries

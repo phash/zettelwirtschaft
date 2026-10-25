@@ -7,10 +7,11 @@ import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
 import ReanalyzeDialog from '../components/reanalysis/ReanalyzeDialog.vue'
 import {
   getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope,
-  requestDocumentSplit, getSplitBatch, reanalyzeDocument, getProposal, applyProposal, discardProposal,
+  requestDocumentSplit, getSplitBatch, reanalyzeDocument, getProposal,
 } from '../services/api'
 import { useFilingScopes } from '../composables/useFilingScopes'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
+import { useProposalActions } from '../composables/useProposalActions'
 import { useNotificationStore } from '../stores/notifications'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatBytes } from '../utils/formatters'
@@ -129,7 +130,6 @@ async function loadDocument({ silent = false } = {}) {
 // den der Benutzer feldweise übernimmt oder verwirft.
 const proposal = ref(null)
 const showReanalyzeDialog = ref(false)
-const proposalBusy = ref(false)
 
 const reanalysis = useBackgroundTask({
   onSuccess: (result) => handleReanalysisDone(result),
@@ -157,11 +157,13 @@ async function refreshAnalysisInfo() {
 }
 
 async function handleReanalysisDone(result) {
-  await refreshAnalysisInfo()
   if (result?.status === 'proposed') {
+    // Modell bleibt bis zur Übernahme unverändert — nur den Vorschlag holen.
     await loadProposal()
+    if (doc.value) doc.value.has_proposal = proposal.value !== null
     return
   }
+  await refreshAnalysisInfo()
   proposal.value = null
   const model = doc.value?.analysis_model
   notify.info(model ? `Keine Änderungen — mit ${model} geprüft` : 'Keine Änderungen.')
@@ -188,43 +190,26 @@ async function refreshProposalState() {
   }
 }
 
-async function finishProposal(action, successText, errorText, { reloadDocument = false } = {}) {
-  if (proposalBusy.value || isDirty.value) return
-  proposalBusy.value = true
-  let succeeded = false
-  try {
-    await action()
-    succeeded = true
-    notify.success(successText)
-  } catch (e) {
-    notify.error(apiErrorMessage(e, errorText))
-  } finally {
-    proposalBusy.value = false
-  }
-  if (succeeded && reloadDocument) {
-    // Übernommene Felder ins Formular holen (es war beim Start nicht geändert).
-    await loadDocument({ silent: true })
-    return
-  }
-  // Verworfen oder fehlgeschlagen (z.B. 409): Vorschlagsstand neu holen.
-  await refreshProposalState()
-}
+const proposalActions = useProposalActions({
+  blocked: () => isDirty.value,
+  onSettled: async ({ kind, succeeded }) => {
+    if (succeeded && kind === 'apply') {
+      // Übernommene Felder ins Formular holen (es war beim Start nicht geändert).
+      await loadDocument({ silent: true })
+      return
+    }
+    // Verworfen oder fehlgeschlagen (z.B. 409): Vorschlagsstand neu holen.
+    await refreshProposalState()
+  },
+})
+const proposalBusy = proposalActions.busy
 
 function handleApplyProposal(fields) {
-  return finishProposal(
-    () => applyProposal(doc.value.id, fields),
-    'Änderungen übernommen.',
-    'Änderungen konnten nicht übernommen werden.',
-    { reloadDocument: true },
-  )
+  return proposalActions.apply(doc.value.id, fields)
 }
 
 function handleDiscardProposal() {
-  return finishProposal(
-    () => discardProposal(doc.value.id),
-    'Vorschlag verworfen.',
-    'Vorschlag konnte nicht verworfen werden.',
-  )
+  return proposalActions.discard(doc.value.id)
 }
 
 function resetForm() {

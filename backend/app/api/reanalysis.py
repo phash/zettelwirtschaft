@@ -52,8 +52,8 @@ from app.services.reanalysis_service import (
     discard_proposal,
     get_open_proposal,
     list_visible_proposals,
-    load_document_for_review,
 )
+from app.services.document_lookup import load_active_document
 from app.services.task_service import TaskContext, start_task
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def _matches(item: VisibleProposal, field: str | None) -> bool:
 def _change_response(change: FieldChange) -> FieldChangeResponse:
     return FieldChangeResponse(
         field=change.field, label=FIELD_LABELS.get(change.field, change.field),
-        old=change.old, new=change.new,
+        old=change.old, new=change.new, without_new_date=change.without_new_date,
     )
 
 
@@ -132,7 +132,7 @@ async def get_proposal(
     settings: Settings = Depends(get_settings),
 ) -> ProposalResponse:
     """Der offene Vorschlag eines Dokuments mit seinen aktuellen Aenderungen."""
-    doc = await load_document_for_review(session, document_id)
+    doc = await load_active_document(session, document_id)
     proposal = await get_open_proposal(session, document_id) if doc is not None else None
     if doc is None or proposal is None:
         raise HTTPException(404, NO_PROPOSAL_MESSAGE)
@@ -169,7 +169,7 @@ async def apply_document_proposal(
     # apply_proposal aendert Tags/Garantie ueber die Junction-Tabellen: die
     # Beziehungen der Session sind veraltet und werden neu geladen.
     session.expire_all()
-    doc = await load_document_for_review(session, document_id)
+    doc = await load_active_document(session, document_id)
     return await build_document_response(session, doc, settings)
 
 
@@ -179,7 +179,11 @@ async def discard_document_proposal(
     session: AsyncSession = Depends(get_db, scope="function"),
 ) -> Response:
     """Verwirft den Vorschlag; das Dokument bleibt unveraendert."""
-    if not await discard_proposal(session, document_id):
+    try:
+        discarded = await discard_proposal(session, document_id)
+    except ProposalConflict as exc:
+        raise HTTPException(409, exc.message) from exc
+    if not discarded:
         raise HTTPException(404, NO_PROPOSAL_MESSAGE)
     await session.commit()
     return Response(status_code=204)
@@ -243,8 +247,13 @@ async def discard_all_proposals(
     field = _validated_field(body.field if body is not None else None)
     discarded = 0
     for item in await list_visible_proposals(session, settings):
-        if _matches(item, field) and await discard_proposal(session, item.document.id):
-            discarded += 1
+        if not _matches(item, field):
+            continue
+        try:
+            if await discard_proposal(session, item.document.id):
+                discarded += 1
+        except ProposalConflict:
+            pass  # inzwischen durch eine neue Analyse ersetzt — der neue bleibt offen
     await session.commit()
     return {"discarded": discarded}
 

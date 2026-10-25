@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.core.public_errors import internal_error_message
-from app.models.document import Document, DocumentStatus, ReviewStatus
+from app.models.document import Document, ReviewStatus
 from app.models.processing_job import JobStatus, ProcessingJob
 from app.models.reanalysis import (
     ACTIVE_RUN_STATUSES,
@@ -57,6 +57,7 @@ from app.models.reanalysis import (
 )
 from app.schemas.reanalysis import RunFailure, RunResponse
 from app.services.analysis_service import analysis_slot
+from app.services.document_lookup import not_deleted
 from app.services.notification_service import notify_reanalysis_done
 from app.services.ollama_client import OllamaErrorKind
 from app.services.queue_worker_service import is_queue_paused
@@ -188,9 +189,7 @@ async def preview_run(
     if outdated and document_ids is not None:
         raise ValueError("document_ids und outdated schließen sich aus.")
 
-    query = select(Document.id, Document.review_status, _has_text().label("has_text")).where(
-        Document.status != DocumentStatus.DELETED
-    )
+    query = select(Document.id, Document.review_status, _has_text().label("has_text")).where(not_deleted())
     if outdated:
         model = settings.OLLAMA_MODEL
         query = query.where(
@@ -313,20 +312,11 @@ async def _intake_busy(session: AsyncSession) -> bool:
     ))
 
 
-async def _document_available(session_factory, document_id: str) -> bool:
-    async with session_factory() as session:
-        return bool(await session.scalar(
-            select(exists().where(Document.id == document_id)
-                   .where(Document.status != DocumentStatus.DELETED))
-        ))
-
-
 async def _skip_reason(session_factory, document_id: str) -> str | None:
     """Grund, das Dokument nicht (mehr) zu analysieren: geloescht oder inzwischen freigegeben."""
     async with session_factory() as session:
         row = (await session.execute(
-            select(Document.review_status).where(Document.id == document_id)
-            .where(Document.status != DocumentStatus.DELETED)
+            select(Document.review_status).where(Document.id == document_id).where(not_deleted())
         )).first()
     if row is None:
         return DOCUMENT_GONE_MESSAGE
@@ -376,7 +366,7 @@ async def _analyse_document(
         return _ItemResult(RunItemStatus.FAILED, exc.message)
     except TaskError as exc:
         # Waehrend der Analyse geloescht -> uebersprungen, sonst echter Fehler.
-        if not await _document_available(session_factory, document_id):
+        if await _skip_reason(session_factory, document_id) == DOCUMENT_GONE_MESSAGE:
             return _ItemResult(RunItemStatus.SKIPPED, DOCUMENT_GONE_MESSAGE)
         return _ItemResult(RunItemStatus.FAILED, exc.message)
     except Exception as exc:

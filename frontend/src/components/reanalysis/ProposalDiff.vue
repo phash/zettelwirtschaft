@@ -36,6 +36,31 @@ const hasSelection = computed(() => selected.value.size > 0)
 const locked = computed(() => props.busy || !!props.blockedReason)
 const discardedWorse = computed(() => props.proposal.ocr_note === 'discarded_worse')
 
+// Steuerjahr/Garantie hängen vom Belegdatum ab: wird das neue Datum abgewählt,
+// zeigt die Spalte "Neu" den Wert, den die Übernahme dann wirklich speichert
+// (Backend: without_new_date).
+const dateRejected = computed(() =>
+  changes.value.some((c) => c.field === 'document_date') && !selected.value.has('document_date'),
+)
+
+function withoutNewDate(change) {
+  return dateRejected.value ? change.without_new_date : null
+}
+
+function shownNew(change) {
+  const alternative = withoutNewDate(change)
+  if (!alternative) return change.new
+  return alternative.unchanged ? change.old : alternative.new
+}
+
+function dateNote(change) {
+  const alternative = withoutNewDate(change)
+  if (!alternative) return null
+  return alternative.unchanged
+    ? 'Ohne das neue Datum keine Änderung.'
+    : 'Aus dem bisherigen Datum berechnet.'
+}
+
 function toggle(field, checked) {
   const next = new Set(selected.value)
   if (checked) next.add(field)
@@ -133,7 +158,14 @@ function applySelection() {
               <template v-else>
                 <th scope="row" class="py-2 pr-3 text-left font-medium text-gray-700">{{ change.label }}</th>
                 <td class="py-2 pr-3 text-gray-500 break-words">{{ display(change.field, change.old) }}</td>
-                <td class="py-2 pr-3 text-gray-900 break-words">{{ display(change.field, change.new) }}</td>
+                <td class="py-2 pr-3 text-gray-900 break-words">
+                  {{ display(change.field, shownNew(change)) }}
+                  <span
+                    v-if="dateNote(change)"
+                    class="block text-xs text-amber-700"
+                    :data-testid="`proposal-date-note-${change.field}`"
+                  >{{ dateNote(change) }}</span>
+                </td>
               </template>
               <td class="py-2 text-center">
                 <input

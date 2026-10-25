@@ -5,11 +5,10 @@ import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
 import Pagination from '../common/Pagination.vue'
 import ProposalDiff from './ProposalDiff.vue'
-import {
-  getProposals, applyProposal, discardProposal, applyAllProposals, discardAllProposals,
-} from '../../services/api'
+import { getProposals, applyAllProposals, discardAllProposals } from '../../services/api'
 import { useNotificationStore } from '../../stores/notifications'
 import { useBackgroundTask } from '../../composables/useBackgroundTask'
+import { useProposalActions } from '../../composables/useProposalActions'
 import { pluralize } from '../../utils/pluralize'
 import { apiErrorMessage } from '../../utils/apiErrors'
 
@@ -46,7 +45,6 @@ const field = ref('')
 const page = ref(1)
 const loading = ref(true)
 const loadError = ref(false)
-const busyId = ref(null)
 const openId = ref(null)
 const confirmAction = ref(null) // 'apply' | 'discard' | null
 const bulkBusy = ref(false)
@@ -64,7 +62,10 @@ const applyAll = useBackgroundTask({
   },
 })
 
-const anyBusy = computed(() => bulkBusy.value || applyAll.running.value || busyId.value !== null)
+// Auch nach einem Fehler neu laden (z. B. 409: Vorschlag veraltet).
+const proposalActions = useProposalActions({ onSettled: () => refresh() })
+
+const anyBusy = computed(() => bulkBusy.value || applyAll.running.value || proposalActions.busy.value)
 
 const fieldOptions = computed(() =>
   Object.entries(fieldCounts.value).map(([name, count]) => ({
@@ -132,28 +133,6 @@ function onPage(next) {
 
 function toggleOpen(id) {
   openId.value = openId.value === id ? null : id
-}
-
-async function runForItem(item, action, successText, errorText) {
-  busyId.value = item.document_id
-  try {
-    await action(item.document_id)
-    notify.success(successText)
-  } catch (e) {
-    notify.error(apiErrorMessage(e, errorText))
-  } finally {
-    busyId.value = null
-    // Auch nach einem Fehler neu laden (z. B. 409: Vorschlag veraltet).
-    await refresh()
-  }
-}
-
-function handleApply(item, fields) {
-  return runForItem(item, (id) => applyProposal(id, fields), 'Änderungen übernommen.', 'Änderungen konnten nicht übernommen werden.')
-}
-
-function handleDiscard(item) {
-  return runForItem(item, discardProposal, 'Vorschlag verworfen.', 'Vorschlag konnte nicht verworfen werden.')
 }
 
 async function confirmBulk() {
@@ -245,8 +224,8 @@ onMounted(() => {
             v-if="openId === item.document_id"
             :proposal="item"
             :busy="anyBusy"
-            @apply="(fields) => handleApply(item, fields)"
-            @discard="handleDiscard(item)"
+            @apply="(fields) => proposalActions.apply(item.document_id, fields)"
+            @discard="proposalActions.discard(item.document_id)"
           />
         </li>
       </ul>

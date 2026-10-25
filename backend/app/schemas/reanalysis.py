@@ -37,6 +37,9 @@ class FieldChangeResponse(BaseModel):
     label: str
     old: Any = None
     new: Any = None
+    # Steuerjahr/Garantie bei geaendertem Datum: Wert, falls das Datum abgelehnt
+    # wird ({"new": ...}), oder {"unchanged": true} (dann keine Aenderung).
+    without_new_date: dict | None = None
 
 
 class ProposalResponse(BaseModel):

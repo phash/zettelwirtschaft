@@ -47,7 +47,9 @@ from app.config import Settings
 from app.core.date_utils import parse_date_lenient
 from app.core.normalize import DEFAULT_CURRENCY, normalize_currency
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentTag, ReviewStatus
+from app.models.document import Document, DocumentTag, ReviewStatus
+from app.models.email_account import EmailAccount
+from app.models.processing_job import ProcessingJob
 from app.models.reanalysis import ReanalysisProposal
 from app.models.warranty_info import WARRANTY_AUDIT_PREFIX, WarrantyInfo
 from app.services import vectorize_service
@@ -69,6 +71,7 @@ from app.services.archive_service import (
     normalize_tag_names,
 )
 from app.services.correction_service import apply_auto_corrections
+from app.services.document_lookup import load_active_document, not_deleted
 from app.services.file_relocation import (
     FileMove,
     RelocationError,
@@ -82,8 +85,10 @@ from app.services.filing_scope_service import scopes_for_analysis
 from app.services.ocr_service import extract_text
 from app.services.ollama_client import OllamaError, OllamaErrorKind
 from app.services.search_service import reindex_document_fts
+from app.services.split_service import manual_split_original
 from app.services.task_service import TaskContext, TaskError
 from app.services.tax_year import derive_tax_year_for, ensure_tax_year
+from app.services.user_tags import TagDecisions, chunked, load_tag_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,9 @@ PROPOSAL_FIELDS: tuple[str, ...] = REANALYZED_FIELDS + (SCOPE_FIELD, "tags", "wa
 
 # Umformulierte Texte allein machen keinen Vorschlag (Owner-Entscheidung).
 TEXT_ONLY_FIELDS = frozenset({"title", "summary"})
+
+# Felder, die (auch) aus dem Belegdatum abgeleitet werden.
+DATE_DEPENDENT_FIELDS = ("tax_year", "warranty")
 
 # Verglichene/angezeigte Garantiefelder (wie _sync_warranty sie setzt).
 WARRANTY_FIELDS = (
@@ -155,6 +163,21 @@ class FieldChange:
     field: str
     old: Any
     new: Any
+    # Nur fuer Felder, die vom Belegdatum abhaengen (DATE_DEPENDENT_FIELDS),
+    # wenn sich das Datum aendert: was beim Ablehnen des Datums uebernommen
+    # wuerde — {"new": <Wert>} oder {"unchanged": True}.
+    without_new_date: dict | None = None
+
+
+@dataclass
+class _DocContext:
+    """Was am Dokument nicht von der KI stammt und deshalb geschuetzt ist."""
+
+    protected: set[str]  # vom Benutzer bearbeitete Felder (AuditLog UPDATED)
+    tags: TagDecisions  # inkl. der vom Original geerbten manuellen Tags (Aufteilen)
+    # Wie beim Archivieren vorgegebener Bereich: E-Mail-Konto, sonst Original
+    # eines "Dokument aufteilen"-Stapels.
+    forced_scope_id: str | None
 
 
 @dataclass
@@ -188,64 +211,80 @@ class _TextSource:
     ocr_note: str | None = None
 
 
-async def load_document_for_review(session: AsyncSession, document_id: str) -> Document | None:
-    """Dokument laden — ``None`` fuer unbekannte UND geloeschte Dokumente."""
-    result = await session.execute(
-        select(Document)
-        .where(Document.id == document_id)
-        .where(Document.status != DocumentStatus.DELETED)
-    )
-    return result.scalar_one_or_none()
-
-
 async def get_open_proposal(session: AsyncSession, document_id: str) -> ReanalysisProposal | None:
     """Offener Vorschlag eines Dokuments; geloeschte Dokumente haben keinen."""
     result = await session.execute(
         select(ReanalysisProposal)
         .join(Document, Document.id == ReanalysisProposal.document_id)
         .where(ReanalysisProposal.document_id == document_id)
-        .where(Document.status != DocumentStatus.DELETED)
+        .where(not_deleted())
     )
     return result.scalar_one_or_none()
 
 
-async def user_edited_fields(session: AsyncSession, document_id: str) -> set[str]:
-    """Feldnamen, die der Benutzer je bearbeitet hat (AuditLog UPDATED)."""
-    result = await session.execute(
-        select(AuditLog.details)
-        .where(AuditLog.document_id == document_id)
-        .where(AuditLog.action == AuditAction.UPDATED)
-    )
-    fields: set[str] = set()
-    for (details,) in result.all():
-        try:
-            data = json.loads(details or "{}")
-        except (TypeError, ValueError):
-            continue
-        if isinstance(data, dict):
-            fields.update(data.keys())
+async def _user_edited_fields(session: AsyncSession, document_ids: list[str]) -> dict[str, set[str]]:
+    """Feldnamen, die der Benutzer je bearbeitet hat (AuditLog UPDATED), je Dokument."""
+    fields: dict[str, set[str]] = {doc_id: set() for doc_id in document_ids}
+    for chunk in chunked(document_ids):
+        result = await session.execute(
+            select(AuditLog.document_id, AuditLog.details)
+            .where(AuditLog.document_id.in_(chunk))
+            .where(AuditLog.action == AuditAction.UPDATED)
+        )
+        for doc_id, details in result.all():
+            try:
+                data = json.loads(details or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(data, dict):
+                fields[doc_id].update(data.keys())
     return fields
 
 
-async def _user_tag_decisions(session: AsyncSession, document_id: str) -> tuple[set[str], set[str]]:
-    """(manuell hinzugefuegt, manuell entfernt) — jeweils nach letztem Ereignis."""
-    result = await session.execute(
-        select(AuditLog.action, AuditLog.details)
-        .where(AuditLog.document_id == document_id)
-        .where(AuditLog.action.in_([AuditAction.TAG_ADDED, AuditAction.TAG_REMOVED]))
-        .order_by(AuditLog.id)
-    )
-    last: dict[str, str] = {}
-    for action, details in result.all():
-        try:
-            name = str(json.loads(details or "{}").get("tag") or "").strip().lower()
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if name:
-            last[name] = action
-    added = {n for n, a in last.items() if a == AuditAction.TAG_ADDED}
-    removed = {n for n, a in last.items() if a == AuditAction.TAG_REMOVED}
-    return added, removed
+async def _email_scopes(session: AsyncSession, document_ids: list[str]) -> dict[str, str]:
+    """Ablagebereich des E-Mail-Kontos, aus dem das Dokument stammt (wie
+    queue_worker_service._forced_scope_id beim Archivieren)."""
+    scopes: dict[str, str] = {}
+    for chunk in chunked(document_ids):
+        result = await session.execute(
+            select(ProcessingJob.document_id, EmailAccount.filing_scope_id)
+            .join(EmailAccount, EmailAccount.id == ProcessingJob.email_account_id)
+            .where(ProcessingJob.document_id.in_(chunk))
+            .where(EmailAccount.filing_scope_id.is_not(None))
+        )
+        for doc_id, scope_id in result.all():
+            scopes[doc_id] = scope_id
+    return scopes
+
+
+async def _load_contexts(session: AsyncSession, docs: list[Document]) -> dict[str, _DocContext]:
+    """Schutz-Informationen mehrerer Dokumente mit wenigen Abfragen (Listen)."""
+    ids = [doc.id for doc in docs]
+    protected = await _user_edited_fields(session, ids)
+    tags = await load_tag_decisions(session, ids)
+    email_scopes = await _email_scopes(session, ids)
+
+    originals: dict[str, Document] = {}
+    for doc in docs:
+        original = await manual_split_original(session, doc.split_batch_id)
+        if original is not None:
+            originals[doc.id] = original
+    original_tags = await load_tag_decisions(session, [o.id for o in originals.values()])
+
+    contexts = {}
+    for doc in docs:
+        decisions = tags[doc.id]
+        original = originals.get(doc.id)
+        if original is not None:
+            # Beim Aufteilen geerbte manuelle Tags des Originals (ohne
+            # TAG_ADDED am Teil) bleiben ebenso erhalten.
+            decisions.added |= original_tags[original.id].added
+        contexts[doc.id] = _DocContext(
+            protected=protected[doc.id],
+            tags=decisions,
+            forced_scope_id=email_scopes.get(doc.id) or (original.filing_scope_id if original else None),
+        )
+    return contexts
 
 
 def _llm_failure(analysis: AnalysisResult | None, settings: Settings) -> ReanalysisLLMError:
@@ -327,23 +366,22 @@ def _target_tag_names(
     return wanted | {name for name in current if name in manual_added}
 
 
-async def _plan_changes(
-    session: AsyncSession,
+def _build_plan(
     doc: Document,
     proposal: ReanalysisProposal,
+    context: _DocContext,
+    scopes: list[dict],
     *,
-    use_proposed_date: bool = True,
-    scopes: list[dict] | None = None,
+    use_proposed_date: bool,
 ) -> _Plan:
     """Echte Unterschiede Vorschlag <-> aktuelles Dokument, ohne geschuetzte Felder.
 
     Steuerjahr und Garantie haengen vom Belegdatum ab. ``use_proposed_date``
-    legt fest, ob dafuer das vorgeschlagene (Vorschau, Datum wird mit
-    uebernommen) oder das aktuelle Belegdatum des Dokuments gilt (Datum
-    abgelehnt).
+    legt fest, ob dafuer das vorgeschlagene (Datum wird mit uebernommen) oder
+    das aktuelle Belegdatum des Dokuments gilt (Datum abgelehnt).
     """
     analysis = proposal.analysis_result()
-    protected = await user_edited_fields(session, doc.id)
+    protected = context.protected
     values = _analysis_values(analysis, doc.original_filename)
 
     def effective(field: str) -> Any:
@@ -365,12 +403,15 @@ async def _plan_changes(
         if _comparable(field, old) != _comparable(field, new):
             planned.append(_PlannedChange(FieldChange(field, _json_value(old), _json_value(new)), new))
 
-    if scopes is None:
-        scopes = await scopes_for_analysis(session)
     scope_match = None
     if scopes and SCOPE_FIELD not in protected:
         by_id = {scope["id"]: scope for scope in scopes}
-        match = _match_filing_scope(analysis, scopes, ocr_text=proposal.ocr_text or doc.ocr_text)
+        # Gleiche Zuordnung wie beim Archivieren: ein vom E-Mail-Konto bzw. vom
+        # aufgeteilten Original vorgegebener Bereich geht Keywords und KI vor.
+        match = _match_filing_scope(
+            analysis, scopes, ocr_text=proposal.ocr_text or doc.ocr_text,
+            forced_scope_id=context.forced_scope_id,
+        )
         # Rueckfall auf den Standardbereich ist kein Grund, ein Dokument aus
         # einem gueltigen Bereich zu holen (Bereich geloescht oder unbekannt).
         fallback_only = match.source == "default" and doc.filing_scope_id in by_id
@@ -381,9 +422,8 @@ async def _plan_changes(
                 match,
             ))
 
-    manual_added, manual_removed = await _user_tag_decisions(session, doc.id)
     current_tags = {tag.name for tag in doc.tags}
-    target_tags = _target_tag_names(current_tags, analysis.tags, manual_added, manual_removed)
+    target_tags = _target_tag_names(current_tags, analysis.tags, context.tags.added, context.tags.removed)
     if target_tags != current_tags:
         planned.append(_PlannedChange(FieldChange("tags", sorted(current_tags), sorted(target_tags)), target_tags))
 
@@ -406,6 +446,43 @@ async def _plan_changes(
     return _Plan(analysis=analysis, changes=planned, scopes=scopes, scope_match=scope_match)
 
 
+def _mark_date_dependent(plan: _Plan, without_date: _Plan) -> None:
+    """Haengt an Steuerjahr/Garantie, was beim Ablehnen des Datums gilt — die
+    Vorschau zeigt so genau den Wert, den die Uebernahme speichert."""
+    alternative = {planned.change.field: planned.change for planned in without_date.changes}
+    for planned in plan.changes:
+        change = planned.change
+        if change.field not in DATE_DEPENDENT_FIELDS:
+            continue
+        other = alternative.get(change.field)
+        if other is None:
+            change.without_new_date = {"unchanged": True}
+        elif other.new != change.new:
+            change.without_new_date = {"new": other.new}
+
+
+async def _plan(
+    session: AsyncSession,
+    doc: Document,
+    proposal: ReanalysisProposal,
+    *,
+    scopes: list[dict] | None = None,
+    context: _DocContext | None = None,
+) -> tuple[_Plan, _Plan | None]:
+    """Plan mit dem vorgeschlagenen Datum und — aendert sich das Datum — der
+    Plan fuer ein abgelehntes Datum (sonst ``None``)."""
+    if context is None:
+        context = (await _load_contexts(session, [doc]))[doc.id]
+    if scopes is None:
+        scopes = await scopes_for_analysis(session)
+    plan = _build_plan(doc, proposal, context, scopes, use_proposed_date=True)
+    if not any(planned.change.field == "document_date" for planned in plan.changes):
+        return plan, None
+    without_date = _build_plan(doc, proposal, context, scopes, use_proposed_date=False)
+    _mark_date_dependent(plan, without_date)
+    return plan, without_date
+
+
 async def compute_changes(
     session: AsyncSession,
     doc: Document,
@@ -413,13 +490,14 @@ async def compute_changes(
     settings: Settings,
     *,
     scopes: list[dict] | None = None,
+    context: _DocContext | None = None,
 ) -> list[FieldChange]:
     """Aenderungen des Vorschlags gegenueber dem aktuellen Dokument (Reihenfolge = PROPOSAL_FIELDS).
 
-    ``scopes``: bereits geladene Ablagebereiche (:func:`scopes_for_analysis`),
-    damit Listen sie nicht pro Vorschlag neu abfragen.
+    ``scopes``/``context``: bereits geladene Ablagebereiche bzw. Schutz-
+    Informationen, damit Listen sie nicht pro Vorschlag neu abfragen.
     """
-    plan = await _plan_changes(session, doc, proposal, scopes=scopes)
+    plan, _ = await _plan(session, doc, proposal, scopes=scopes, context=context)
     return [planned.change for planned in plan.changes]
 
 
@@ -442,17 +520,22 @@ async def list_visible_proposals(session: AsyncSession, settings: Settings) -> l
 
     Die Aenderungen werden zur Lesezeit berechnet; Vorschlaege, die inzwischen
     nur noch Titel/Zusammenfassung aendern (oder gar nichts), erscheinen nicht.
+    Ablagebereiche und Schutz-Informationen werden fuer alle Vorschlaege
+    gemeinsam geladen (feste Zahl an Abfragen statt mehrerer je Vorschlag).
     """
-    rows = await session.execute(
+    rows = (await session.execute(
         select(ReanalysisProposal, Document)
         .join(Document, Document.id == ReanalysisProposal.document_id)
-        .where(Document.status != DocumentStatus.DELETED)
+        .where(not_deleted())
         .order_by(ReanalysisProposal.created_at.desc(), ReanalysisProposal.id)
-    )
+    )).all()
+    scopes = await scopes_for_analysis(session)
+    contexts = await _load_contexts(session, [doc for _, doc in rows])
     visible = []
-    scopes = await scopes_for_analysis(session)  # einmal fuer alle Vorschlaege
-    for proposal, doc in rows.all():
-        changes = await compute_changes(session, doc, proposal, settings, scopes=scopes)
+    for proposal, doc in rows:
+        changes = await compute_changes(
+            session, doc, proposal, settings, scopes=scopes, context=contexts[doc.id],
+        )
         if is_substantive(changes):
             visible.append(VisibleProposal(doc, proposal, changes))
     return visible
@@ -545,7 +628,7 @@ async def create_proposal(
     """
     await _report(ctx, 5, "Dokument wird geladen …")
     async with session_factory() as session:
-        doc = await load_document_for_review(session, document_id)
+        doc = await load_active_document(session, document_id)
         if doc is None:
             raise TaskError(DOCUMENT_GONE_MESSAGE)
         file_path, file_type = doc.file_path, doc.file_type
@@ -567,7 +650,7 @@ async def create_proposal(
 
     await _report(ctx, 85, "Änderungsvorschlag wird erstellt …")
     async with session_factory() as session:
-        doc = await load_document_for_review(session, document_id)
+        doc = await load_active_document(session, document_id)
         if doc is None:
             raise TaskError(DOCUMENT_GONE_MESSAGE)
 
@@ -743,19 +826,22 @@ async def apply_proposal(
         ProposalConflict: Datei fuer den Bereichswechsel fehlt oder der Vorschlag
             wurde waehrenddessen durch eine neue Analyse ersetzt — nichts geaendert.
     """
-    doc = await load_document_for_review(session, document_id)
+    doc = await load_active_document(session, document_id)
     proposal = await get_open_proposal(session, document_id) if doc is not None else None
     if proposal is None:
         raise ProposalNotFound(NO_PROPOSAL_MESSAGE)
 
-    plan = await _plan_changes(session, doc, proposal)
+    plan, without_date = await _plan(session, doc, proposal)
     offered = [planned.change.field for planned in plan.changes]
     wanted = {field for field in offered if fields is None or field in fields}
-    if "document_date" in offered and "document_date" not in wanted:
-        # Datum abgelehnt: Steuerjahr/Garantie vom aktuellen Belegdatum ableiten.
-        plan = await _plan_changes(session, doc, proposal, use_proposed_date=False, scopes=plan.scopes)
+    # Nur, was der Benutzer abgewaehlt hat, gilt als abgelehnt.
+    rejected = [field for field in offered if field not in wanted]
+    if without_date is not None and "document_date" not in wanted:
+        # Datum abgelehnt: Steuerjahr/Garantie vom aktuellen Belegdatum ableiten
+        # (so zeigt es die Vorschau unter without_new_date). Was dadurch keine
+        # Aenderung mehr ist, entfaellt — es ist weder uebernommen noch abgelehnt.
+        plan = without_date
     applied = [planned.change.field for planned in plan.changes if planned.change.field in wanted]
-    rejected = [field for field in offered if field not in applied]
     accepted = {planned.change.field: planned.value for planned in plan.changes if planned.change.field in applied}
 
     archive_root = Path(settings.ARCHIVE_DIR)
@@ -824,13 +910,23 @@ async def discard_proposal(session: AsyncSession, document_id: str) -> bool:
     """Verwirft den offenen Vorschlag; das Modell gilt trotzdem als geprueft.
 
     Committet nicht (der Aufrufer committet). ``False``: kein offener Vorschlag.
+
+    Raises:
+        ProposalConflict: der Vorschlag wurde inzwischen durch eine neue Analyse
+            ersetzt — nichts geaendert.
     """
     proposal = await get_open_proposal(session, document_id)
-    doc = await load_document_for_review(session, document_id) if proposal is not None else None
+    doc = await load_active_document(session, document_id) if proposal is not None else None
     if proposal is None or doc is None:
         return False
+    # Bedingt wie in apply_proposal: ein inzwischen ersetzter Vorschlag darf
+    # nicht als verworfen gelten, waehrend der neue offen bleibt.
+    removed = await session.execute(
+        delete(ReanalysisProposal).where(ReanalysisProposal.id == proposal.id)
+    )
+    if removed.rowcount != 1:
+        raise ProposalConflict(PROPOSAL_REPLACED_MESSAGE)
     doc.analysis_model = proposal.model
-    await session.delete(proposal)
     session.add(AuditLog(
         document_id=doc.id,
         action=AuditAction.REANALYZED,

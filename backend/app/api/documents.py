@@ -37,6 +37,7 @@ from app.schemas.processing_job import (
 )
 from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.file_validation_service import FileValidationError
+from app.services.document_lookup import load_active_document
 from app.services.reanalysis_service import has_visible_proposal
 from app.services.search_service import (
     FTS_DOCUMENT_FIELDS,
@@ -59,13 +60,7 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 async def _get_active_document_or_404(db: AsyncSession, document_id: str) -> Document:
     """Laedt ein nicht geloeschtes Dokument. Soft-geloeschte Dokumente sind ueber
     die API nicht mehr erreichbar (Lesen, Bearbeiten, Datei, Tags)."""
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.status != DocumentStatus.DELETED,
-        )
-    )
-    document = result.scalar_one_or_none()
+    document = await load_active_document(db, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return document

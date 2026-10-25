@@ -7,10 +7,11 @@ import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
 import ReanalysisProposals from '../components/reanalysis/ReanalysisProposals.vue'
 import {
   getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument,
-  getProposal, applyProposal, discardProposal, getProposals, getSplitBatches, splitPageThumbnailUrl,
+  getProposal, getProposals, getSplitBatches, splitPageThumbnailUrl,
 } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
+import { useProposalActions } from '../composables/useProposalActions'
 import { typeLabels } from '../constants/documentTypes'
 import { formatDate, formatAmount } from '../utils/formatters'
 import { pluralize } from '../utils/pluralize'
@@ -158,6 +159,8 @@ async function loadDoc(docId) {
     // Springe zur ersten unbeantworteten Frage
     const firstOpen = questions.value.findIndex(q => !q.is_answered)
     if (firstOpen >= 0) currentQuestionIdx.value = firstOpen
+    // Offener Vorschlag (z.B. aus einem Massenlauf) gleich mit anzeigen.
+    if (data.has_proposal) await loadProposal(docId)
     // Läuft für dieses Dokument noch eine Re-Analyse (z.B. Seite neu geladen)?
     reanalysis.resume({ kind: 'reanalyze', key: String(docId) })
   } catch {
@@ -237,18 +240,25 @@ async function reviewLaterAgain() {
 // auf CPU-Hardware Minuten dauern. Das Ergebnis ist ein Änderungsvorschlag:
 // das Dokument ändert sich erst, wenn der Benutzer ihn übernimmt (Issue #39).
 const proposal = ref(null)
-const proposalBusy = ref(false)
+
+// Vorschlag des Dokuments laden; 404 (inzwischen erledigt) -> kein Diff.
+async function loadProposal(docId) {
+  try {
+    const loaded = await getProposal(docId)
+    if (String(currentId.value) === String(docId)) proposal.value = loaded
+  } catch (e) {
+    if (String(currentId.value) !== String(docId)) return
+    proposal.value = null
+    if (e.response?.status !== 404) notify.error(apiErrorMessage(e, 'Vorschlag konnte nicht geladen werden.'))
+  }
+}
 
 const reanalysis = useBackgroundTask({
   onSuccess: async (result, task) => {
     const sameDoc = currentDoc.value && String(currentDoc.value.id) === String(task?.key)
     if (result?.status === 'proposed') {
       if (!sameDoc) return
-      try {
-        proposal.value = await getProposal(currentDoc.value.id)
-      } catch (e) {
-        notify.error(apiErrorMessage(e, 'Vorschlag konnte nicht geladen werden.'))
-      }
+      await loadProposal(currentDoc.value.id)
       return
     }
     // Ohne Änderungen kann sich trotzdem der Prüfstatus geändert haben: Liste neu laden.
@@ -264,31 +274,27 @@ function doReanalyze() {
 }
 
 // Nach Übernehmen/Verwerfen kann das Dokument die Prüfung verlassen haben
-// (Status OK) — deshalb Liste neu laden.
-async function finishProposal(action, successText, errorText) {
-  if (proposalBusy.value) return
-  proposalBusy.value = true
-  try {
-    await action(currentDoc.value.id)
-    notify.success(successText)
-  } catch (e) {
-    notify.error(apiErrorMessage(e, errorText))
-  } finally {
-    proposalBusy.value = false
-  }
-  await loadReviewDocs()
-}
+// (Status OK) — deshalb Liste neu laden. Nach einem Fehler (z.B. 409) bleibt
+// das Dokument stehen und der Vorschlag wird neu geholt, damit man es erneut
+// versuchen kann.
+const proposalActions = useProposalActions({
+  onSettled: async ({ documentId, succeeded }) => {
+    if (succeeded) {
+      await loadReviewDocs()
+      loadProposalCount()
+    } else {
+      await loadProposal(documentId)
+    }
+  },
+})
+const proposalBusy = proposalActions.busy
 
 function handleApplyProposal(fields) {
-  return finishProposal(
-    (id) => applyProposal(id, fields),
-    'Änderungen übernommen.',
-    'Änderungen konnten nicht übernommen werden.',
-  )
+  return proposalActions.apply(currentDoc.value.id, fields)
 }
 
 function handleDiscardProposal() {
-  return finishProposal(discardProposal, 'Vorschlag verworfen.', 'Vorschlag konnte nicht verworfen werden.')
+  return proposalActions.discard(currentDoc.value.id)
 }
 
 // Primär über den strukturierten Fragetyp; der Textvergleich bleibt nur als

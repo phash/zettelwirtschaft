@@ -22,10 +22,11 @@ from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.reanalysis_service import (
     NO_OCR_TEXT_MESSAGE,
     TASK_KIND as REANALYZE_TASK_KIND,
-    load_document_for_review,
+    has_visible_proposal,
     run_reanalysis,
 )
 from app.services import vectorize_service
+from app.services.document_lookup import load_active_document
 from app.services.review_answers import AnswerError, apply_answer
 from app.services.search_service import FTS_DOCUMENT_FIELDS, reindex_document_fts
 from app.services.task_service import TaskContext, start_task
@@ -39,7 +40,7 @@ MAX_ACTIVE_REANALYSES = 3
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
-    doc = await load_document_for_review(session, document_id)
+    doc = await load_active_document(session, document_id)
     if doc is None:
         raise HTTPException(404, DOCUMENT_NOT_FOUND)
     return doc
@@ -87,6 +88,7 @@ async def review_pending(session: AsyncSession = Depends(get_db, scope="function
 async def review_document_detail(
     document_id: str,
     session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ):
     """Detaillierte Review-Daten für ein Dokument."""
     doc = await _get_document_or_404(session, document_id)
@@ -117,6 +119,8 @@ async def review_document_detail(
         "summary": doc.summary,
         "ocr_text": doc.ocr_text[:2000] if doc.ocr_text else "",
         "questions": questions,
+        # Offener Aenderungsvorschlag einer Neu-Analyse (Diff per /reanalysis/proposals/{id})
+        "has_proposal": await has_visible_proposal(session, doc, settings),
         "confident_fields": {
             "title": doc.title,
             "document_type": enum_value(doc.document_type),

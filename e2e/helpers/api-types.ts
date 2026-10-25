@@ -273,6 +273,8 @@ export interface ReviewDetailResponse {
   summary: string | null;
   ocr_text: string;
   questions: Omit<ReviewQuestionResponse, 'created_at' | 'answered_at'>[];
+  // Offener Änderungsvorschlag einer Neu-Analyse (Issue #39)
+  has_proposal: boolean;
   confident_fields: {
     title: string;
     document_type: DocumentType;
@@ -530,6 +532,8 @@ export interface FieldChangeResponse {
   // sortierte Namensliste, Garantie als Objekt oder null, ocr_text {text, confidence}.
   old: unknown;
   new: unknown;
+  // Steuerjahr/Garantie bei geändertem Datum: Wert, falls das Datum abgelehnt wird
+  without_new_date?: { new: unknown } | { unchanged: true } | null;
 }
 
 export interface ProposalResponse {

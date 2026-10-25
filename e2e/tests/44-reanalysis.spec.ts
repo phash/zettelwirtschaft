@@ -139,6 +139,36 @@ test.describe('Neu analysieren am Dokument', () => {
     await expect(page.getByTestId('proposal-diff')).toHaveCount(0);
   });
 
+  test('detail: abgewähltes Datum zeigt Steuerjahr und Garantie aus dem bisherigen Datum', async ({ page }) => {
+    await page.route(`**/api/documents/${DOC.id}`, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ json: { ...DOC, has_proposal: true } }) : route.fallback(),
+    );
+    await page.route(`**/api/reanalysis/proposals/${DOC.id}`, (route) => route.fulfill({
+      json: makeMockProposal({
+        changes: [
+          { field: 'document_date', label: 'Datum', old: '2025-12-01', new: '2026-01-20' },
+          { field: 'tax_year', label: 'Steuerjahr', old: 2025, new: 2026, without_new_date: { unchanged: true } },
+          {
+            field: 'warranty', label: 'Garantie', old: null,
+            new: { product_name: 'Laptop', warranty_end_date: '2028-01-20' },
+            without_new_date: { new: { product_name: 'Laptop', warranty_end_date: '2027-12-01' } },
+          },
+        ],
+      }),
+    }));
+
+    await page.goto(DOC_URL);
+    const diff = page.getByTestId('proposal-diff');
+    await expect(diff.getByTestId('proposal-row-warranty')).toContainText('bis 20.1.2028');
+    await expect(diff.getByTestId('proposal-date-note-tax_year')).toHaveCount(0);
+
+    await diff.getByRole('checkbox', { name: 'Datum übernehmen' }).uncheck();
+
+    await expect(diff.getByTestId('proposal-date-note-tax_year')).toHaveText('Ohne das neue Datum keine Änderung.');
+    await expect(diff.getByTestId('proposal-row-warranty')).toContainText('bis 1.12.2027');
+    await expect(diff.getByTestId('proposal-date-note-warranty')).toHaveText('Aus dem bisherigen Datum berechnet.');
+  });
+
   test('detail: Konflikt beim Übernehmen zeigt die Meldung des Servers', async ({ page }) => {
     await page.route(`**/api/documents/${DOC.id}`, (route) =>
       route.request().method() === 'GET' ? route.fulfill({ json: { ...DOC, has_proposal: true } }) : route.fallback(),
@@ -283,6 +313,39 @@ test.describe('Neu analysieren in der Prüfung', () => {
     await diff.getByRole('button', { name: 'Alles übernehmen' }).click();
     await expect.poll(() => applied).toEqual([{ fields: null }]);
     await expect(page.getByText('Änderungen übernommen.')).toBeVisible();
+  });
+});
+
+test.describe('Vorhandener Vorschlag in der Prüfung', () => {
+  const REVIEW_DOC: DocumentResponse = { ...MOCK_DOCUMENT_WITH_QUESTIONS, has_proposal: true };
+
+  test.beforeEach(async ({ page }) => {
+    await setupReviewMocks(page, [REVIEW_DOC]);
+    await page.route(`**/api/reanalysis/proposals/${REVIEW_DOC.id}`, (route) =>
+      route.fulfill({ json: makeMockProposal({ document_id: REVIEW_DOC.id, document_title: REVIEW_DOC.title }) }),
+    );
+  });
+
+  test('review: offener Vorschlag (z.B. aus einem Massenlauf) steht beim Öffnen da', async ({ page }) => {
+    await page.goto('/pruefen');
+    await expect(page.getByTestId('proposal-diff').getByTestId('proposal-row-amount')).toContainText('98,50');
+  });
+
+  test('review: Konflikt beim Übernehmen lässt den Vorschlag stehen', async ({ page }) => {
+    let applies = 0;
+    await page.route(`**/api/reanalysis/proposals/${REVIEW_DOC.id}/apply`, (route) => {
+      applies += 1;
+      return route.fulfill({ status: 409, json: { detail: 'Der Vorschlag wurde inzwischen ersetzt. Bitte neu laden.' } });
+    });
+
+    await page.goto('/pruefen');
+    const diff = page.getByTestId('proposal-diff');
+    await diff.getByRole('button', { name: 'Alles übernehmen' }).click();
+
+    await expect(page.getByText('Der Vorschlag wurde inzwischen ersetzt. Bitte neu laden.')).toBeVisible();
+    await expect(diff).toBeVisible();
+    await diff.getByRole('button', { name: 'Alles übernehmen' }).click();
+    await expect.poll(() => applies).toBe(2);
   });
 });
 

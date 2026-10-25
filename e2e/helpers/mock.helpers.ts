@@ -426,6 +426,7 @@ export function makeReviewDetail(
     summary: doc.summary,
     ocr_text: doc.ocr_text,
     questions: doc.review_questions.map(({ created_at: _c, answered_at: _a, ...q }) => q),
+    has_proposal: doc.has_proposal ?? false,
     confident_fields: {
       title: doc.title,
       document_type: doc.document_type,

@@ -209,7 +209,7 @@ async def test_apply_proposal_replaced_meanwhile_409(client, db_session, test_se
     doc = await _doc(db_session)
     doc_id = doc.id
     await _propose(db_session, doc, sender="Neue Praxis")
-    original_plan = reanalysis_service._plan_changes
+    original_plan = reanalysis_service._plan
 
     async def plan_then_replace(*args, **kwargs):
         plan = await original_plan(*args, **kwargs)
@@ -221,10 +221,10 @@ async def test_apply_proposal_replaced_meanwhile_409(client, db_session, test_se
                 analysis=make_analysis(tags=[], sender="Neuere Praxis").to_dict(),
             ))
             await other.commit()
-        monkeypatch.setattr(reanalysis_service, "_plan_changes", original_plan)
+        monkeypatch.setattr(reanalysis_service, "_plan", original_plan)
         return plan
 
-    monkeypatch.setattr(reanalysis_service, "_plan_changes", plan_then_replace)
+    monkeypatch.setattr(reanalysis_service, "_plan", plan_then_replace)
 
     resp = await client.post(f"/api/reanalysis/proposals/{doc_id}/apply")
     assert resp.status_code == 409
@@ -528,3 +528,55 @@ async def test_pause_resume_cancel(client, db_session):
     assert (await client.post(f"/api/reanalysis/runs/{run_id}/resume")).status_code == 409
     assert (await client.post(f"/api/reanalysis/runs/{run_id}/explode")).status_code == 422
     assert (await client.post("/api/reanalysis/runs/gibt-es-nicht/pause")).status_code == 404
+
+
+async def test_discard_proposal_replaced_meanwhile_409(client, db_session, test_session_factory, monkeypatch):
+    """Neue Analyse ersetzt den Vorschlag beim Verwerfen -> 409, der neue bleibt offen."""
+    from app.services import reanalysis_service
+
+    doc = await _doc(db_session)
+    doc_id = doc.id
+    await _propose(db_session, doc, sender="Neue Praxis")
+    original_load = reanalysis_service.load_active_document
+
+    async def load_then_replace(session, document_id):
+        loaded = await original_load(session, document_id)
+        async with test_session_factory() as other:
+            await other.delete(await reanalysis_service.get_open_proposal(other, doc_id))
+            await other.flush()
+            other.add(ReanalysisProposal(
+                document_id=doc_id, model="gemma-neu", with_ocr=False,
+                analysis=make_analysis(tags=[], sender="Neuere Praxis").to_dict(),
+            ))
+            await other.commit()
+        monkeypatch.setattr(reanalysis_service, "load_active_document", original_load)
+        return loaded
+
+    monkeypatch.setattr(reanalysis_service, "load_active_document", load_then_replace)
+
+    resp = await client.post(f"/api/reanalysis/proposals/{doc_id}/discard")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Der Vorschlag wurde inzwischen ersetzt. Bitte neu laden."
+    async with test_session_factory() as session:
+        assert (await session.get(Document, doc_id)).analysis_model is None
+        remaining = (await session.execute(select(ReanalysisProposal))).scalars().all()
+    assert [p.model for p in remaining] == ["gemma-neu"]
+
+
+async def test_review_detail_has_proposal_flag(client, db_session):
+    doc = await _doc(db_session, review_status=ReviewStatus.NEEDS_REVIEW)
+    assert (await client.get(f"/api/review/documents/{doc.id}")).json()["has_proposal"] is False
+
+    await _propose(db_session, doc, amount=120.0)
+    assert (await client.get(f"/api/review/documents/{doc.id}")).json()["has_proposal"] is True
+
+
+async def test_proposal_response_has_values_without_new_date(client, db_session):
+    doc = await _doc(db_session, document_date=date(2024, 12, 1), tax_year=2024)
+    await _propose(db_session, doc)
+
+    changes = {c["field"]: c for c in (await client.get(f"/api/reanalysis/proposals/{doc.id}")).json()["changes"]}
+
+    assert changes["document_date"]["without_new_date"] is None
+    assert changes["tax_year"]["new"] == 2025
+    assert changes["tax_year"]["without_new_date"] == {"unchanged": True}
