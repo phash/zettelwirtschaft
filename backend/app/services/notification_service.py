@@ -2,7 +2,8 @@
 
 Der Queue-Worker ruft diese Helfer auf, wenn ein Dokument eine Pruefung
 braucht (REVIEW_NEEDED) oder eine Verarbeitung fehlschlaegt (SYSTEM), der
-E-Mail-Import bei relevanten Mails ohne verwertbares Dokument (SYSTEM). Die
+E-Mail-Import bei relevanten Mails ohne verwertbares Dokument (SYSTEM), der
+Massenlauf der Neu-Analyse an seinem Ende (REANALYSIS_DONE). Die
 Helfer fuegen die Notification nur zur Session hinzu — committen muss der
 Aufrufer (in derselben kurzen Transaktion wie die Statusaenderung).
 """
@@ -89,6 +90,25 @@ def notify_split_needed(
         type=NotificationType.SPLIT_NEEDED,
         title="Stapel aufteilen",
         message=message,
+        document_id=None,
+    )
+    session.add(notification)
+    return notification
+
+
+def notify_reanalysis_done(
+    session: AsyncSession,
+    *,
+    proposed: int,
+    unchanged: int,
+    failed: int,
+) -> Notification:
+    """Massenlauf der Neu-Analyse ist fertig (REANALYSIS_DONE, ohne Dokument —
+    das Frontend verlinkt die Vorschlagsliste)."""
+    notification = Notification(
+        type=NotificationType.REANALYSIS_DONE,
+        title="Neu-Analyse fertig",
+        message=f"{proposed} Vorschläge, {unchanged} unverändert, {failed} Fehler",
         document_id=None,
     )
     session.add(notification)

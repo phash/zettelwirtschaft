@@ -157,6 +157,18 @@ def _parse_tax_category(category_str: str | None) -> str | None:
     return normalize_tax_category(category_str)
 
 
+def normalize_tag_names(tag_names) -> list[str]:
+    """Tag-Namen normalisiert (getrimmt, klein) und ohne Duplikate, Reihenfolge bleibt."""
+    names: list[str] = []
+    for raw_name in tag_names or []:
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip().lower()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 async def _get_or_create_tags(
     tag_names: list[str],
     session: AsyncSession,
@@ -169,15 +181,7 @@ async def _get_or_create_tags(
     Archivierung brach ab.
     """
     tags: list[Tag] = []
-    seen: set[str] = set()
-    for raw_name in tag_names:
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip().lower()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-
+    for name in normalize_tag_names(tag_names):
         result = await session.execute(select(Tag).where(Tag.name == name))
         tag = result.scalar_one_or_none()
         if not tag:
@@ -644,6 +648,12 @@ async def archive_document(
         tax_year=analysis.tax_year,
         tax_category=tax_category,
         filing_scope_id=scope.scope_id,
+        # Modell nur merken, wenn die KI wirklich geantwortet hat
+        analysis_model=(
+            settings.OLLAMA_MODEL
+            if analysis_result is not None and analysis.llm_error is None
+            else None
+        ),
         status=DocumentStatus.ACTIVE,
         review_status=review_status,
         ai_confidence=analysis.confidence,

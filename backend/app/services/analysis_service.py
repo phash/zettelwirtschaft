@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from app.config import Settings
@@ -154,6 +154,12 @@ class AnalysisResult:
             "filing_scope_confidence": self.filing_scope_confidence,
             "llm_error": self.llm_error,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AnalysisResult":
+        """Gegenstueck zu ``to_dict``; unbekannte Keys werden ignoriert."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 # ---------------------------------------------------------------------------

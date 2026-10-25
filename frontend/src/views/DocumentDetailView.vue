@@ -3,8 +3,15 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
-import { getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope, requestDocumentSplit, getSplitBatch } from '../services/api'
+import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
+import ReanalyzeDialog from '../components/reanalysis/ReanalyzeDialog.vue'
+import {
+  getDocument, updateDocument, deleteDocument, addTag, removeTag, answerReviewQuestion, createFilingScope,
+  requestDocumentSplit, getSplitBatch, reanalyzeDocument, getProposal,
+} from '../services/api'
 import { useFilingScopes } from '../composables/useFilingScopes'
+import { useBackgroundTask } from '../composables/useBackgroundTask'
+import { useProposalActions } from '../composables/useProposalActions'
 import { useNotificationStore } from '../stores/notifications'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
 import { formatDate, formatBytes } from '../utils/formatters'
@@ -89,13 +96,24 @@ const isDirty = computed(() => {
   )
 })
 
-async function loadDocument() {
-  loading.value = true
-  imageFailed.value = false
-  thumbnailFailed.value = false
+// silent: ohne Ladeanzeige (Seite bleibt stehen), z.B. nach Übernahme eines Vorschlags.
+async function loadDocument({ silent = false } = {}) {
+  if (!silent) {
+    loading.value = true
+    imageFailed.value = false
+    thumbnailFailed.value = false
+    proposal.value = null
+    reanalysis.reset()
+  }
   try {
     doc.value = await getDocument(route.params.id)
     resetForm()
+    if (doc.value.has_proposal) {
+      await loadProposal()
+    } else {
+      proposal.value = null
+    }
+    if (!silent) reanalysis.resume({ kind: 'reanalyze', key: String(doc.value.id) })
   } catch (e) {
     doc.value = null
     notify.error(e.response?.status === 404
@@ -105,6 +123,93 @@ async function loadDocument() {
   } finally {
     loading.value = false
   }
+}
+
+// --- Neu analysieren (Issue #39) ---
+// Die Neu-Analyse ändert das Dokument nicht, sondern legt einen Vorschlag an,
+// den der Benutzer feldweise übernimmt oder verwirft.
+const proposal = ref(null)
+const showReanalyzeDialog = ref(false)
+
+const reanalysis = useBackgroundTask({
+  onSuccess: (result) => handleReanalysisDone(result),
+  onError: (message) => notify.error(message),
+})
+
+async function loadProposal() {
+  try {
+    proposal.value = await getProposal(doc.value.id)
+  } catch {
+    proposal.value = null  // Vorschlag inzwischen erledigt (404) — Dokument zeigt sich ohne Diff
+  }
+}
+
+// Modell und Vorschlags-Kennzeichen aus dem frischen Stand übernehmen, ohne
+// ungespeicherte Formular-Eingaben zu überschreiben.
+async function refreshAnalysisInfo() {
+  try {
+    const fresh = await getDocument(doc.value.id)
+    doc.value.analysis_model = fresh.analysis_model
+    doc.value.has_proposal = fresh.has_proposal
+  } catch {
+    // Anzeige bleibt; die Meldung nennt das Ergebnis
+  }
+}
+
+async function handleReanalysisDone(result) {
+  if (result?.status === 'proposed') {
+    // Modell bleibt bis zur Übernahme unverändert — nur den Vorschlag holen.
+    await loadProposal()
+    if (doc.value) doc.value.has_proposal = proposal.value !== null
+    return
+  }
+  await refreshAnalysisInfo()
+  proposal.value = null
+  const model = doc.value?.analysis_model
+  notify.info(model ? `Keine Änderungen — mit ${model} geprüft` : 'Keine Änderungen.')
+}
+
+function startReanalysis({ withOcr }) {
+  showReanalyzeDialog.value = false
+  const id = doc.value.id
+  reanalysis.start(() => reanalyzeDocument(id, { withOcr }))
+}
+
+// Ungespeicherte Eingaben sperren Übernehmen/Verwerfen: die Übernahme lädt das
+// Dokument neu und überschriebe sonst das Formular.
+const UNSAVED_PROPOSAL_HINT = 'Bitte erst speichern oder Änderungen verwerfen.'
+const proposalBlockedReason = computed(() => (isDirty.value ? UNSAVED_PROPOSAL_HINT : null))
+
+// Nur Modell, Vorschlags-Kennzeichen und Vorschlag neu holen — das Formular bleibt.
+async function refreshProposalState() {
+  await refreshAnalysisInfo()
+  if (doc.value?.has_proposal) {
+    await loadProposal()
+  } else {
+    proposal.value = null
+  }
+}
+
+const proposalActions = useProposalActions({
+  blocked: () => isDirty.value,
+  onSettled: async ({ kind, succeeded }) => {
+    if (succeeded && kind === 'apply') {
+      // Übernommene Felder ins Formular holen (es war beim Start nicht geändert).
+      await loadDocument({ silent: true })
+      return
+    }
+    // Verworfen oder fehlgeschlagen (z.B. 409): Vorschlagsstand neu holen.
+    await refreshProposalState()
+  },
+})
+const proposalBusy = proposalActions.busy
+
+function handleApplyProposal(fields) {
+  return proposalActions.apply(doc.value.id, fields)
+}
+
+function handleDiscardProposal() {
+  return proposalActions.discard(doc.value.id)
 }
 
 function resetForm() {
@@ -428,6 +533,12 @@ onMounted(async () => {
           :disabled="requestingSplit"
           @click="showSplitDialog = true"
         >Dokument aufteilen</button>
+        <button
+          type="button"
+          class="btn-secondary"
+          :disabled="reanalysis.running.value"
+          @click="showReanalyzeDialog = true"
+        >{{ reanalysis.running.value ? 'Analysiere …' : 'Neu analysieren' }}</button>
         <a :href="fileUrl" download class="btn-secondary">Herunterladen</a>
         <button @click="showDeleteDialog = true" class="btn-danger">Löschen</button>
       </div>
@@ -485,6 +596,19 @@ onMounted(async () => {
 
       <!-- Metadata (right, 40%) -->
       <div class="lg:col-span-2 space-y-4">
+        <p v-if="reanalysis.running.value" class="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-sm text-blue-800" role="status">
+          {{ reanalysis.progressText.value || 'Analyse läuft im Hintergrund …' }}
+        </p>
+
+        <ProposalDiff
+          v-if="proposal"
+          :proposal="proposal"
+          :busy="proposalBusy"
+          :blocked-reason="proposalBlockedReason"
+          @apply="handleApplyProposal"
+          @discard="handleDiscardProposal"
+        />
+
         <!-- Edit form -->
         <div class="card space-y-3">
           <h2 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Metadaten</h2>
@@ -618,6 +742,7 @@ onMounted(async () => {
               <div :class="['h-2 rounded-full transition-all', confidenceColor]" :style="{ width: confidencePercent + '%' }"></div>
             </div>
           </div>
+          <p class="mt-2 text-xs text-gray-500">Modell: {{ doc.analysis_model || 'unbekannt' }}</p>
           <div v-if="doc.summary" class="mt-3">
             <p class="text-xs font-medium text-gray-500 mb-1">Zusammenfassung</p>
             <p class="text-sm text-gray-600">{{ doc.summary }}</p>
@@ -690,6 +815,12 @@ onMounted(async () => {
       :danger="true"
       @confirm="handleDelete"
       @cancel="showDeleteDialog = false"
+    />
+
+    <ReanalyzeDialog
+      :open="showReanalyzeDialog"
+      @confirm="startReanalysis"
+      @cancel="showReanalyzeDialog = false"
     />
 
     <ConfirmDialog

@@ -246,6 +246,9 @@ export interface DocumentResponse extends DocumentListItem {
   source_pages?: string | null;
   can_undo_split?: boolean;
   split_undo_blocked_reason?: string | null;  // warum "Aufteilung rückgängig" gesperrt ist
+  // Neu-Analyse (Issue #39)
+  analysis_model?: string | null;
+  has_proposal?: boolean;
 }
 
 // --- /api/review ---------------------------------------------------------
@@ -270,6 +273,8 @@ export interface ReviewDetailResponse {
   summary: string | null;
   ocr_text: string;
   questions: Omit<ReviewQuestionResponse, 'created_at' | 'answered_at'>[];
+  // Offener Änderungsvorschlag einer Neu-Analyse (Issue #39)
+  has_proposal: boolean;
   confident_fields: {
     title: string;
     document_type: DocumentType;
@@ -356,7 +361,7 @@ export interface ChatHistoryResponse {
 }
 
 // --- /api/notifications --------------------------------------------------
-export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM' | 'SPLIT_NEEDED';
+export type NotificationType = 'WARRANTY_EXPIRING' | 'WARRANTY_EXPIRED' | 'REVIEW_NEEDED' | 'SYSTEM' | 'SPLIT_NEEDED' | 'REANALYSIS_DONE';
 export interface NotificationResponse {
   id: Id;
   type: NotificationType;
@@ -513,4 +518,72 @@ export interface SplitUndoResponse {
   status: SplitBatchStatus;
   removed_document_ids: Id[];
   restored_document_id: Id | null;
+}
+
+// --- /api/reanalysis (Änderungsvorschläge, Issue #39) --------------------
+export interface ReanalyzeRequest {
+  with_ocr: boolean;
+}
+
+export interface FieldChangeResponse {
+  field: string;
+  label: string;
+  // Datum ISO, Betrag als String, Enum-Wert, Ablagebereich {id,name}, Tags als
+  // sortierte Namensliste, Garantie als Objekt oder null, ocr_text {text, confidence}.
+  old: unknown;
+  new: unknown;
+  // Steuerjahr/Garantie bei geändertem Datum: Wert, falls das Datum abgelehnt wird
+  without_new_date?: { new: unknown } | { unchanged: true } | null;
+}
+
+export interface ProposalResponse {
+  document_id: Id;
+  document_title: string;
+  model: string;
+  with_ocr: boolean;
+  ocr_note: string | null;  // 'discarded_worse': neu erkannter Text war schlechter
+  created_at: IsoDateTime;
+  changes: FieldChangeResponse[];
+}
+
+export interface ProposalListResponse {
+  items: ProposalResponse[];
+  total: number;
+  field_counts: Record<string, number>;
+}
+
+export interface ApplyRequest {
+  fields: string[] | null;
+}
+
+export interface RunPreview {
+  eligible: number;
+  reviewed_excluded: number;
+  no_text_excluded: number;
+  deleted_or_missing: number;
+  estimate_seconds: number;
+  model: string;
+}
+
+export interface RunFailure {
+  document_id: Id;
+  title: string | null;
+  error: string | null;
+}
+
+export interface RunResponse {
+  id: Id;
+  status: string;
+  model: string;
+  with_ocr: boolean;
+  total: number;
+  done: number;
+  proposed: number;
+  unchanged: number;
+  failed: number;
+  skipped: number;
+  last_error: string | null;
+  created_at: IsoDateTime;
+  finished_at: IsoDateTime | null;
+  failures: RunFailure[];
 }

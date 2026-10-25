@@ -20,6 +20,8 @@ class NotificationType(str, enum.Enum):
     SYSTEM = "SYSTEM"
     # Stapel-PDF wartet auf die Aufteilung (document_id NULL, Frontend -> /pruefen).
     SPLIT_NEEDED = "SPLIT_NEEDED"
+    # Sammel-Neu-Analyse fertig (document_id NULL, Frontend -> /pruefen).
+    REANALYSIS_DONE = "REANALYSIS_DONE"
 
 
 class Notification(Base):

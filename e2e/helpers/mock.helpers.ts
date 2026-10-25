@@ -19,7 +19,11 @@ import type {
   NotificationResponse,
   Paginated,
   ProcessedEmailResponse,
+  ProposalResponse,
+  ProposalListResponse,
   QueueStatus,
+  RunPreview,
+  RunResponse,
   ReviewDetailResponse,
   ReviewPendingResponse,
   ReviewStats,
@@ -422,6 +426,7 @@ export function makeReviewDetail(
     summary: doc.summary,
     ocr_text: doc.ocr_text,
     questions: doc.review_questions.map(({ created_at: _c, answered_at: _a, ...q }) => q),
+    has_proposal: doc.has_proposal ?? false,
     confident_fields: {
       title: doc.title,
       document_type: doc.document_type,
@@ -702,6 +707,49 @@ export function makeMockTask(overrides: Partial<TaskResponse> = {}): TaskRespons
   };
 }
 
+// Änderungsvorschlag einer Neu-Analyse (GET /api/reanalysis/proposals/{id}).
+export function makeMockProposal(overrides: Partial<ProposalResponse> = {}): ProposalResponse {
+  return {
+    document_id: MOCK_DOCUMENT_DETAIL.id,
+    document_title: MOCK_DOCUMENT_DETAIL.title,
+    model: 'gemma4:12b-it-qat',
+    with_ocr: false,
+    ocr_note: null,
+    created_at: '2026-10-24T10:00:00Z',
+    changes: [
+      { field: 'issuer', label: 'Aussteller', old: 'Stadtwerke', new: 'Stadtwerke München GmbH' },
+      { field: 'amount', label: 'Betrag', old: '89.50', new: '98.50' },
+      { field: 'document_date', label: 'Datum', old: null, new: '2026-01-20' },
+    ],
+    ...overrides,
+  };
+}
+
+// Massenlauf "Neu analysieren" (GET /api/reanalysis/runs/current u.a.).
+export function makeMockRun(overrides: Partial<RunResponse> = {}): RunResponse {
+  return {
+    id: 'run-1',
+    status: 'RUNNING',
+    model: 'gemma4:12b-it-qat',
+    with_ocr: false,
+    total: 4,
+    done: 1,
+    proposed: 1,
+    unchanged: 0,
+    failed: 0,
+    skipped: 0,
+    last_error: null,
+    created_at: '2026-10-24T10:00:00Z',
+    finished_at: null,
+    failures: [],
+    ...overrides,
+  };
+}
+
+export function makeMockRunPreview(overrides: Partial<RunPreview> = {}): RunPreview {
+  return { eligible: 5, reviewed_excluded: 0, no_text_excluded: 0, deleted_or_missing: 0, estimate_seconds: 150, model: 'gemma4:e2b-it-qat', ...overrides };
+}
+
 export const MOCK_EMAIL_ACCOUNTS = [
   {
     id: 1,
@@ -829,6 +877,10 @@ export async function setupBaseMocks(page: Page) {
   await installApiFallback(page);
   // Onboarding-Tests entfernen den Key per eigenem addInitScript wieder.
   await markOnboardingSeen(page);
+  // Kein Massenlauf bekannt (die Statusanzeige über der Dokumentliste bleibt ausgeblendet).
+  await page.route('**/api/reanalysis/runs/current', (route) =>
+    route.fulfill({ status: 404, json: { detail: 'Kein Lauf.' } })
+  );
   await page.route('**/api/health', (route) =>
     route.fulfill({ json: MOCK_HEALTH })
   );
@@ -1077,6 +1129,10 @@ export async function setupReviewMocks(
   // Stapel zum Aufteilen: standardmaessig keine (Tests ueberschreiben per page.route)
   await page.route('**/api/split?*', (route) =>
     route.fulfill({ json: makeSplitBatchList([]) })
+  );
+  // Änderungsvorschläge (Tab-Zähler in Prüfen): standardmäßig keine
+  await page.route(/\/api\/reanalysis\/proposals(\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [], total: 0, field_counts: {} } satisfies ProposalListResponse })
   );
   // Mock the document file for preview
   await page.route('**/api/documents/*/file', (route) =>

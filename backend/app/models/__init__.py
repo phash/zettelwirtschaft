@@ -15,6 +15,13 @@ from app.models.filing_scope import FilingScope
 from app.models.notification import Notification, NotificationType
 from app.models.processing_job import JobSource, JobStatus, ProcessingJob
 from app.models.processed_email import EmailStatus, ProcessedEmail
+from app.models.reanalysis import (
+    ReanalysisProposal,
+    ReanalysisRun,
+    ReanalysisRunItem,
+    RunItemStatus,
+    RunStatus,
+)
 from app.models.review_question import ReviewQuestion
 from app.models.saved_search import SavedSearch
 from app.models.split_batch import SplitBatch, SplitBatchStatus, SplitOrigin
@@ -40,8 +47,13 @@ __all__ = [
     "NotificationType",
     "ProcessedEmail",
     "ProcessingJob",
+    "ReanalysisProposal",
+    "ReanalysisRun",
+    "ReanalysisRunItem",
     "ReviewQuestion",
     "ReviewStatus",
+    "RunItemStatus",
+    "RunStatus",
     "SavedSearch",
     "SplitBatch",
     "SplitBatchStatus",

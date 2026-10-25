@@ -1,13 +1,17 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import ConfirmDialog from '../components/common/ConfirmDialog.vue'
+import ProposalDiff from '../components/reanalysis/ProposalDiff.vue'
+import ReanalysisProposals from '../components/reanalysis/ReanalysisProposals.vue'
 import {
   getReviewDocuments, getReviewDetail, answerReviewQuestion, approveReview, acceptReview, reanalyzeDocument,
-  getSplitBatches, splitPageThumbnailUrl,
+  getProposal, getProposals, getSplitBatches, splitPageThumbnailUrl,
 } from '../services/api'
 import { useNotificationStore } from '../stores/notifications'
 import { useBackgroundTask } from '../composables/useBackgroundTask'
+import { useProposalActions } from '../composables/useProposalActions'
 import { typeLabels } from '../constants/documentTypes'
 import { formatDate, formatAmount } from '../utils/formatters'
 import { pluralize } from '../utils/pluralize'
@@ -133,6 +137,7 @@ async function showFirstInQueue() {
 
 function clearCurrent() {
   reanalysis.reset()
+  proposal.value = null
   currentId.value = null
   currentDoc.value = null
   reviewData.value = null
@@ -141,6 +146,7 @@ function clearCurrent() {
 
 async function loadDoc(docId) {
   reanalysis.reset()
+  proposal.value = null
   resetZoom()
   currentId.value = docId
   loadError.value = false
@@ -153,6 +159,8 @@ async function loadDoc(docId) {
     // Springe zur ersten unbeantworteten Frage
     const firstOpen = questions.value.findIndex(q => !q.is_answered)
     if (firstOpen >= 0) currentQuestionIdx.value = firstOpen
+    // Offener Vorschlag (z.B. aus einem Massenlauf) gleich mit anzeigen.
+    if (data.has_proposal) await loadProposal(docId)
     // Läuft für dieses Dokument noch eine Re-Analyse (z.B. Seite neu geladen)?
     reanalysis.resume({ kind: 'reanalyze', key: String(docId) })
   } catch {
@@ -229,17 +237,33 @@ async function reviewLaterAgain() {
 }
 
 // Re-Analyse läuft als Hintergrund-Vorgang (HTTP 202 + Polling) — sie kann
-// auf CPU-Hardware Minuten dauern.
+// auf CPU-Hardware Minuten dauern. Das Ergebnis ist ein Änderungsvorschlag:
+// das Dokument ändert sich erst, wenn der Benutzer ihn übernimmt (Issue #39).
+const proposal = ref(null)
+
+// Vorschlag des Dokuments laden; 404 (inzwischen erledigt) -> kein Diff.
+async function loadProposal(docId) {
+  try {
+    const loaded = await getProposal(docId)
+    if (String(currentId.value) === String(docId)) proposal.value = loaded
+  } catch (e) {
+    if (String(currentId.value) !== String(docId)) return
+    proposal.value = null
+    if (e.response?.status !== 404) notify.error(apiErrorMessage(e, 'Vorschlag konnte nicht geladen werden.'))
+  }
+}
+
 const reanalysis = useBackgroundTask({
   onSuccess: async (result, task) => {
     const sameDoc = currentDoc.value && String(currentDoc.value.id) === String(task?.key)
-    if (result?.needs_review) {
-      notify.success('Analyse wiederholt — bitte neue Rückfragen prüfen.')
-      if (sameDoc) await loadDoc(currentDoc.value.id)
-    } else {
-      notify.success('Analyse erfolgreich — Dokument automatisch bestätigt.')
-      await loadReviewDocs()
+    if (result?.status === 'proposed') {
+      if (!sameDoc) return
+      await loadProposal(currentDoc.value.id)
+      return
     }
+    // Ohne Änderungen kann sich trotzdem der Prüfstatus geändert haben: Liste neu laden.
+    notify.info(result?.message || 'Keine Änderungen.')
+    await loadReviewDocs()
   },
   onError: (message) => notify.error(message),
 })
@@ -247,6 +271,30 @@ const reanalysis = useBackgroundTask({
 function doReanalyze() {
   const id = currentDoc.value.id
   reanalysis.start(() => reanalyzeDocument(id))
+}
+
+// Nach Übernehmen/Verwerfen kann das Dokument die Prüfung verlassen haben
+// (Status OK) — deshalb Liste neu laden. Nach einem Fehler (z.B. 409) bleibt
+// das Dokument stehen und der Vorschlag wird neu geholt, damit man es erneut
+// versuchen kann.
+const proposalActions = useProposalActions({
+  onSettled: async ({ documentId, succeeded }) => {
+    if (succeeded) {
+      await loadReviewDocs()
+      loadProposalCount()
+    } else {
+      await loadProposal(documentId)
+    }
+  },
+})
+const proposalBusy = proposalActions.busy
+
+function handleApplyProposal(fields) {
+  return proposalActions.apply(currentDoc.value.id, fields)
+}
+
+function handleDiscardProposal() {
+  return proposalActions.discard(currentDoc.value.id)
 }
 
 // Primär über den strukturierten Fragetyp; der Textvergleich bleibt nur als
@@ -354,9 +402,30 @@ function splitProposalLabel(batch) {
   return 'Noch nicht aufgeteilt'
 }
 
+// --- Tabs: Rückfragen | Änderungsvorschläge (?tab=vorschlaege) -------------
+const route = useRoute()
+const router = useRouter()
+const tab = computed(() => (route.query.tab === 'vorschlaege' ? 'vorschlaege' : 'rueckfragen'))
+
+function selectTab(next) {
+  if (next !== tab.value) router.replace({ query: next === 'vorschlaege' ? { tab: next } : {} })
+}
+
+// Zähler im Tab = alle offenen Vorschläge (ungefiltert); null = unbekannt.
+const proposalCount = ref(null)
+
+async function loadProposalCount() {
+  try {
+    proposalCount.value = (await getProposals({ page: 1, page_size: 1 })).total
+  } catch {
+    proposalCount.value = null
+  }
+}
+
 onMounted(() => {
   loadReviewDocs()
   loadSplitBatches()
+  loadProposalCount()
 })
 </script>
 
@@ -369,6 +438,27 @@ onMounted(() => {
       </span>
     </div>
 
+    <div role="tablist" aria-label="Prüfen" class="flex gap-1 border-b border-gray-200">
+      <button
+        v-for="t in [
+          { id: 'rueckfragen', label: 'Rückfragen' },
+          { id: 'vorschlaege', label: proposalCount === null ? 'Änderungsvorschläge' : `Änderungsvorschläge (${proposalCount})` },
+        ]"
+        :key="t.id"
+        type="button"
+        role="tab"
+        :aria-selected="tab === t.id"
+        :class="[
+          '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
+          tab === t.id ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-700',
+        ]"
+        @click="selectTab(t.id)"
+      >{{ t.label }}</button>
+    </div>
+
+    <ReanalysisProposals v-if="tab === 'vorschlaege'" role="tabpanel" @changed="loadProposalCount" />
+
+    <template v-else>
     <!-- Stapel zum Aufteilen -->
     <section v-if="splitBatches.length > 0" class="card space-y-3" data-testid="review-split-batches" aria-labelledby="review-split-heading">
       <h2 id="review-split-heading" class="text-lg font-semibold text-gray-900">Stapel zum Aufteilen ({{ splitTotal }})</h2>
@@ -502,6 +592,14 @@ onMounted(() => {
           </div>
         </div>
 
+        <ProposalDiff
+          v-if="proposal"
+          :proposal="proposal"
+          :busy="proposalBusy"
+          @apply="handleApplyProposal"
+          @discard="handleDiscardProposal"
+        />
+
         <!-- Fortschritt -->
         <div class="flex items-center gap-3">
           <div class="flex-1 h-2 rounded-full bg-gray-200 overflow-hidden">
@@ -632,6 +730,8 @@ onMounted(() => {
         <button v-if="queue.length > 1" @click="deferDocument" class="btn-secondary">Später</button>
       </div>
     </div>
+
+    </template>
 
     <ConfirmDialog
       :show="showAcceptConfirm"

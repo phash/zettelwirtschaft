@@ -22,6 +22,7 @@ from app.api.filing_scopes import router as filing_scopes_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.notifications import router as notifications_router
+from app.api.reanalysis import router as reanalysis_router
 from app.api.review import router as review_router
 from app.api.search import router as search_router
 from app.api.split import router as split_router, split_error_handler
@@ -92,6 +93,13 @@ async def lifespan(app: FastAPI):
     async with async_session_factory() as session:
         await recover_interrupted_batches(session, settings)
 
+    # Massenlauf der Neu-Analyse (Issue #39): durch den Neustart unterbrochene
+    # Dokumente (PROCESSING) zurueck in die Warteschlange — es gibt nur den einen
+    # In-Process-Runner, der Lauf macht danach weiter.
+    from app.services.reanalysis_run_service import recover_reanalysis_runs
+
+    await recover_reanalysis_runs(async_session_factory)
+
     # Hintergrund-Vorgaenge (Re-Analyse, E-Mail-Abruf, Backup) laufen nur
     # in-process: beim Start verwaiste PENDING/RUNNING-Eintraege auf FAILED
     # setzen und alte abgeschlossene Eintraege aufraeumen.
@@ -127,6 +135,14 @@ async def lifespan(app: FastAPI):
         run_queue_worker(async_session_factory, settings)
     )
     background_tasks.append(queue_task)
+
+    # Massenlauf der Neu-Analyse: nimmt Dokumente nur, wenn keine neuen
+    # Eingaenge warten (Vorrang Queue-Worker).
+    from app.services.reanalysis_run_service import run_reanalysis_runner
+
+    background_tasks.append(asyncio.create_task(
+        run_reanalysis_runner(async_session_factory, settings)
+    ))
 
     # Watch-Ordner
     from app.services.watch_folder_service import run_watch_folder
@@ -338,6 +354,7 @@ app.include_router(tax_router, prefix="/api")
 app.include_router(warranties_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(review_router, prefix="/api")
+app.include_router(reanalysis_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")

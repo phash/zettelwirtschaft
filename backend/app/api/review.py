@@ -17,14 +17,16 @@ from app.models.document import Document, DocumentStatus, ReviewStatus
 from app.models.review_question import ReviewQuestion
 from app.models.split_batch import SplitBatch, SplitBatchStatus
 from app.schemas.background_task import TaskResponse
+from app.schemas.reanalysis import ReanalyzeRequest
 from app.services.file_relocation import RelocationError, relocate_document_file
 from app.services.reanalysis_service import (
     NO_OCR_TEXT_MESSAGE,
     TASK_KIND as REANALYZE_TASK_KIND,
-    load_document_for_review,
+    has_visible_proposal,
     run_reanalysis,
 )
 from app.services import vectorize_service
+from app.services.document_lookup import load_active_document
 from app.services.review_answers import AnswerError, apply_answer
 from app.services.search_service import FTS_DOCUMENT_FIELDS, reindex_document_fts
 from app.services.task_service import TaskContext, start_task
@@ -38,7 +40,7 @@ MAX_ACTIVE_REANALYSES = 3
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
-    doc = await load_document_for_review(session, document_id)
+    doc = await load_active_document(session, document_id)
     if doc is None:
         raise HTTPException(404, DOCUMENT_NOT_FOUND)
     return doc
@@ -86,6 +88,7 @@ async def review_pending(session: AsyncSession = Depends(get_db, scope="function
 async def review_document_detail(
     document_id: str,
     session: AsyncSession = Depends(get_db, scope="function"),
+    settings: Settings = Depends(get_settings),
 ):
     """Detaillierte Review-Daten für ein Dokument."""
     doc = await _get_document_or_404(session, document_id)
@@ -116,6 +119,8 @@ async def review_document_detail(
         "summary": doc.summary,
         "ocr_text": doc.ocr_text[:2000] if doc.ocr_text else "",
         "questions": questions,
+        # Offener Aenderungsvorschlag einer Neu-Analyse (Diff per /reanalysis/proposals/{id})
+        "has_proposal": await has_visible_proposal(session, doc, settings),
         "confident_fields": {
             "title": doc.title,
             "document_type": enum_value(doc.document_type),
@@ -248,21 +253,27 @@ async def accept_document(
 )
 async def reanalyze_document(
     document_id: str,
+    body: ReanalyzeRequest | None = None,
     session: AsyncSession = Depends(get_db, scope="function"),
     settings: Settings = Depends(get_settings),
     session_factory=Depends(get_session_factory),
 ) -> TaskResponse:
     """Startet die KI-Analyse erneut als Hintergrund-Vorgang (HTTP 202).
 
-    Status/Ergebnis über ``GET /api/tasks/{id}``. Nutzt die Haupt-Pipeline;
-    vom Benutzer bearbeitete Felder bleiben erhalten (siehe reanalysis_service).
+    Optionaler Body ``{"with_ocr": true}``: der Text wird aus der Datei neu
+    erkannt (dann ist auch ein Dokument ohne gespeicherten Text zulässig).
+
+    Status/Ergebnis über ``GET /api/tasks/{id}``. Nutzt die Haupt-Pipeline und
+    legt nur einen Änderungsvorschlag an — das Dokument ändert sich erst beim
+    Übernehmen (siehe reanalysis_service).
     """
     doc = await _get_document_or_404(session, document_id)
-    if not (doc.ocr_text or "").strip():
+    with_ocr = body.with_ocr if body is not None else False
+    if not with_ocr and not (doc.ocr_text or "").strip():
         raise HTTPException(400, NO_OCR_TEXT_MESSAGE)
 
     async def work(ctx: TaskContext):
-        return await run_reanalysis(ctx, document_id, settings)
+        return await run_reanalysis(ctx, document_id, settings, with_ocr=with_ocr)
 
     task = await start_task(
         session_factory, REANALYZE_TASK_KIND, work, key=document_id,

@@ -32,6 +32,7 @@ import app.models.split_batch  # noqa: F401
 pytest_plugins = [
     "tests.support.split_fixtures",
     "tests.support.email_fixtures",
+    "tests.support.reanalysis_fixtures",
 ]
 
 

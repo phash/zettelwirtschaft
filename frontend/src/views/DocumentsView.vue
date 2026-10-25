@@ -3,7 +3,10 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
 import DocTypeBadge from '../components/common/DocTypeBadge.vue'
 import Pagination from '../components/common/Pagination.vue'
-import { getDocuments, updateDocument } from '../services/api'
+import ReanalyzeDialog from '../components/reanalysis/ReanalyzeDialog.vue'
+import ReanalysisRunStatus from '../components/reanalysis/ReanalysisRunStatus.vue'
+import { getDocuments, updateDocument, previewReanalysisRun, startReanalysisRun } from '../services/api'
+import { apiErrorMessage } from '../utils/apiErrors'
 import { useNotificationStore } from '../stores/notifications'
 import { useFilingScopes } from '../composables/useFilingScopes'
 import { documentTypes, typeLabels } from '../constants/documentTypes'
@@ -151,6 +154,114 @@ async function toggleTax(doc) {
   }
 }
 
+// --- Auswahl + Massenlauf "Neu analysieren" (Issue #39) ---
+// Die Auswahl bleibt beim Blättern erhalten und wird bei Filterwechsel geleert.
+const selectedIds = ref(new Set())
+const selectedCount = computed(() => selectedIds.value.size)
+const allOnPageSelected = computed(
+  () => documents.value.length > 0 && documents.value.every(d => selectedIds.value.has(d.id)),
+)
+
+function toggleSelected(id) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function toggleAllOnPage() {
+  const next = new Set(selectedIds.value)
+  if (allOnPageSelected.value) documents.value.forEach(d => next.delete(d.id))
+  else documents.value.forEach(d => next.add(d.id))
+  selectedIds.value = next
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+const runStatus = ref(null)
+const dialogMode = ref(null)  // 'selection' | 'outdated' | null
+const dialogPreview = ref(null)
+const dialogLoading = ref(false)
+const dialogStarting = ref(false)
+const dialogWithOcr = ref(false)
+let previewRequestId = 0
+
+const dialogTitle = computed(() => {
+  if (dialogMode.value !== 'outdated') return 'Ausgewählte Dokumente neu analysieren'
+  // Das Modell nennt erst die Vorschau (Backend: OLLAMA_MODEL).
+  const model = dialogPreview.value?.model
+  return model ? `Alle, die nicht mit ${model} analysiert wurden` : 'Mit aktuellem Modell neu analysieren'
+})
+
+function runBody() {
+  return {
+    document_ids: dialogMode.value === 'selection' ? [...selectedIds.value] : null,
+    outdated: dialogMode.value === 'outdated',
+    with_ocr: dialogWithOcr.value,
+  }
+}
+
+async function loadPreview() {
+  const requestId = ++previewRequestId
+  dialogLoading.value = true
+  try {
+    const data = await previewReanalysisRun(runBody())
+    if (requestId === previewRequestId) dialogPreview.value = data
+  } catch (e) {
+    if (requestId !== previewRequestId) return
+    notify.error(apiErrorMessage(e, 'Die Vorschau konnte nicht geladen werden.'))
+    closeDialog()
+  } finally {
+    if (requestId === previewRequestId) dialogLoading.value = false
+  }
+}
+
+function openDialog(mode) {
+  dialogMode.value = mode
+  dialogPreview.value = null
+  dialogWithOcr.value = false
+  loadPreview()
+}
+
+function closeDialog() {
+  previewRequestId++  // laufende Vorschau verwerfen
+  dialogMode.value = null
+  dialogPreview.value = null
+  dialogLoading.value = false
+}
+
+function onDialogOcrChange(value) {
+  dialogWithOcr.value = value
+  loadPreview()
+}
+
+async function onDialogConfirm({ withOcr }) {
+  if (dialogStarting.value) return
+  dialogWithOcr.value = withOcr
+  dialogStarting.value = true
+  try {
+    const run = await startReanalysisRun(runBody())
+    const fromSelection = dialogMode.value === 'selection'
+    closeDialog()
+    if (fromSelection) clearSelection()
+    runStatus.value?.setRun(run)
+    notify.success('Neu-Analyse gestartet.')
+  } catch (e) {
+    const active = e?.response?.status === 409 ? e.response.data?.run : null
+    if (active) {
+      runStatus.value?.setRun(active)
+      closeDialog()
+    }
+    notify.error(apiErrorMessage(e, 'Die Neu-Analyse konnte nicht gestartet werden.'))
+  } finally {
+    dialogStarting.value = false
+  }
+}
+
+watch(filterKey, clearSelection)
+
 const mobileSortOptions = [
   { value: 'created_at:desc', label: 'Neueste zuerst' },
   { value: 'created_at:asc', label: 'Älteste zuerst' },
@@ -232,7 +343,24 @@ onMounted(() => {
   <div class="space-y-4">
     <div class="flex items-center justify-between">
       <h1 class="text-2xl font-bold text-gray-900">Dokumente</h1>
-      <router-link to="/upload" class="btn-primary">Hochladen</router-link>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <button type="button" class="btn-secondary" @click="openDialog('outdated')">Mit aktuellem Modell neu analysieren …</button>
+        <router-link to="/upload" class="btn-primary">Hochladen</router-link>
+      </div>
+    </div>
+
+    <ReanalysisRunStatus ref="runStatus" />
+
+    <div
+      v-if="selectedCount > 0"
+      class="card !p-3 flex flex-wrap items-center gap-3 text-sm"
+      data-testid="selection-bar"
+    >
+      <span class="font-medium text-gray-900">{{ selectedCount }} ausgewählt</span>
+      <span aria-hidden="true" class="text-gray-300">·</span>
+      <button type="button" class="btn-primary !py-1.5 text-xs" @click="openDialog('selection')">Neu analysieren</button>
+      <span aria-hidden="true" class="text-gray-300">·</span>
+      <button type="button" class="btn-secondary !py-1.5 text-xs" @click="clearSelection">Auswahl aufheben</button>
     </div>
 
     <!-- Filters -->
@@ -311,6 +439,16 @@ onMounted(() => {
         <label class="flex flex-shrink-0 flex-col items-center gap-1 text-[10px] text-gray-500">
           <input
             type="checkbox"
+            :checked="selectedIds.has(doc.id)"
+            @change="toggleSelected(doc.id)"
+            class="rounded border-gray-300"
+            :aria-label="`${doc.title || doc.original_filename} auswählen`"
+          />
+          Auswahl
+        </label>
+        <label class="flex flex-shrink-0 flex-col items-center gap-1 text-[10px] text-gray-500">
+          <input
+            type="checkbox"
             :checked="doc.tax_relevant"
             @change="toggleTax(doc)"
             class="rounded border-gray-300"
@@ -326,6 +464,16 @@ onMounted(() => {
       <table class="w-full">
         <thead class="bg-gray-50 text-left text-xs font-medium uppercase text-gray-500">
           <tr>
+            <th class="px-4 py-3 w-10">
+              <input
+                type="checkbox"
+                class="rounded border-gray-300"
+                :checked="allOnPageSelected"
+                :disabled="documents.length === 0"
+                aria-label="Alle auf dieser Seite auswählen"
+                @change="toggleAllOnPage"
+              />
+            </th>
             <th class="px-4 py-3 w-10"><span class="sr-only">Dateityp</span></th>
             <th class="px-4 py-3 cursor-pointer hover:text-gray-700" :aria-sort="ariaSort('title')" @click="toggleSort('title')">
               Titel{{ sortIcon('title') }}
@@ -346,7 +494,7 @@ onMounted(() => {
         </thead>
         <tbody class="divide-y divide-gray-100">
           <tr v-if="documents.length === 0">
-            <td colspan="8" class="px-4 py-12 text-center text-sm text-gray-400">
+            <td colspan="9" class="px-4 py-12 text-center text-sm text-gray-400">
               Keine Dokumente gefunden.
             </td>
           </tr>
@@ -360,6 +508,16 @@ onMounted(() => {
             class="cursor-pointer hover:bg-gray-50 transition-colors"
             @click="router.push(`/dokumente/${doc.id}`)"
           >
+            <td class="px-4 py-3">
+              <input
+                type="checkbox"
+                class="rounded border-gray-300"
+                :checked="selectedIds.has(doc.id)"
+                :aria-label="`${doc.title || doc.original_filename} auswählen`"
+                @click.stop
+                @change="toggleSelected(doc.id)"
+              />
+            </td>
             <td class="px-4 py-3">
               <div class="flex h-8 w-8 items-center justify-center rounded bg-gray-100 text-[10px] font-medium text-gray-500">
                 {{ doc.file_type?.toUpperCase() }}
@@ -401,6 +559,16 @@ onMounted(() => {
         </tbody>
       </table>
     </div>
+
+    <ReanalyzeDialog
+      :open="dialogMode !== null"
+      :title="dialogTitle"
+      :preview="dialogPreview"
+      :busy="dialogLoading || dialogStarting"
+      @confirm="onDialogConfirm"
+      @cancel="closeDialog"
+      @ocr-change="onDialogOcrChange"
+    />
 
     <Pagination :total="total" :page="page" :page-size="pageSize" @update:page="page = $event" />
   </div>

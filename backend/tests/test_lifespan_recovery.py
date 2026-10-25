@@ -92,3 +92,40 @@ def test_startup_resets_interrupted_jobs_and_tasks(tmp_path):
     assert (status, retries, started) == ("PENDING", 1, None)
     assert task_status == "FAILED"
     assert "Neustart" in task_error
+
+
+def test_startup_requeues_interrupted_reanalysis_items(tmp_path):
+    """Massenlauf (Issue #39): ein beim Neustart laufendes Dokument kommt zurueck in die Warteschlange."""
+    env = _env(tmp_path)
+    _run([str(_BACKEND / "migrate.py")], env)
+    db = tmp_path / "data" / "zw.db"
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO reanalysis_runs (id, status, model, with_ocr, total, created_at) "
+            "VALUES ('run-1', 'RUNNING', 'gemma-test', 0, 2, CURRENT_TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO reanalysis_run_items (run_id, document_id, position, status) VALUES "
+            "('run-1', 'doc-1', 0, 'PROCESSING'), ('run-1', 'doc-2', 1, 'PENDING')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Queue pausiert (_RUN_LIFESPAN): auch der Neu-Analyse-Runner greift nichts auf.
+    _run(["-c", _RUN_LIFESPAN], env)
+
+    conn = sqlite3.connect(db)
+    try:
+        items = conn.execute(
+            "SELECT document_id, status FROM reanalysis_run_items ORDER BY position"
+        ).fetchall()
+        run_status, total = conn.execute(
+            "SELECT status, total FROM reanalysis_runs WHERE id = 'run-1'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert items == [("doc-1", "PENDING"), ("doc-2", "PENDING")]
+    assert (run_status, total) == ("RUNNING", 2)

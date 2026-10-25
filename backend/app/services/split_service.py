@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.core.file_utils import generate_stored_filename, is_pdf_type
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.document import Document, DocumentStatus, DocumentTag, Tag
+from app.models.document import Document, DocumentStatus
 from app.models.email_account import EmailAccount
 from app.models.processing_job import (
     JOB_ERROR_DUPLICATE,
@@ -56,6 +56,7 @@ from app.services.archive_service import SplitProvenance, file_sha256, find_acti
 from app.services.pdf_split_service import PdfSplitError
 from app.services.settings_service import get_db_setting, set_db_setting
 from app.services.upload_service import remove_job_file
+from app.services.user_tags import manual_tag_names
 
 logger = logging.getLogger(__name__)
 
@@ -1197,24 +1198,16 @@ async def run_split_cleanup(session_factory, settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def manual_tag_names(session: AsyncSession, document_id: str) -> list[str]:
-    """Vom Benutzer vergebene Tags eines Dokuments: selbst angelegte Tags
-    (is_auto_generated=False) und Tags mit einem TAG_ADDED-Eintrag."""
-    tags = (await session.execute(
-        select(Tag.name, Tag.is_auto_generated)
-        .join(DocumentTag, DocumentTag.tag_id == Tag.id)
-        .where(DocumentTag.document_id == document_id)
-    )).all()
-    added: set[str] = set()
-    for (details,) in (await session.execute(
-        select(AuditLog.details).where(
-            AuditLog.document_id == document_id, AuditLog.action == AuditAction.TAG_ADDED,
-        )
-    )).all():
-        tag = _load_json(details, {}).get("tag") if details else None
-        if isinstance(tag, str):
-            added.add(tag.strip().lower())
-    return sorted(name for name, auto in tags if not auto or name in added)
+async def manual_split_original(session: AsyncSession, batch_id: str | None) -> Document | None:
+    """Original eines "Dokument aufteilen"-Stapels (MANUAL) — liefert Ablagebereich
+    und manuelle Tags fuer die Teile. ``None`` fuer automatische Stapel oder
+    wenn Stapel bzw. Original fehlen."""
+    if not batch_id:
+        return None
+    batch = await session.get(SplitBatch, batch_id)
+    if batch is None or batch.origin != SplitOrigin.MANUAL or not batch.source_document_id:
+        return None
+    return await session.get(Document, batch.source_document_id)
 
 
 @dataclass(frozen=True)
@@ -1241,11 +1234,10 @@ async def part_context(session: AsyncSession, job: ProcessingJob) -> PartContext
     )
     scope_id = None
     tags: list[str] = []
-    if batch.origin == SplitOrigin.MANUAL and batch.source_document_id:
-        original = await session.get(Document, batch.source_document_id)
-        if original is not None:
-            scope_id = original.filing_scope_id
-            tags = await manual_tag_names(session, original.id)
+    original = await manual_split_original(session, batch.id)
+    if original is not None:
+        scope_id = original.filing_scope_id
+        tags = await manual_tag_names(session, original.id)
     return PartContext(
         provenance=SplitProvenance(
             batch_id=batch.id,

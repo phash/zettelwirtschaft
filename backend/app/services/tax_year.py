@@ -26,13 +26,18 @@ def derive_tax_year(document_date: date | None, created_at: datetime | None) -> 
     return max(MIN_TAX_YEAR, min(year, date.today().year + 1))
 
 
+def derive_tax_year_for(doc: Document, document_date: date | None) -> int:
+    """``derive_tax_year`` mit dem Erfassungsdatum von ``doc`` als Rueckfall."""
+    # created_at ist ein Server-Default: nach einem Flush ggf. noch nicht
+    # geladen — kein Lazy-Load im async-Kontext (MissingGreenlet) ausloesen.
+    created_at = None if "created_at" in inspect(doc).unloaded else doc.created_at
+    return derive_tax_year(document_date, created_at)
+
+
 def ensure_tax_year(doc: Document) -> None:
     """Setzt ``tax_year``, wenn das Dokument steuerrelevant ist und keins hat.
 
     Ein explizit gesetztes Jahr wird nie ueberschrieben.
     """
     if doc.tax_relevant and doc.tax_year is None:
-        # created_at ist ein Server-Default: nach einem Flush ggf. noch nicht
-        # geladen — kein Lazy-Load im async-Kontext (MissingGreenlet) ausloesen.
-        created_at = None if "created_at" in inspect(doc).unloaded else doc.created_at
-        doc.tax_year = derive_tax_year(doc.document_date, created_at)
+        doc.tax_year = derive_tax_year_for(doc, doc.document_date)
