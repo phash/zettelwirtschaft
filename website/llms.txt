@@ -4,7 +4,7 @@
 
 Wichtige Fakten:
 
-- Aktuelle Version: 1.7.0 (18.10.2026)
+- Aktuelle Version: 1.8.0 (25.10.2026)
 - Lizenz: AGPL-3.0, kostenlos; Quellcode: https://github.com/phash/zettelwirtschaft
 - Systeme: Windows 10/11 als Windows-Dienst (Setup.exe, ohne Docker) oder Linux/NAS mit Docker Compose
 - Hardware: ab 8 GB RAM und ca. 10 GB Speicher; NVIDIA-GPU optional
@@ -12,7 +12,7 @@ Wichtige Fakten:
 - Dauer: ca. 40 Sekunden pro Dokument auf CPU, wenige Sekunden mit GPU
 - Erkennungsgenauigkeit (Kernfelder Typ, Datum, Betrag, Aussteller; 70 Testbelege): ca. 85 % mit dem Standardmodell, ca. 90 % mit gemma4:12b
 - Formate: PDF, JPG, PNG, TIFF, BMP bis 50 MB
-- Funktionen: OCR, KI-Klassifikation (15 Dokumenttypen), Volltextsuche, KI-Assistent mit Quellen (RAG), Steuerpaket-Export (ZIP mit PDF + CSV), Garantie-Tracker, Smartphone-Scan (PWA), E-Mail-Import, Netzwerkscanner-Freigabe, NAS-Ordner, Mehrdokument-Scans aufteilen, Ablagebereiche, PIN-Schutz, tägliche Backups
+- Funktionen: OCR, KI-Klassifikation (15 Dokumenttypen), Volltextsuche, KI-Assistent mit Quellen (RAG), Steuerpaket-Export (ZIP mit PDF + CSV), Garantie-Tracker, Smartphone-Scan (PWA), E-Mail-Import, Netzwerkscanner-Freigabe, NAS-Ordner, Mehrdokument-Scans aufteilen, Neu-Analyse mit Änderungsvorschlag, Ablagebereiche, PIN-Schutz, tägliche Backups
 - Sprache: deutsche Oberfläche; OCR Deutsch + Englisch
 - Einsatz: nur im Heimnetz; nicht für den direkten Betrieb im Internet gedacht
 - Autor: Manuel Rödig, MR Development (https://www.mr-development.de/)
