@@ -176,7 +176,7 @@
     <nav class="crumbs" aria-label="Brotkrumen"><a href="index.html">Start</a> <span aria-hidden="true">›</span> <span aria-current="page">Anleitungen</span></nav>
     <span class="kicker">Schritt für Schritt</span>
     <h1>Anleitungen &amp; <span class="ink-accent">Tutorials</span></h1>
-    <p class="lead">Jede Aufgabe als kurze Anleitung: von der Installation über Scanner und Smartphone bis zu Steuerpaket, Backup und Update. Stand: Version&nbsp;1.7.0.</p>
+    <p class="lead">Jede Aufgabe als kurze Anleitung: von der Installation über Scanner und Smartphone bis zu Steuerpaket, Backup und Update. Stand: Version&nbsp;1.8.0.</p>
   </div>
 </section>
 
@@ -211,7 +211,7 @@
       </header>
       <ol class="steps">
         <li><h3>Ollama installieren</h3><p>Lade Ollama von <a href="https://ollama.com/download" rel="noopener noreferrer">ollama.com/download</a> und installiere es. Benötigt wird <b>Version 0.30.3 oder neuer</b>. Ollama führt die KI-Modelle lokal aus und läuft als eigener Dienst.</p></li>
-        <li><h3>Setup herunterladen</h3><p>Lade <code class="inline">Zettelwirtschaft-1.7.0-Native-Setup.exe</code> von der <a href="download.html#dateien">Download-Seite</a>. Optional: Prüfsumme in PowerShell mit <code class="inline">Get-FileHash .\Zettelwirtschaft-1.7.0-Native-Setup.exe</code> vergleichen.</p></li>
+        <li><h3>Setup herunterladen</h3><p>Lade <code class="inline">Zettelwirtschaft-1.8.0-Native-Setup.exe</code> von der <a href="download.html#dateien">Download-Seite</a>. Optional: Prüfsumme in PowerShell mit <code class="inline">Get-FileHash .\Zettelwirtschaft-1.8.0-Native-Setup.exe</code> vergleichen.</p></li>
         <li><h3>Setup starten</h3><p>Doppelklick auf die Datei. Windows zeigt eventuell „Der Computer wurde durch Windows geschützt“, weil der Installer nicht signiert ist. Klicke auf <b>Weitere Informationen</b> und dann <b>Trotzdem ausführen</b>.</p></li>
         <li><h3>Datenordner wählen</h3><p>Standard ist <code class="inline">Dokumente\Zettelwirtschaft</code>. Hier liegen Datenbank, Archiv und Uploads. Ein externes Laufwerk oder ein Cloud-Sync-Ordner ist ebenfalls möglich.</p></li>
         <li><h3>Netzwerkzugriff festlegen</h3><p>Soll die App nur auf diesem PC laufen, setze den Haken <b>„Nur von diesem PC erreichbar“</b>. Für Smartphone-Scan und andere Geräte im Heim-WLAN lässt du ihn weg. Optional richtest du hier gleich die <a href="#netzwerkscanner">Scanner-Freigabe</a> ein.</p></li>
@@ -231,8 +231,8 @@
       </header>
       <ol class="steps">
         <li><h3>Quellpaket laden und entpacken</h3>
-<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz</b>
-<span class="p">$</span> <b>cd zettelwirtschaft-1.7.0</b></pre></li>
+<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.8.0-source.tar.gz</b>
+<span class="p">$</span> <b>cd zettelwirtschaft-1.8.0</b></pre></li>
         <li><h3>Konfiguration anlegen</h3>
 <pre class="code"><span class="p">$</span> <b>cp .env.example .env</b>
 <span class="c"># wichtig: PIN_ENABLED=true und eigenen PIN_CODE setzen</span></pre>
@@ -380,9 +380,9 @@
       <ol class="steps">
         <li><h3>Windows: Setup ausführen</h3><p>Neue <code class="inline">Native-Setup.exe</code> starten. Sie erkennt die bestehende Installation, erstellt vorher eine Sicherung nach <code class="inline">Dokumente\Zettelwirtschaft-Backups</code> und aktualisiert die Programmdateien. Alternativ: Update-Paket in einen Temp-Ordner entpacken und <code class="inline">update-wizard.bat</code> als Administrator starten.</p></li>
         <li><h3>Docker: Stack neu bauen</h3>
-<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.7.0-source.tar.gz</b>
-<span class="p">$</span> <b>cp ../zettelwirtschaft-alt/.env zettelwirtschaft-1.7.0/</b>
-<span class="p">$</span> <b>cd zettelwirtschaft-1.7.0 &amp;&amp; docker compose up -d --build</b></pre>
+<pre class="code"><span class="p">$</span> <b>tar xzf zettelwirtschaft-1.8.0-source.tar.gz</b>
+<span class="p">$</span> <b>cp ../zettelwirtschaft-alt/.env zettelwirtschaft-1.8.0/</b>
+<span class="p">$</span> <b>cd zettelwirtschaft-1.8.0 &amp;&amp; docker compose up -d --build</b></pre>
           <p>Den <code class="inline">data/</code>-Ordner übernehmen oder vorher sichern. Unter Windows mit Docker erledigt das <code class="inline">update.bat</code> inklusive Sicherung.</p></li>
         <li><h3>Version prüfen</h3><p>Unter <b>System</b> steht die installierte Version. Wer will, aktiviert dort die <b>Update-Prüfung</b>: Sie fragt nur eine Versionsdatei ab, ohne Nutzungs- oder Dokumentdaten, und ist standardmäßig aus.</p></li>
       </ol>
@@ -411,7 +411,7 @@
           <span class="brand__name" style="font-family:var(--display);font-size:1.3rem">Zettelwirtschaft</span>
         </div>
         <p>Lokales Dokumentenmanagement für Privathaushalte. Rechnungen, Belege und Dokumente — automatisch geordnet, sicher zuhause.</p>
-        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.7.0 · AGPL-3.0</div>
+        <div class="stamp stamp--green" style="margin-top:1rem;color:#D8B877;border-color:#D8B877">v1.8.0 · AGPL-3.0</div>
       </div>
       <div>
         <h4>Seiten</h4>
