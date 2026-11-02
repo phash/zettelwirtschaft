@@ -21,9 +21,9 @@ zettelwirtschaft.mr-development.de {
 	import dotfile_protection
 
 	handle {
-		# Selbst-gehostete Assets/Fonts, keine externen Quellen -> strenge CSP.
+		# Selbst-gehostete Assets/Fonts; einzige externe Quelle: eigenes Matomo (nur nach Einwilligung).
 		# script-src-Hash deckt das eine Inline-Script (classList.add('js')) ab.
-		header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-Du+OJKJSbdUgz5nrHeWWINvez6XKDDU/tyj/5c2uvwo='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+		header Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-Du+OJKJSbdUgz5nrHeWWINvez6XKDDU/tyj/5c2uvwo=' https://musikersuche.org/matomo/; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://musikersuche.org/matomo/; font-src 'self'; connect-src 'self' https://musikersuche.org/matomo/; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
 		reverse_proxy zettelwirtschaft-web:80
 	}
 }

@@ -44,6 +44,11 @@ Das Inline-Script `classList.add('js')` ist per Hash in der CSP des Caddy-Blocks
 bei Änderung den Hash in `deploy/caddy-block.txt` und `/opt/caddyserver/Caddyfile` anpassen.
 JSON-LD-Blöcke (`type="application/ld+json"`) werden nicht ausgeführt und brauchen keinen Hash.
 
+Reichweitenmessung: `assets/matomo-consent.js` lädt das selbst gehostete Matomo
+(`musikersuche.org/matomo/`, Site-ID 12) erst nach Einwilligung, ohne Cookies. Die CSP erlaubt
+dafür `https://musikersuche.org/matomo/` in `script-src`, `img-src` und `connect-src`.
+Neue Seiten brauchen beide `matomo-consent`-Einträge im `<head>`; Text in `datenschutz.html#matomo`.
+
 ## Deploy
 
 Server `musikersuche@musikersuche.org`, Dateien unter `/opt/zettelwirtschaft/html/`:

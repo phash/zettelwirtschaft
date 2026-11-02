@@ -1,0 +1,95 @@
+/* Zettelwirtschaft — Matomo-Consent-Banner. Leiste am unteren Rand;
+   body bekommt Platz nach unten, damit die Leiste keinen Inhalt verdeckt.
+   Farben aus den Tokens in site.css. */
+body.matomo-consent-shown {
+  padding-bottom: 6rem;
+}
+
+.matomo-consent-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 600;
+  background: var(--card-raised);
+  color: var(--ink);
+  border-top: 2px solid var(--archive);
+  box-shadow: var(--shadow-lg);
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-family: var(--body);
+}
+
+.matomo-consent-text {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.45;
+  flex: 1;
+  min-width: 16rem;
+}
+
+.matomo-consent-link {
+  color: var(--archive);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.matomo-consent-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.matomo-consent-btn {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.matomo-consent-btn:hover {
+  background: var(--card);
+}
+
+.matomo-consent-btn:focus-visible {
+  outline: 2px solid var(--stamp);
+  outline-offset: 2px;
+}
+
+.matomo-consent-ok {
+  background: var(--archive);
+  border-color: var(--archive);
+  color: var(--paper);
+}
+
+.matomo-consent-ok:hover {
+  background: var(--archive-deep);
+  border-color: var(--archive-deep);
+}
+
+@media (max-width: 580px) {
+  .matomo-consent-banner {
+    padding: 0.625rem 1rem;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .matomo-consent-text {
+    min-width: 0;
+  }
+  .matomo-consent-actions {
+    justify-content: flex-end;
+  }
+  body.matomo-consent-shown {
+    padding-bottom: 10rem;
+  }
+}

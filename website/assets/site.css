@@ -194,6 +194,11 @@ p  { margin: 0 0 1rem; }
 }
 .nav a:hover, .nav a[aria-current="page"] { color: var(--stamp-deep); background: var(--stamp-wash); }
 .nav__cta { margin-left: .4rem; }
+/* CTA-Button im Menue: .nav a (Spezifitaet 0,1,1) wuerde sonst Schrift- und Hover-Farbe
+   des Buttons ueberschreiben -> dunkle Schrift auf Rot. */
+.nav a.btn--stamp,
+.nav a.btn--stamp:hover,
+.nav a.btn--stamp[aria-current="page"] { color: #fff; background: var(--stamp-deep); padding: .8em 1.2em; }
 
 .burger {
   display: none; border: 2px solid var(--ink); background: var(--card); border-radius: 3px;
