@@ -8,11 +8,13 @@
 <meta name="theme-color" content="#221C15">
 <link rel="canonical" href="https://zettelwirtschaft.mr-development.de/datenschutz.html">
 <title>Datenschutzerklärung — Zettelwirtschaft</title>
-<meta name="description" content="Datenschutzerklärung für die Zettelwirtschaft-Website. Keine Cookies, kein Tracking. Die Software selbst verarbeitet ausschließlich lokal.">
+<meta name="description" content="Datenschutzerklärung für die Zettelwirtschaft-Website. Keine Cookies, Reichweitenmessung nur mit Einwilligung. Die Software selbst verarbeitet ausschließlich lokal.">
 <meta name="robots" content="noindex">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/fonts.css">
-<link rel="stylesheet" href="assets/site.css?v=20261023">
+<link rel="stylesheet" href="assets/site.css?v=20261102">
+<link rel="stylesheet" href="assets/matomo-consent.css?v=20261102">
+<script src="assets/matomo-consent.js?v=20261102" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Zum Inhalt springen</a>
@@ -41,7 +43,7 @@
   <div class="wrap">
     <span class="kicker">Rechtliches</span>
     <h1>Datenschutz&shy;erklärung</h1>
-    <p class="lead">Kurz gesagt: Diese Website setzt keine Cookies und kein Tracking ein. Und die Software „Zettelwirtschaft“ verarbeitet deine Dokumente ausschließlich lokal — niemals auf unseren Servern.</p>
+    <p class="lead">Kurz gesagt: Diese Website setzt keine Cookies ein und zählt Besuche nur, wenn du zustimmst — mit selbst betriebenem Matomo, ohne Dritte. Und die Software „Zettelwirtschaft“ verarbeitet deine Dokumente ausschließlich lokal — niemals auf unseren Servern.</p>
   </div>
 </section>
 
@@ -50,7 +52,7 @@
 
     <h2>1. Datenschutz auf einen Blick</h2>
     <p>Die folgenden Hinweise geben einen einfachen Überblick darüber, was mit deinen personenbezogenen Daten passiert, wenn du diese Website besuchst. Personenbezogene Daten sind alle Daten, mit denen du persönlich identifiziert werden kannst.</p>
-    <p><b>Diese Website</b> ist eine statische Informations- und Download-Seite. Es werden keine Cookies gesetzt, keine Analyse- oder Tracking-Werkzeuge eingesetzt und keine Benutzerkonten geführt. Eine Datenverarbeitung findet nur insoweit statt, wie sie für den technischen Betrieb (Auslieferung der Seiten) unvermeidbar ist.</p>
+    <p><b>Diese Website</b> ist eine statische Informations- und Download-Seite. Es werden keine Cookies gesetzt, keine Tracking-Dienste Dritter eingesetzt und keine Benutzerkonten geführt. Eine anonyme Reichweitenmessung mit unserem selbst betriebenen Matomo findet <b>nur nach deiner Einwilligung</b> statt (siehe Abschnitt&nbsp;4). Darüber hinaus findet eine Datenverarbeitung nur insoweit statt, wie sie für den technischen Betrieb (Auslieferung der Seiten) unvermeidbar ist.</p>
 
     <h2>2. Verantwortliche Stelle</h2>
     <p>Verantwortlich für die Datenverarbeitung auf dieser Website ist:</p>
@@ -76,9 +78,18 @@
     </ul>
     <p>Eine Zusammenführung dieser Daten mit anderen Datenquellen wird nicht vorgenommen. Die Erfassung dieser Daten erfolgt auf Grundlage von Art.&nbsp;6 Abs.&nbsp;1 lit.&nbsp;f DSGVO. Der Websitebetreiber hat ein berechtigtes Interesse an der technisch fehlerfreien Darstellung und der Sicherheit seiner Website. Die Log-Daten werden nach kurzer Zeit gelöscht, sofern keine sicherheitsrelevanten Vorfälle eine längere Aufbewahrung erfordern.</p>
 
-    <h2>4. Keine Cookies, keine Analyse</h2>
-    <p>Diese Website verwendet <b>keine Cookies</b> und bindet <b>keine Analyse- oder Tracking-Dienste</b> ein. Es findet keine Reichweitenmessung, kein Profiling und keine werbliche Auswertung statt.</p>
-    <p>Es werden <b>keine externen Inhalte</b> von Drittanbietern nachgeladen. Insbesondere werden Schriftarten lokal vom selben Server ausgeliefert (kein Google Fonts, keine CDN), sodass beim Seitenaufruf keine Verbindung zu Servern Dritter aufgebaut und keine IP-Adresse an Dritte übertragen wird.</p>
+    <h2 id="matomo">4. Cookies und Reichweitenmessung (Matomo)</h2>
+    <p>Diese Website verwendet <b>keine Cookies</b>. Um zu verstehen, ob und wie Zettelwirtschaft gefunden wird, nutzen wir eine <b>selbst betriebene Matomo-Instanz</b> auf einem eigenen Server in Deutschland (<code>musikersuche.org/matomo/</code>, IONOS). Es werden keine Daten an Google oder andere Analyse-Anbieter übertragen.</p>
+    <p><b>Nur mit Einwilligung.</b> Beim ersten Besuch erscheint unten ein Hinweis mit „Statistik OK“ und „Ablehnen“. Erst nach „Statistik OK“ wird Matomo geladen. Deine Entscheidung speichern wir im Local Storage deines Browsers (Eintrag <code>zettelwirtschaft_matomo_consent</code>), damit der Hinweis nicht bei jedem Aufruf erscheint. Hat dein Browser „Do Not Track“ aktiviert, wird Matomo weder angeboten noch geladen.</p>
+    <p><b>Was erfasst wird:</b></p>
+    <ul>
+      <li>aufgerufene Seiten und Klicks auf Download-Links,</li>
+      <li>Herkunft des Aufrufs (Suchmaschine, Direktaufruf oder verweisende Seite),</li>
+      <li>Browser- und Betriebssystem-Familie,</li>
+      <li>grobe Region, abgeleitet aus der IP-Adresse, die vor der Speicherung gekürzt wird (die letzten zwei Bytes werden entfernt).</li>
+    </ul>
+    <p>Matomo setzt dabei keine Cookies, und die Daten werden nicht mit anderen Quellen zusammengeführt. Rechtsgrundlage ist deine Einwilligung (Art.&nbsp;6 Abs.&nbsp;1 lit.&nbsp;a DSGVO, §&nbsp;25 Abs.&nbsp;1 TDDDG). Du kannst die Einwilligung jederzeit mit Wirkung für die Zukunft widerrufen: <button type="button" class="btn btn--ghost" data-matomo-revoke style="padding:.4em .9em">Entscheidung zurücksetzen</button> — danach erscheint der Hinweis erneut.</p>
+    <p>Darüber hinaus werden <b>keine externen Inhalte</b> von Drittanbietern nachgeladen. Insbesondere werden Schriftarten lokal vom selben Server ausgeliefert (kein Google Fonts, keine CDN).</p>
 
     <h2>5. SSL- bzw. TLS-Verschlüsselung</h2>
     <p>Diese Seite nutzt aus Sicherheitsgründen und zum Schutz der Übertragung vertraulicher Inhalte eine SSL- bzw. TLS-Verschlüsselung. Eine verschlüsselte Verbindung erkennst du an „https://“ in der Adresszeile deines Browsers.</p>
@@ -104,7 +115,7 @@
     <h2>9. Änderung dieser Datenschutzerklärung</h2>
     <p>Wir behalten uns vor, diese Datenschutzerklärung anzupassen, damit sie stets den aktuellen rechtlichen Anforderungen entspricht oder um Änderungen unserer Leistungen umzusetzen. Für deinen erneuten Besuch gilt dann die neue Datenschutzerklärung.</p>
 
-    <p class="updated" style="margin-top:2.5rem">Stand: Juni 2026</p>
+    <p class="updated" style="margin-top:2.5rem">Stand: November 2026</p>
   </div>
 </section>
 
